@@ -54,6 +54,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y rpm fakeroot dpkg aria2
+          # rpm >= 4.20 runs %install in BUILD/<name>-<ver>-build; electron-installer-redhat stages files in BUILD/usr
+          echo '%__spec_install_pre %{___build_pre} && cd %{_topdir}/BUILD' >> ~/.rpmmacros
 
       - name: Install Dependencies
         run: npm install
