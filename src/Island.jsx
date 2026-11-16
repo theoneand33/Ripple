@@ -149,7 +149,7 @@ export default function Island() {
   const [userText, setUserText] = useState("");
   const [batteryAlertsEnabled, setBatteryAlertsEnabled] = useState(localStorage.getItem("battery-alerts") !== "false");
   const [islandBorderEnabled, setIslandBorderEnabled] = useState(localStorage.getItem("island-border") === "true");
-  const [standbyBorderEnabled, setStandbyEnabled] = useState(localStorage.getItem("standby-mode") === "true");
+  const [standbyBorderEnabled, setStandbyEnabled] = useState(localStorage.getItem("standby-mode") !== "false");
   const [largeStandbyEnabled, setLargeStandbyEnabled] = useState(localStorage.getItem("large-standby-mode") === "true");
   const [hideNotActiveIslandEnabled, sethideNotActiveIslandEnabled] = useState(localStorage.getItem("hide-island-notactive") === "true");
   const [showInfoWhenIdleEnabled, setShowInfoWhenIdleEnabled] = useState(
@@ -393,11 +393,13 @@ export default function Island() {
     ? (currentTab === 7 ? 495 : currentTab === 1 ? 480 : currentTab === 3 ? 330 : currentTab === 0 ? 405 : 380)
     : (mode === "quick" && isPlaying && !alert && !chargingAlert && !bluetoothAlert && !cameraAlert && !microphoneAlert)
       ? nowPlayingWidth
-      : (mode === "quick" || alert || chargingAlert || bluetoothAlert || cameraAlert || microphoneAlert)
-        ? 260
-        : isPlaying
-          ? nowPlayingWidth
-          : 170;
+      : (alert || chargingAlert || bluetoothAlert || cameraAlert || microphoneAlert)
+        ? (notchModeEnabled ? 260 : 160) // fits icon + "Microphone"
+        : mode === "quick"
+          ? (notchModeEnabled ? 260 : 140) // fits "23:59" + weather/"100%"
+          : isPlaying
+            ? nowPlayingWidth
+            : (notchModeEnabled ? 170 : 140);
   if (notchModeEnabled && mode !== "large") width = Math.max(isPlaying ? 300 : 0, width + 40);
   const quickTextViewportWidth = notchModeEnabled
     ? Math.min(100, Math.max(80, Math.floor(width * 0.3)))
@@ -470,7 +472,7 @@ export default function Island() {
   }
 
   if (!localStorage.getItem("standby-mode")) {
-    localStorage.setItem("standby-mode", "false");
+    localStorage.setItem("standby-mode", "true");
   }
 
   if (!localStorage.getItem("hour-format")) {
