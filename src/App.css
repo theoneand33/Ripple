@@ -103,23 +103,21 @@ body {
 
 @keyframes appear {
   0% {
-    -webkit-filter: blur(5px);
-    filter: blur(5px);
     opacity: 0;
+    transform: translateY(4px);
   }
 
   100% {
-    -webkit-filter: blur(0px);
-    filter: blur(0px);
     opacity: 1;
+    transform: none;
   }
 }
 
 .text {
   pointer-events: none;
   user-select: none;
-  transition: .2s;
-  animation: cubic-bezier(0.165, 0.84, 0.44, 1) appear 1s forwards;
+  transition: opacity .16s cubic-bezier(0.22, 1, 0.36, 1), color .16s cubic-bezier(0.22, 1, 0.36, 1);
+  animation: cubic-bezier(0.22, 1, 0.36, 1) appear .3s forwards;
 }
 
 #date {
@@ -130,26 +128,24 @@ body {
 }
 
 #date h1 {
-  margin-top: 10px;
-  margin-bottom: 5px;
+  margin: 8px 0 4px;
+  line-height: 1;
 }
 
 #date h2 {
-  margin-top: 5px;
+  margin: 4px 0 0;
 }
 
 #userinput {
-  animation: cubic-bezier(0.165, 0.84, 0.44, 1) appear 1s forwards;
   width: 100%;
-  height: 78.5%;
-  margin: 0;
-  margin-bottom: 8px;
+  flex: 1;
+  margin: 0 0 8px;
   background-color: transparent;
-  border-radius: 5px;
+  border-radius: 8px;
   outline: none;
   border: none;
   font-size: 20px;
-  padding: 15px;
+  padding: 8px;
   resize: none;
   pointer-events: auto;
   box-sizing: border-box;
@@ -162,18 +158,15 @@ body {
 
 #chatsubmit {
   cursor: pointer;
-  transition: .2s;
-  margin: 0 auto;
-  padding: 2px;
-  animation: cubic-bezier(0.165, 0.84, 0.44, 1) appear 1s forwards;
-  width: 95%;
+  transition: opacity .16s cubic-bezier(0.22, 1, 0.36, 1), transform .16s cubic-bezier(0.22, 1, 0.36, 1);
+  padding: 8px 20px;
   font-size: 15px;
-  font-weight: bold;
+  font-weight: 500;
   border: none;
   border-radius: 10px;
   user-select: none;
   box-sizing: border-box;
-  align-self: center;
+  align-self: flex-end;
 }
 
 #chatsubmit:hover {
@@ -182,20 +175,18 @@ body {
 
 #chatsubmit:active,
 .clipboard-btn:active {
-  transform: scale(.9);
-  opacity: .9;
-  filter: blur(2px);
+  transform: scale(.97);
 }
 
 select {
   cursor: pointer;
   color: var(--island-text-color);
   background-color: color-mix(in srgb, var(--island-text-color), transparent 95%);
-  border-radius: 12px;
+  border-radius: 10px;
   outline: none;
   border: 1px solid color-mix(in srgb, var(--island-text-color), transparent 90%);
-  transition: 0.2s;
-  padding: 6px 12px;
+  transition: background-color .16s cubic-bezier(0.22, 1, 0.36, 1), border-color .16s cubic-bezier(0.22, 1, 0.36, 1);
+  padding: 8px 12px;
   font-size: 14px;
   font-family: inherit;
   min-width: 140px;
@@ -209,13 +200,13 @@ select:hover {
 
 .select-input {
   width: 100%;
-  padding: 10px 14px;
+  padding: 8px 12px;
   color: var(--island-text-color);
   background-color: color-mix(in srgb, var(--island-text-color), transparent 95%);
-  border-radius: 12px;
+  border-radius: 10px;
   outline: none;
   border: 1px solid color-mix(in srgb, var(--island-text-color), transparent 90%);
-  transition: 0.2s;
+  transition: background-color .16s cubic-bezier(0.22, 1, 0.36, 1), border-color .16s cubic-bezier(0.22, 1, 0.36, 1);
   font-family: inherit;
   font-size: 14px;
 }
@@ -230,10 +221,23 @@ select:hover {
   opacity: 0.4;
 }
 
+.settings-heading {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 500;
+  opacity: 0.5;
+}
+
+.settings-hint {
+  margin: -4px 0 4px;
+  font-size: 12px;
+  opacity: 0.5;
+}
+
 label {
-  margin-right: 10px;
+  margin-right: 8px;
   font-size: 16px;
-  font-weight: 600;
+  font-weight: 500;
 }
 
 #Askanotherbtn {
@@ -241,16 +245,16 @@ label {
   border: none;
   position: absolute;
   right: 0px;
-  bottom: 18px;
-  padding: 6px 10px;
-  font-weight: 600;
+  bottom: 16px;
+  padding: 8px 12px;
+  font-weight: 500;
   border-radius: 10px;
-  transition: .2s;
+  transition: opacity .16s cubic-bezier(0.22, 1, 0.36, 1);
   z-index: 101;
 }
 
 #result {
-  animation: cubic-bezier(0.165, 0.84, 0.44, 1) appear 1.2s forwards;
+  animation: cubic-bezier(0.22, 1, 0.36, 1) appear .3s forwards;
   display: flex;
   flex-direction: column;
   justify-content: flex-start;
@@ -261,7 +265,7 @@ label {
   overflow-y: auto;
   overflow-x: hidden;
   box-sizing: border-box;
-  padding: 30px 20px;
+  padding: 32px 24px;
   min-height: 0;
   pointer-events: auto;
   word-wrap: break-word;
@@ -334,10 +338,6 @@ label {
   font-weight: 600;
 }
 
-#result em {
-  font-style: italic;
-}
-
 #result h1,
 #result h2,
 #result h3,
@@ -355,94 +355,75 @@ label {
 }
 
 #battery {
-  animation: cubic-bezier(0.165, 0.84, 0.44, 1) appear 1s forwards;
   position: absolute;
-  top: 17px;
-  right: 25px;
-  width: 18px;
-  padding: 14px 21px;
-  height: 10px;
-  border-radius: 18px;
+  top: 20px;
+  right: 24px;
   display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
 }
 
 #battery-bar {
-  position: absolute;
-  width: 100%;
-  height: 70%;
-  border-radius: 6px;
   display: flex;
-  flex-direction: column;
   align-items: center;
-  justify-content: center;
-  padding: 0px 25px;
+  padding: 4px 8px;
+  border-radius: 8px;
 }
 
 #battery-bar h1 {
-  position: absolute;
+  margin: 0;
   font-size: 13px;
-  padding: 8px;
+  font-weight: 500;
+  line-height: 16px;
+  font-variant-numeric: tabular-nums;
 }
 
 #quick-apps {
-  animation: cubic-bezier(0.165, 0.84, 0.44, 1) appear .7s forwards;
+  animation: cubic-bezier(0.22, 1, 0.36, 1) appear .3s forwards;
   display: flex;
   flex-direction: row;
   justify-content: center;
   align-items: center;
-  gap: 2px;
+  gap: 4px;
   width: 100%;
 }
 
 .qa-app {
-  padding: 10px 15px;
+  padding: 8px 16px;
   border: none;
-  border-radius: 15px;
-  font-size: 17px;
+  border-radius: 12px;
+  font-size: 16px;
   font-weight: 500;
-  margin-right: 2px;
-  transition: transform .5s cubic-bezier(0.175, 0.885, 0.32, 1.275), box-shadow .4s ease;
+  transition: filter .16s cubic-bezier(0.22, 1, 0.36, 1), transform .16s cubic-bezier(0.22, 1, 0.36, 1);
   cursor: pointer;
-  box-shadow: 0 0 30px rgba(0, 0, 0, 0.148);
-  z-index: 0;
   user-select: none;
-  will-change: transform;
 }
 
 .qa-app:hover {
-  transform: scale(1.2);
-  z-index: 1;
-  box-shadow: 0 0 35px rgba(0, 0, 0, 0.22);
+  filter: brightness(0.92);
 }
 
 .qa-app:active {
-  transform: scale(1.15);
+  transform: scale(.97);
 }
 
 .workflow-item {
-  transition: transform 0.1s cubic-bezier(0.175, 0.885, 0.32, 1.275), filter 0.5s ease, padding 0.5s cubic-bezier(0.175, 0.885, 0.32, 1.275), box-shadow 0.5s ease;
+  transition: filter .16s cubic-bezier(0.22, 1, 0.36, 1), transform .16s cubic-bezier(0.22, 1, 0.36, 1);
   cursor: pointer;
   user-select: none;
   border: none;
-  padding: 10px 15px;
-  will-change: transform;
+  padding: 12px 16px;
 }
 
 .workflow-item:hover {
-  padding: 20px 17px;
   filter: brightness(1.1);
 }
 
 .workflow-item:active {
-  transform: scale(0.98);
+  transform: scale(.98);
 }
 
 #browser-searchbar {
   font-weight: 500;
-  animation: cubic-bezier(0.165, 0.84, 0.44, 1) appear .55s forwards;
+  animation: cubic-bezier(0.22, 1, 0.36, 1) appear .3s forwards;
   background-color: transparent;
   border: none;
   padding: 12px 20px;
@@ -458,13 +439,13 @@ label {
 }
 
 #clipboard {
-  animation: appear 0.6s forwards;
+  animation: cubic-bezier(0.22, 1, 0.36, 1) appear .3s forwards;
   display: flex;
   flex-direction: column;
   justify-content: flex-start;
   width: 100%;
   max-height: 100%;
-  padding: 15px 20px;
+  padding: 16px 20px;
   box-sizing: border-box;
   z-index: 100;
   overflow-y: auto;
@@ -485,25 +466,21 @@ label {
   display: flex;
   flex-direction: column;
   text-align: center;
-  padding: 30px 18px;
-  border-radius: 6px;
+  padding: 32px 20px;
+  border-radius: 12px;
   background-color: rgba(0, 0, 0, 0.1);
 }
 
 .clipboard-btn {
   cursor: pointer;
   user-select: none;
-  margin-bottom: 15px;
-  padding: 5px 4px;
-  width: 150px;
+  margin-bottom: 16px;
+  padding: 4px;
+  width: 152px;
   border-radius: 10px;
   border: none;
-  font-weight: 800;
-  transition: .4s;
-}
-
-.clipboard-btn:active {
-  transform: scale(.8);
+  font-weight: 500;
+  transition: transform .16s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 #tasks-container {
@@ -511,16 +488,16 @@ label {
   flex-direction: column;
   width: 90%;
   height: 100%;
-  padding: 15px;
+  padding: 16px;
   box-sizing: border-box;
-  animation: appear 0.6s forwards;
+  animation: cubic-bezier(0.22, 1, 0.36, 1) appear .3s forwards;
 }
 
 #task-list {
   flex: 1;
   overflow-y: auto;
-  margin-bottom: 15px;
-  padding-right: 5px;
+  margin-bottom: 16px;
+  padding-right: 4px;
 }
 
 #task-list::-webkit-scrollbar {
@@ -539,9 +516,9 @@ label {
   gap: 10px;
   padding: 10px 12px;
   background: color-mix(in srgb, var(--island-text-color), transparent 95%);
-  border-radius: 12px;
-  margin-bottom: 8px;
-  transition: 0.2s;
+  border-radius: 10px;
+  margin-bottom: 4px;
+  transition: background-color .16s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .task-row:hover {
@@ -569,7 +546,7 @@ label {
 .task-input {
   font-family: inherit;
   font-size: 14px;
-  transition: 0.2s;
+  transition: background-color .16s cubic-bezier(0.22, 1, 0.36, 1), border-color .16s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .task-checkbox {
@@ -578,47 +555,47 @@ label {
   width: 18px;
   height: 18px;
   border: 2px solid color-mix(in srgb, var(--island-text-color), transparent 70%);
-  border-radius: 5px;
+  border-radius: 4px;
   cursor: pointer;
   position: relative;
-  transition: 0.2s;
+  transition: background-color .16s cubic-bezier(0.22, 1, 0.36, 1), border-color .16s cubic-bezier(0.22, 1, 0.36, 1);
   background: transparent;
   flex-shrink: 0;
 }
 
 .task-checkbox:checked {
-  background: #34c759;
-  border-color: #34c759;
+  background: var(--island-text-color);
+  border-color: var(--island-text-color);
 }
 
+/* checkmark drawn as a rotated border so it stays a line, not a font glyph */
 .task-checkbox:checked::after {
-  content: '✓';
+  content: '';
   position: absolute;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-  color: white;
-  font-size: 12px;
-  font-weight: bold;
+  left: 4px;
+  top: 1px;
+  width: 4px;
+  height: 8px;
+  border: solid var(--island-bg-color);
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
 }
 
 .task-checkbox:hover {
-  border-color: rgba(255, 255, 255, 0.5);
-  background: rgba(255, 255, 255, 0.05);
+  border-color: color-mix(in srgb, var(--island-text-color), transparent 50%);
+  background: color-mix(in srgb, var(--island-text-color), transparent 95%);
 }
 
 .task-add-btn {
-  transition: 0.2s;
+  transition: filter .16s cubic-bezier(0.22, 1, 0.36, 1), transform .16s cubic-bezier(0.22, 1, 0.36, 1);
 }
-
 
 .task-add-btn:hover {
   filter: brightness(0.9);
-  transform: scale(1.02);
 }
 
 .task-add-btn:active {
-  transform: scale(0.95);
+  transform: scale(.97);
 }
 
 #settings-container {
@@ -626,8 +603,8 @@ label {
   flex-direction: column;
   width: 100%;
   height: 100%;
-  padding: 20px 25px;
-  gap: 24px;
+  padding: 24px;
+  gap: 32px;
   overflow-y: auto;
   overflow-x: hidden;
   box-sizing: border-box;
@@ -645,7 +622,7 @@ label {
   align-items: center;
   justify-content: space-between;
   width: 100%;
-  gap: 15px;
+  gap: 16px;
 }
 
 .settings-label {
@@ -661,8 +638,8 @@ label {
   background: color-mix(in srgb, var(--island-text-color), transparent 96%);
   border-radius: 12px;
   padding: 12px;
-  margin-bottom: 15px;
-  gap: 10px;
+  margin-bottom: 12px;
+  gap: 8px;
   border: 1px solid color-mix(in srgb, var(--island-text-color), transparent 95%);
   position: relative;
 }
@@ -683,43 +660,45 @@ label {
 .clipboard-footer {
   display: flex;
   justify-content: flex-end;
-  margin-top: 5px;
+  margin-top: 4px;
 }
 
 .copy-btn {
   border: none;
   padding: 4px 12px;
   font-size: 12px;
-  font-weight: 600;
-  border-radius: 8px;
+  font-weight: 500;
+  border-radius: 6px;
   cursor: pointer;
-  transition: 0.2s;
+  transition: filter .16s cubic-bezier(0.22, 1, 0.36, 1), transform .16s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .copy-btn:hover {
   filter: brightness(0.95);
-  transform: scale(1.02);
 }
 
 .copy-btn:active {
-  transform: scale(0.95);
+  transform: scale(.97);
 }
 
 .media-btn {
-  transition: transform 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275), filter 0.4s ease, opacity 0.4s ease;
+  transition: opacity .16s cubic-bezier(0.22, 1, 0.36, 1), transform .16s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .media-btn:hover {
-  filter: brightness(0.95);
-  transform: scale(1.2);
+  opacity: 0.8;
+}
+
+.media-btn:active {
+  transform: scale(.94);
 }
 
 .radio-group {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
-  gap: 12px 0px;
+  gap: 12px 0;
   width: 100%;
-  margin: 10px 0;
+  margin: 8px 0;
   justify-items: center;
 }
 
@@ -728,14 +707,13 @@ label {
   align-items: center;
   gap: 6px;
   cursor: pointer;
-  font-size: 11px;
-  font-weight: 600;
+  font-size: 13px;
+  font-weight: 400;
   opacity: 0.8;
-  transition: opacity 0.2s;
+  transition: opacity .16s cubic-bezier(0.22, 1, 0.36, 1);
   user-select: none;
   white-space: nowrap;
-  text-transform: uppercase;
-  letter-spacing: 0.02em;
+  margin-right: 0;
 }
 
 .radio-label:hover {
@@ -755,7 +733,7 @@ label {
   border: 1px solid color-mix(in srgb, var(--island-text-color), transparent 85%);
   border-radius: 50%;
   position: relative;
-  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: background-color .16s cubic-bezier(0.22, 1, 0.36, 1), border-color .16s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .radio-label:hover .radio-custom {
@@ -796,16 +774,15 @@ label {
   gap: 12px;
   padding: 10px 14px;
   background: color-mix(in srgb, var(--island-text-color), transparent 96%);
-  border-radius: 16px;
+  border-radius: 12px;
   border: 1px solid color-mix(in srgb, var(--island-text-color), transparent 94%);
-  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
-  margin-bottom: 8px;
+  transition: background-color .16s cubic-bezier(0.22, 1, 0.36, 1), border-color .16s cubic-bezier(0.22, 1, 0.36, 1), opacity .16s cubic-bezier(0.22, 1, 0.36, 1);
+  margin-bottom: 4px;
 }
 
 .tab-order-item:hover {
   background: color-mix(in srgb, var(--island-text-color), transparent 92%);
   border-color: color-mix(in srgb, var(--island-text-color), transparent 85%);
-  transform: translateY(-1px);
 }
 
 .tab-order-item.hidden {
@@ -824,7 +801,7 @@ label {
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: all 0.2s;
+  transition: opacity .16s cubic-bezier(0.22, 1, 0.36, 1), background-color .16s cubic-bezier(0.22, 1, 0.36, 1);
   opacity: 0.6;
 }
 

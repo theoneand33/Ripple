@@ -115,6 +115,9 @@ const TABS = [
   { id: 8, name: "T3 Code", icon: (color) => <Terminal size={16} color={color} /> },
 ];
 
+// Status hues for the pill border and alerts: charging, low battery, camera, mic, bluetooth
+const STATUS = { charge: '#4cc38a', low: '#e5484d', camera: '#e8b931', mic: '#f0883e', bluetooth: '#4c9aff' };
+
 const isSettingsWindow = window.location.hash === "#settings";
 
 export default function Island() {
@@ -1308,9 +1311,9 @@ export default function Island() {
   const settingsPanel = (
     <div id="settings-container">
       <div className="settings-section">
-        <h3 style={{ fontSize: 13, textTransform: 'uppercase', opacity: 0.5, letterSpacing: '0.05em' }}>General</h3>
+        <h3 className="settings-heading">General</h3>
         <div className="settings-row">
-          <span className="settings-label">12/24 Hour Format</span>
+          <span className="settings-label">Clock format</span>
           <select value={hourFormat ? "12-hr" : "24-hr"} onChange={handleHourFormatChange}>
             <option value="12-hr">12-hour</option>
             <option value="24-hr">24-hour</option>
@@ -1318,7 +1321,7 @@ export default function Island() {
         </div>
         {window.electronAPI?.platform !== 'darwin' && (
           <div className="settings-row">
-            <span className="settings-label">Auto Launch on Boot</span>
+            <span className="settings-label">Launch at login</span>
             <select value={autoLaunchEnabled ? "true" : "false"} onChange={handleAutoLaunchChange}>
               <option value="true">Enabled</option>
               <option value="false">Disabled</option>
@@ -1327,7 +1330,7 @@ export default function Island() {
         )}
         {displays.length > 0 && (
           <div className="settings-row">
-            <span className="settings-label">Target Display</span>
+            <span className="settings-label">Display</span>
             <select value={currentDisplayId} onChange={handleDisplayChange}>
               {displays.map(d => (
                 <option key={d.id} value={d.id}>{d.label}</option>
@@ -1337,8 +1340,8 @@ export default function Island() {
         )}
       </div>
       <div className="settings-section">
-        <h3 style={{ fontSize: 13, textTransform: 'uppercase', opacity: 0.5, letterSpacing: '0.05em', marginBottom: '4px' }}>Tab Management</h3>
-        <p style={{ fontSize: 11, opacity: 0.4, marginTop: -8, marginBottom: 8 }}>Drag to reorder, click eye to hide.</p>
+        <h3 className="settings-heading">Tabs</h3>
+        <p className="settings-hint">Drag to reorder, click the eye to hide</p>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
           {tabOrder.map((id, i) => {
             const tabDef = TABS.find(t => t.id === id);
@@ -1388,9 +1391,9 @@ export default function Island() {
                       localStorage.setItem("default-tab", id);
                     }}
                     title="Set as default"
-                    style={{ opacity: defaultTabId === id ? 1 : 0.3, color: defaultTabId === id ? '#FFD700' : textColor }}
+                    style={{ opacity: defaultTabId === id ? 1 : 0.3, color: textColor }}
                   >
-                    <Star size={16} fill={defaultTabId === id ? '#FFD700' : 'none'} />
+                    <Star size={16} fill={defaultTabId === id ? textColor : 'none'} />
                   </button>
                   <div style={{ width: 1, height: 16, background: textColor, opacity: 0.1, margin: '0 4px' }} />
                   <button
@@ -1424,9 +1427,9 @@ export default function Island() {
       </div>
 
       <div className="settings-section">
-        <h3 style={{ fontSize: 13, textTransform: 'uppercase', opacity: 0.5, letterSpacing: '0.05em' }}>Island Style</h3>
+        <h3 className="settings-heading">Island style</h3>
         <div className="settings-row">
-          <span className="settings-label">Notch Mode</span>
+          <span className="settings-label">Notch mode</span>
           <select
             value={notchModeEnabled ? "true" : "false"}
             onChange={(e) => {
@@ -1448,18 +1451,18 @@ export default function Island() {
             <option value="win95">Windows 95</option>
           </select>
         </div>
-        <div className="settings-section" style={{ alignItems: 'center', background: 'rgba(255,255,255,0.03)', padding: '15px', borderRadius: '18px', border: '1px solid rgba(255,255,255,0.05)' }}>
-          <span className="settings-label" style={{ textAlign: 'center', marginBottom: '8px', opacity: 1, color: textColor }}>Position Mode</span>
-          <div className="radio-group" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', width: '100%', gap: '15px 10px' }}>
+        <div className="settings-section" style={{ alignItems: 'center', background: `color-mix(in srgb, ${textColor}, transparent 97%)`, padding: '16px', borderRadius: '16px', border: `1px solid color-mix(in srgb, ${textColor}, transparent 92%)` }}>
+          <span className="settings-label" style={{ textAlign: 'center', marginBottom: '8px', opacity: 1, color: textColor }}>Position</span>
+          <div className="radio-group" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', width: '100%', gap: '12px 8px' }}>
             {[
-              { val: "top-left", label: "Top L" },
-              { val: "top-center", label: "Top C" },
-              { val: "top-right", label: "Top R" },
-              { val: "bottom-left", label: "Bot L" },
-              { val: "bottom-center", label: "Bot C" },
-              { val: "bottom-right", label: "Bot R" }
+              { val: "top-left", label: "Top left" },
+              { val: "top-center", label: "Top center" },
+              { val: "top-right", label: "Top right" },
+              { val: "bottom-left", label: "Bottom left" },
+              { val: "bottom-center", label: "Bottom center" },
+              { val: "bottom-right", label: "Bottom right" }
             ].map((mode) => (
-              <label key={mode.val} className="radio-label" style={{ justifyContent: 'center' }}>
+              <label key={mode.val} className="radio-label" style={{ justifySelf: 'start' }}>
                 <input
                   type="radio"
                   name="positionMode"
@@ -1475,7 +1478,7 @@ export default function Island() {
               </label>
             ))}
           </div>
-          <div style={{ width: '100%', height: '1px', background: 'rgba(255,255,255,0.1)', margin: '10px 0' }}></div>
+          <div style={{ width: '100%', height: '1px', background: `color-mix(in srgb, ${textColor}, transparent 92%)`, margin: '8px 0' }}></div>
           <label className="radio-label" style={{ justifyContent: 'center' }}>
             <input
               type="radio"
@@ -1488,7 +1491,7 @@ export default function Island() {
               }}
             />
             <span className="radio-custom"></span>
-            FREE (MANUAL)
+            Free placement
           </label>
         </div>
         <AnimatePresence>
@@ -1551,14 +1554,14 @@ export default function Island() {
           )}
         </AnimatePresence>
         <div className="settings-row">
-          <span className="settings-label">Island Border</span>
+          <span className="settings-label">Island border</span>
           <select value={islandBorderEnabled ? "true" : "false"} onChange={handleIslandBorderChange}>
             <option value="true">Show</option>
             <option value="false">Hide</option>
           </select>
         </div>
         <div className="settings-row">
-          <span className="settings-label">Hide When Inactive</span>
+          <span className="settings-label">Hide when inactive</span>
           <select value={hideNotActiveIslandEnabled ? "true" : "false"} onChange={handlehideNotActiveIslandChange}>
             <option value="true">Yes</option>
             <option value="false">No</option>
@@ -1567,9 +1570,9 @@ export default function Island() {
       </div>
 
       <div className="settings-section">
-        <h3 style={{ fontSize: 13, textTransform: 'uppercase', opacity: 0.5, letterSpacing: '0.05em' }}>Colors & Assets</h3>
+        <h3 className="settings-heading">Colors and background</h3>
         <div className="settings-row">
-          <span className="settings-label">Island Color</span>
+          <span className="settings-label">Island color</span>
           <input
             className="select-input"
             style={{ width: '100px' }}
@@ -1579,7 +1582,7 @@ export default function Island() {
           />
         </div>
         <div className="settings-row">
-          <span className="settings-label">Text Color</span>
+          <span className="settings-label">Text color</span>
           <input
             className="select-input"
             style={{ width: '100px' }}
@@ -1589,7 +1592,7 @@ export default function Island() {
           />
         </div>
         <div className="settings-row" style={{ flexDirection: 'column', alignItems: 'flex-start' }}>
-          <span className="settings-label">Background Image URL</span>
+          <span className="settings-label">Background image URL</span>
           <input
             className="select-input"
             placeholder="https://..."
@@ -1600,30 +1603,30 @@ export default function Island() {
       </div>
 
       <div className="settings-section">
-        <h3 style={{ fontSize: 13, textTransform: 'uppercase', opacity: 0.5, letterSpacing: '0.05em' }}>Features</h3>
+        <h3 className="settings-heading">Features</h3>
         <div className="settings-row">
-          <span className="settings-label">Low Battery Alerts</span>
+          <span className="settings-label">Low battery alerts</span>
           <select value={batteryAlertsEnabled ? "true" : "false"} onChange={handleBatteryAlertsChange}>
             <option value="true">Enabled</option>
             <option value="false">Disabled</option>
           </select>
         </div>
         <div className="settings-row">
-          <span className="settings-label">Standby Mode</span>
+          <span className="settings-label">Standby mode</span>
           <select value={standbyBorderEnabled ? "true" : "false"} onChange={handleStandbyChange}>
             <option value="true">Enabled</option>
             <option value="false">Disabled</option>
           </select>
         </div>
         <div className="settings-row">
-          <span className="settings-label">Large Standby Mode</span>
+          <span className="settings-label">Large standby mode</span>
           <select value={largeStandbyEnabled ? "true" : "false"} onChange={handleLargeStandbyChange}>
             <option value="true">Enabled</option>
             <option value="false">Disabled</option>
           </select>
         </div>
         <div className="settings-row">
-          <span className="settings-label">Show Info when idle</span>
+          <span className="settings-label">Show info when idle</span>
           <select value={showInfoWhenIdleEnabled ? "true" : "false"} onChange={handleShowInfoWhenIdleChange}>
             <option value="true">Enabled</option>
             <option value="false">Disabled</option>
@@ -1632,9 +1635,9 @@ export default function Island() {
       </div>
 
       <div className="settings-section">
-        <h3 style={{ fontSize: 13, textTransform: 'uppercase', opacity: 0.5, letterSpacing: '0.05em' }}>Browser Search</h3>
+        <h3 className="settings-heading">Browser Search</h3>
         <div className="settings-row">
-          <span className="settings-label">Search Engine</span>
+          <span className="settings-label">Search engine</span>
           <select value={searchEngine} onChange={(e) => { setSearchEngine(e.target.value); localStorage.setItem("search-engine", e.target.value); }}>
             {Object.entries(SEARCH_ENGINES).map(([id, engine]) => <option key={id} value={id}>{engine.name}</option>)}
           </select>
@@ -1642,7 +1645,7 @@ export default function Island() {
       </div>
 
       <div className="settings-section">
-        <h3 style={{ fontSize: 13, textTransform: 'uppercase', opacity: 0.5, letterSpacing: '0.05em' }}>Weather</h3>
+        <h3 className="settings-heading">Weather</h3>
         <div className="settings-row">
           <span className="settings-label">Location</span>
           <input
@@ -1665,14 +1668,14 @@ export default function Island() {
       </div>
 
       <div className="settings-section">
-        <h3 style={{ fontSize: 13, textTransform: 'uppercase', opacity: 0.5, letterSpacing: '0.05em' }}>Quick Apps</h3>
+        <h3 className="settings-heading">Quick apps</h3>
         <div style={{ display: 'flex', gap: '8px', marginBottom: '12px', position: 'relative', flexDirection: 'column' }}>
           <div style={{ display: 'flex', gap: '8px' }}>
             <input
               className="select-input"
               style={{ flex: 1 }}
               value={newQuickApp}
-              placeholder="Add app (e.g. Apple Music)"
+              placeholder="Add app, like Apple Music"
               onChange={(e) => {
                 const val = e.target.value;
                 setNewQuickApp(val);
@@ -1758,7 +1761,7 @@ export default function Island() {
               <motion.div
                 key={`qa-${idx}`}
                 className="settings-row"
-                style={{ justifyContent: 'space-between', padding: '5px 0' }}
+                style={{ justifyContent: 'space-between', padding: '4px 0' }}
                 initial={{ opacity: 0, height: 0 }}
                 animate={{ opacity: 1, height: 'auto' }}
                 exit={{ opacity: 0, x: -20, height: 0, padding: 0 }}
@@ -1772,7 +1775,7 @@ export default function Island() {
                 />
                 <button
                   onClick={() => removeQuickApp(idx)}
-                  style={{ color: '#ff4d4d', background: 'none', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                  style={{ color: textColor, opacity: 0.6, background: 'none', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
                 >
                   <Trash2 size={16} />
                 </button>
@@ -1783,9 +1786,9 @@ export default function Island() {
       </div>
 
       <div className="settings-section" style={{ marginBottom: 30 }}>
-        <h3 style={{ fontSize: 13, textTransform: 'uppercase', opacity: 0.5, letterSpacing: '0.05em' }}>Integrations</h3>
+        <h3 className="settings-heading">Integrations</h3>
         <div className="settings-row">
-          <span className="settings-label">AI Provider</span>
+          <span className="settings-label">AI provider</span>
           <select
             value={aiProvider}
             onChange={(e) => {
@@ -1801,7 +1804,7 @@ export default function Island() {
           </select>
         </div>
         <div className="settings-row" style={{ flexDirection: 'column', alignItems: 'flex-start' }}>
-          <span className="settings-label">AI Model</span>
+          <span className="settings-label">AI model</span>
           <input
             className="select-input"
             value={aiModel}
@@ -1813,7 +1816,7 @@ export default function Island() {
           />
         </div>
         <div className="settings-row" style={{ flexDirection: 'column', alignItems: 'flex-start' }}>
-          <span className="settings-label">API Key</span>
+          <span className="settings-label">API key</span>
           <input
             className="select-input"
             type="password"
@@ -1824,7 +1827,7 @@ export default function Island() {
       </div>
 
       <div className="settings-section" style={{ marginBottom: 30 }}>
-        <h3 style={{ fontSize: 13, textTransform: 'uppercase', opacity: 0.5, letterSpacing: '0.05em' }}>T3 Code Devices</h3>
+        <h3 className="settings-heading">T3 Code devices</h3>
         <span className="settings-label" style={{ opacity: 0.6, fontSize: 12 }}>Token: run `t3 auth session issue --token-only` on that device.</span>
         {t3Devices.map((d, i) => (
           <div key={i} className="settings-row">
@@ -1840,20 +1843,20 @@ export default function Island() {
         <button
           disabled={!/^https?:\/\//.test(t3NewDevice.url.trim()) || !t3NewDevice.token.trim()}
           onClick={() => { saveT3Devices([...t3Devices, { name: t3NewDevice.name.trim(), url: t3NewDevice.url.trim(), token: t3NewDevice.token.trim() }]); setT3NewDevice({ name: "", url: "", token: "" }); }}
-          style={{ backgroundColor: textColor, color: bgColor, border: 'none', borderRadius: '12px', padding: '8px 16px', fontWeight: 600, cursor: 'pointer' }}
+          style={{ backgroundColor: textColor, color: bgColor, border: 'none', borderRadius: '10px', padding: '8px 16px', fontWeight: 500, cursor: 'pointer' }}
         >
-          Add Device
+          Add device
         </button>
       </div>
 
       <div className="settings-section" style={{ marginBottom: 30 }}>
-        <h3 style={{ fontSize: 13, textTransform: 'uppercase', opacity: 0.5, letterSpacing: '0.05em' }}>Manage Workflows</h3>
+        <h3 className="settings-heading">Workflows</h3>
 
         <div id="add-workflow-form" style={{
           display: 'flex', flexDirection: 'column', gap: '6px', width: '100%',
           boxSizing: 'border-box'
         }}>
-          <span className="settings-label" style={{ opacity: 0.8 }}>Workflow Name</span>
+          <span className="settings-label" style={{ opacity: 0.8 }}>Workflow name</span>
           <input
             className="select-input"
             style={{ width: '100%', boxSizing: 'border-box' }}
@@ -1861,7 +1864,7 @@ export default function Island() {
             value={workflowName}
             onChange={(e) => setWorkflowName(e.target.value)}
           />
-          <span className="settings-label" style={{ marginTop: 15, opacity: 0.8 }}>Apps or URLs (Comma Separated)</span>
+          <span className="settings-label" style={{ marginTop: 16, opacity: 0.8 }}>Apps or URLs, comma separated</span>
           <textarea
             className="select-input"
             style={{ width: '100%', minHeight: '50px', padding: '8px', boxSizing: 'border-box' }}
@@ -1877,14 +1880,14 @@ export default function Island() {
               backgroundColor: textColor,
               color: bgColor,
               border: 'none',
-              borderRadius: '12px',
+              borderRadius: '10px',
               padding: '8px',
-              fontWeight: 600,
+              fontWeight: 500,
               cursor: 'pointer',
-              marginTop: 2
+              marginTop: 4
             }}
           >
-            Save Workflow
+            Save workflow
           </button>
         </div>
 
@@ -1894,7 +1897,7 @@ export default function Island() {
               <motion.div
                 key={`wf-${wf.name}-${idx}`}
                 className="settings-row"
-                style={{ justifyContent: 'space-between', padding: '10px 0', borderBottom: `1px solid color-mix(in srgb, ${textColor}, transparent 95%)` }}
+                style={{ justifyContent: 'space-between', padding: '8px 0', borderBottom: `1px solid color-mix(in srgb, ${textColor}, transparent 95%)` }}
                 initial={{ opacity: 0, height: 0 }}
                 animate={{ opacity: 1, height: 'auto' }}
                 exit={{ opacity: 0, x: -20, height: 0, padding: 0 }}
@@ -1908,7 +1911,7 @@ export default function Island() {
                 </div>
                 <button
                   onClick={() => removeWorkflow(idx)}
-                  style={{ color: '#ff4d4d', background: 'none', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4 }}
+                  style={{ color: textColor, opacity: 0.6, background: 'none', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4 }}
                 >
                   <Trash2 size={14} />
                   <span style={{ fontSize: 12 }}>Remove</span>
@@ -2033,7 +2036,7 @@ export default function Island() {
         // iOS-style continuous corners when expanded; compact stays a true capsule
         cornerShape: mode === "large" && theme !== "win95" ? "squircle" : "round",
         fontFamily: theme === "win95" ? "w95" : "OpenRunde",
-        border: theme === "win95" ? "2px solid rgb(254, 254, 254)" : islandBorderEnabled ? cameraInUse ? `1px solid rgba(255, 215, 0, 0.8)` : microphoneInUse ? `1px solid rgba(255, 154, 0, 0.8)` : (charging || chargingAlert) ? `1px solid rgba(111, 255, 123, 0.5)` : (percent <= 20 || alert) ? `1px solid rgba(255, 63, 63, 0.5)` : bluetoothAlert ? `1px solid rgba(0, 150, 255, 0.34)` : hideNotActiveIslandEnabled ? "none" : `1px solid color-mix(in srgb, ${textColor}, transparent 70%)` : "none",
+        border: theme === "win95" ? "2px solid rgb(254, 254, 254)" : islandBorderEnabled ? cameraInUse ? `1px solid ${STATUS.camera}` : microphoneInUse ? `1px solid ${STATUS.mic}` : (charging || chargingAlert) ? `1px solid ${STATUS.charge}` : (percent <= 20 || alert) ? `1px solid ${STATUS.low}` : bluetoothAlert ? `1px solid ${STATUS.bluetooth}` : hideNotActiveIslandEnabled ? "none" : `1px solid color-mix(in srgb, ${textColor}, transparent 70%)` : "none",
         borderColor:
           theme === "win95"
             ? "#FFFFFF #808080 #808080 #FFFFFF"
@@ -2204,12 +2207,12 @@ export default function Island() {
                 style={{
                   position: "absolute",
                   top: "50%",
-                  left: notchModeEnabled ? "10px" : "15px",
+                  left: notchModeEnabled ? "12px" : "16px",
                   transform: "translateY(-50%)",
                   fontSize: 16,
                   fontWeight: 600,
                   margin: 0,
-                  color: chargingAlert ? "#6fff7bff" : alert ? "#ff3f3fff" : cameraAlert ? "#ffff00ff" : microphoneAlert ? "#ff9a00ff" : textColor,
+                  color: chargingAlert ? STATUS.charge : alert ? STATUS.low : cameraAlert ? STATUS.camera : microphoneAlert ? STATUS.mic : textColor,
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
@@ -2218,13 +2221,13 @@ export default function Island() {
                 }}
               >
                 {chargingAlert ? (
-                  <Zap size={20} color="#6fff7b" />
+                  <Zap size={20} color={STATUS.charge} />
                 ) : alert ? (
-                  <Zap size={20} color="#ff3f3f" />
+                  <Zap size={20} color={STATUS.low} />
                 ) : cameraAlert ? (
-                  <Camera size={20} color="#ffff00" />
+                  <Camera size={20} color={STATUS.camera} />
                 ) : microphoneAlert ? (
-                  <Mic size={20} color="#ff9a00" />
+                  <Mic size={20} color={STATUS.mic} />
                 ) : bluetoothAlert ? <Headphones size={20} /> : time}
               </h1>
               <h1
@@ -2232,19 +2235,19 @@ export default function Island() {
                 style={{
                   position: "absolute",
                   top: "50%",
-                  right: notchModeEnabled ? "10px" : "15px",
+                  right: notchModeEnabled ? "12px" : "16px",
                   transform: "translateY(-50%)",
                   fontSize: 16,
                   fontWeight: 600,
                   margin: 0,
                   color: chargingAlert
-                    ? "#6fff7bff"
+                    ? STATUS.charge
                     : alert
-                      ? "#ff3f3fff"
+                      ? STATUS.low
                       : cameraAlert
-                        ? "#ffff00ff"
+                        ? STATUS.camera
                         : microphoneAlert
-                          ? "#ff9a00ff"
+                          ? STATUS.mic
                           : `${textColor}`,
                   display: 'flex',
                   alignItems: 'center'
@@ -2322,7 +2325,7 @@ export default function Island() {
                   width: '95%',
                   flex: 1,
                   overflowY: 'auto',
-                  padding: '15px 0',
+                  padding: '16px 0',
                   margin: '0 auto'
                 }}>
                   <AnimatePresence>
@@ -2333,7 +2336,7 @@ export default function Island() {
                         exit={{ opacity: 0 }}
                         style={{ textAlign: 'center', fontSize: 13, marginTop: 20 }}
                       >
-                        No workflows yet. Add them in settings!
+                        No workflows yet, add one in Settings
                       </motion.p>
                     ) : (
                       workflows.map((workflow, i) => (
@@ -2418,7 +2421,7 @@ export default function Island() {
                   <div
                     id="battery-bar"
                     style={{
-                      backgroundColor: localStorage.getItem('text-color'),
+                      backgroundColor: textColor,
                       color: bgColor
                     }}
                   >
@@ -2432,13 +2435,15 @@ export default function Island() {
                   className="text"
                   style={{
                     fontSize: 15,
-                    left: 25,
-                    top: 14,
+                    fontWeight: 500,
+                    left: 24,
+                    top: 20,
+                    margin: 0,
                     position: "absolute",
                     animation: 'none'
                   }}
                 >
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
                     <WeatherIcon status={weather.status} size={16} color={textColor} />
                     <span>{weather.temp ? weather.temp : "??"}º</span>
                   </div>
@@ -2448,15 +2453,15 @@ export default function Island() {
                   title="Settings"
                   aria-label="Open settings"
                   onClick={() => window.electronAPI?.openSettings?.()}
-                  style={{ position: 'absolute', left: 21, bottom: 12, color: textColor, opacity: 0.6 }}
+                  style={{ position: 'absolute', left: 18, bottom: 16, color: textColor, opacity: 0.6 }}
                 >
                   <Settings size={16} />
                 </button>
                 <div id="date">
-                  <h1 className="text" style={{ fontSize: 50, animation: 'none' }}>
+                  <h1 className="text" style={{ fontSize: 52, fontWeight: 600, fontVariantNumeric: 'tabular-nums', animation: 'none' }}>
                     {time}
                   </h1>
-                  <h2 className="text" style={{ fontSize: 15, animation: 'none' }}>
+                  <h2 className="text" style={{ fontSize: 15, fontWeight: 500, opacity: 0.6, animation: 'none' }}>
                     {formatDateShort()}
                   </h2>
                 </div>
@@ -2604,7 +2609,7 @@ export default function Island() {
                             )}
                           </motion.p>
                         </div>
-                        <div style={{ display: 'flex', gap: 15, marginTop: 15, alignItems: 'center', marginLeft: 5 }}>
+                        <div style={{ display: 'flex', gap: 16, marginTop: 16, alignItems: 'center', marginLeft: 4 }}>
                           <button
                             className="media-btn"
                             onClick={() => {
@@ -2679,13 +2684,13 @@ export default function Island() {
                         flexDirection: "column",
                         alignItems: "stretch",
                         justifyContent: "flex-start",
-                        padding: "10px",
+                        padding: "16px 24px 24px",
                         boxSizing: "border-box"
                       }}
                     >
                       <textarea
                         id="userinput"
-                        placeholder="Ask Anything"
+                        placeholder="Ask"
                         value={userText}
                         onChange={(e) => setUserText(e.target.value)}
                         onKeyDown={(e) => {
@@ -2771,7 +2776,7 @@ export default function Island() {
                                         navigator.clipboard.writeText(codeContent);
                                         const btn = e.currentTarget;
                                         const originalText = btn.innerText;
-                                        btn.innerText = "Copied!";
+                                        btn.innerText = "Copied";
                                         btn.style.backgroundColor = 'rgba(52, 199, 89, 0.4)';
                                         setTimeout(() => {
                                           btn.innerText = originalText;
@@ -2785,14 +2790,14 @@ export default function Island() {
                                         zIndex: 10,
                                         backgroundColor: 'rgba(255, 255, 255, 0.15)',
                                         border: 'none',
-                                        borderRadius: '5px',
+                                        borderRadius: '6px',
                                         color: textColor,
-                                        fontSize: '10px',
-                                        padding: '3px 7px',
+                                        fontSize: '11px',
+                                        padding: '4px 8px',
                                         cursor: 'pointer',
                                         backdropFilter: 'blur(4px)',
-                                        fontWeight: 600,
-                                        transition: 'all 0.2s ease'
+                                        fontWeight: 500,
+                                        transition: 'opacity 0.16s ease'
                                       }}
                                     >
                                       Copy
@@ -2834,7 +2839,7 @@ export default function Island() {
                         style={{
                           position: "absolute",
                           bottom: 15,
-                          right: 15,
+                          right: 16,
                           backgroundColor: textColor,
                           color: bgColor,
                           fontFamily: theme === "win95" ? "w95" : "OpenRunde",
@@ -2866,7 +2871,7 @@ export default function Island() {
                           copyToClipboard(item);
                           const btn = e.currentTarget;
                           const originalText = btn.innerText;
-                          btn.innerText = "Copied!";
+                          btn.innerText = "Copied";
                           btn.style.backgroundColor = 'rgba(52, 199, 89, 0.4)';
                           setTimeout(() => {
                             btn.innerText = originalText;
@@ -2875,19 +2880,19 @@ export default function Island() {
                         }}
                         style={{
                           position: 'absolute',
-                          top: '10px',
-                          right: '10px',
+                          top: '8px',
+                          right: '8px',
                           zIndex: 10,
                           backgroundColor: 'rgba(255, 255, 255, 0.15)',
                           border: 'none',
-                          borderRadius: '5px',
+                          borderRadius: '6px',
                           color: textColor,
-                          fontSize: '10px',
-                          padding: '3px 7px',
+                          fontSize: '11px',
+                          padding: '4px 8px',
                           cursor: 'pointer',
                           backdropFilter: 'blur(4px)',
-                          fontWeight: 600,
-                          transition: 'all 0.2s ease'
+                          fontWeight: 500,
+                          transition: 'opacity 0.16s ease'
                         }}
                       >
                         Copy
@@ -2910,7 +2915,7 @@ export default function Island() {
                         exit={{ opacity: 0 }}
                         style={{ textAlign: 'center', marginTop: 30 }}
                       >
-                        No tasks yet. Add one below!
+                        No tasks yet
                       </motion.p>
                     ) : (
                       tasks.map((task, index) => (
@@ -2980,7 +2985,7 @@ export default function Island() {
             {currentTab === 8 && (
               <div id="tasks-container" style={{ animation: 'none', gap: 8 }}>
                 {t3Devices.length === 0 ? (
-                  <p style={{ textAlign: 'center', marginTop: 30, opacity: 0.5 }}>Add a T3 Code device in Settings.</p>
+                  <p style={{ textAlign: 'center', marginTop: 30, opacity: 0.5 }}>Add a T3 Code device in Settings</p>
                 ) : (
                   <>
                     <div style={{ display: 'flex', gap: 8 }}>
