@@ -1,5 +1,4 @@
 import { useState, useEffect, useRef } from "react";
-import { Groq } from "groq-sdk";
 import { motion, AnimatePresence } from "framer-motion";
 import ReactMarkdown from "react-markdown";
 import { Camera, Mic, SkipBackIcon, Play, Pause, SkipForwardIcon, Music, Headphones, Zap, Settings, Sun, Cloud, Droplets, Trash2, ChevronRight, ChevronLeft, Plus, Check, X, CloudRain, CloudSnow, CloudLightning, CloudSun, Moon, Eye, EyeOff, GripVertical, List, Search, Star, Terminal } from "lucide-react";
@@ -116,6 +115,19 @@ const TABS = [
 ];
 
 const isSettingsWindow = window.location.hash === "#settings";
+
+// Runs fn now and every ms after, never overlapping with itself (a slow OS call must not pile up).
+function poll(fn, ms) {
+  let busy = false;
+  const tick = async () => {
+    if (busy) return;
+    busy = true;
+    try { await fn(); } finally { busy = false; }
+  };
+  tick();
+  const id = setInterval(tick, ms);
+  return () => clearInterval(id);
+}
 
 export default function Island() {
   const islandElementRef = useRef(null);
@@ -461,10 +473,6 @@ export default function Island() {
     }
     window.electronAPI?.setNotchMode?.(notchModeEnabled);
 
-    if (window.electronAPI?.updateWindowPosition) {
-      window.electronAPI.updateWindowPosition(islandX, islandY);
-    }
-
     if (window.electronAPI?.setAutoLaunch) {
       window.electronAPI.setAutoLaunch(autoLaunchEnabled);
     }
@@ -610,13 +618,11 @@ export default function Island() {
   const handleIslandXChange = (e) => {
     const value = Number(e.target.value);
     setIslandX(value);
-    window.electronAPI?.updateWindowPosition?.(value, islandY);
   };
 
   const handleIslandYChange = (e) => {
     const value = Number(e.target.value);
     setIslandY(value);
-    window.electronAPI?.updateWindowPosition?.(islandX, value);
   };
 
   const savePosition = () => {
@@ -726,13 +732,16 @@ export default function Island() {
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let fullText = "";
+      let buffered = "";
 
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
 
-        const chunk = decoder.decode(value);
-        const lines = chunk.split("\n");
+        // A network chunk can end mid-line or mid-character: keep the tail for the next read.
+        buffered += decoder.decode(value, { stream: true });
+        const lines = buffered.split("\n");
+        buffered = lines.pop();
 
         for (const line of lines) {
           if (line.startsWith("data: ")) {
@@ -825,17 +834,18 @@ export default function Island() {
 
 
   // Get time
-  useEffect((date = new Date()) => {
-    let hours = date.getHours();
-    const minutes = String(date.getMinutes()).padStart(2, "0");
-    if (hourFormat) {
-      hours = hours % 12;
-      hours = hours ? hours : 12;
+  useEffect(() => {
+    const tick = () => {
+      const date = new Date();
+      let hours = date.getHours();
+      const minutes = String(date.getMinutes()).padStart(2, "0");
+      if (hourFormat) hours = hours % 12 || 12;
       setTime(`${hours}:${minutes}`);
-    } else {
-      setTime(`${hours}:${minutes}`);
-    }
-  });
+    };
+    tick();
+    const id = setInterval(tick, 1000);
+    return () => clearInterval(id);
+  }, [hourFormat]);
 
   //Standby Mode 
   useEffect(() => {
@@ -848,12 +858,11 @@ export default function Island() {
 
   // Get Weather
   useEffect(() => {
+    if (isSettingsWindow) return;
     const getWeather = async () => {
       try {
         const response = await fetch(
-          `https://api.weatherapi.com/v1/current.json?key=0b18c67c443543e0a6045401250911&q=${localStorage.getItem(
-            "location"
-          )}&aqi=no`
+          `https://api.weatherapi.com/v1/current.json?key=0b18c67c443543e0a6045401250911&q=${encodeURIComponent(localStorage.getItem("location") || "")}&aqi=no`
         );
         const data = await response.json();
         const unit = localStorage.getItem("weather-unit");
@@ -921,26 +930,21 @@ export default function Island() {
   async function getClipboard() {
     try {
       const text = await navigator.clipboard.readText();
-      setClipboard((prevClipboard) => {
-        if (prevClipboard[0] === text) {
-          return prevClipboard;
-        }
-        return [text, ...prevClipboard];
-      });
-    } catch (error) {
-      console.log(
-        `Error reading clipboard: ${error.toString()}`,
-      );
+      setClipboard((prev) => (!text || prev[0] === text ? prev : [text, ...prev.filter((t) => t !== text)].slice(0, 50)));
+    } catch {
+      // Unreadable while the window is unfocused; try again on the next tick.
     }
   }
 
   useEffect(() => {
-    getClipboard();
-  })
+    if (isSettingsWindow) return;
+    return poll(getClipboard, 2000);
+  }, []);
 
   // Get Bluetooth
   useEffect(() => {
-    const fetchBluetooth = async () => {
+    if (isSettingsWindow) return;
+    return poll(async () => {
       if (window.electronAPI?.getBluetoothStatus) {
         try {
           const isConnected = await window.electronAPI.getBluetoothStatus();
@@ -949,11 +953,7 @@ export default function Island() {
           console.error(e);
         }
       }
-    };
-
-    fetchBluetooth();
-    const interval = setInterval(fetchBluetooth, 5000); // Check every 5 seconds
-    return () => clearInterval(interval);
+    }, 10000);
   }, []);
 
   useEffect(() => {
@@ -972,7 +972,8 @@ export default function Island() {
 
   // Get Camera Status
   useEffect(() => {
-    const fetchCamera = async () => {
+    if (isSettingsWindow) return;
+    return poll(async () => {
       if (window.electronAPI?.getCameraStatus) {
         try {
           const inUse = await window.electronAPI.getCameraStatus();
@@ -981,16 +982,13 @@ export default function Island() {
           console.error(e);
         }
       }
-    };
-
-    fetchCamera();
-    const interval = setInterval(fetchCamera, 3000); // Check every 3 seconds
-    return () => clearInterval(interval);
+    }, 3000);
   }, []);
 
   // Get Microphone Status
   useEffect(() => {
-    const fetchMicrophone = async () => {
+    if (isSettingsWindow) return;
+    return poll(async () => {
       if (window.electronAPI?.getMicrophoneStatus) {
         try {
           const inUse = await window.electronAPI.getMicrophoneStatus();
@@ -999,11 +997,7 @@ export default function Island() {
           console.error(e);
         }
       }
-    };
-
-    fetchMicrophone();
-    const interval = setInterval(fetchMicrophone, 3000); // Check every 3 seconds
-    return () => clearInterval(interval);
+    }, 3000);
   }, []);
 
   useEffect(() => {
@@ -1071,7 +1065,8 @@ export default function Island() {
 
   // Now Playing
   useEffect(() => {
-    const fetchMedia = async () => {
+    if (isSettingsWindow) return;
+    return poll(async () => {
       if (window.electronAPI?.getSystemMedia) {
         try {
           const track = await window.electronAPI.getSystemMedia();
@@ -1080,11 +1075,7 @@ export default function Island() {
           console.error(e);
         }
       }
-    };
-
-    fetchMedia();
-    const interval = setInterval(fetchMedia, 2000);
-    return () => clearInterval(interval);
+    }, 2000);
   }, []);
 
   useEffect(() => localStorage.setItem("tasks", JSON.stringify(tasks)), [tasks]);
@@ -1187,8 +1178,12 @@ export default function Island() {
   }
 
   // Keyboard Shortcuts and Navigation
+  // The listener below is registered once; it reads the latest tabs through this ref.
+  const navRef = useRef();
+  navRef.current = { visibleTabs, currentTabId, moveTab };
   useEffect(() => {
     const handleKeyDown = (e) => {
+      const { visibleTabs, currentTabId, moveTab } = navRef.current;
       if (e.key === "ArrowRight") {
         moveTab(1);
       } else if (e.key === "ArrowLeft") {
