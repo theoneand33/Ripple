@@ -289,6 +289,12 @@ impl Store {
         f(&mut inner.cfg);
         let Inner { cfg, prefs } = &mut *inner;
         if let Err(e) = prefs.set("settings", cfg) { eprintln!("Ripple: {e}") }
+        // The file holds the AI key and T3 tokens: the folder is the user's alone, as Electron's was.
+        #[cfg(unix)]
+        if let Some(dir) = prefs.path().and_then(|p| p.parent()) {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
+        }
     }
 
     /// Where Rune keeps this app's files, for the T3 token cache and the app cache.
@@ -328,6 +334,18 @@ mod tests {
         assert_eq!(cfg.visible_tabs(), [8]);
         cfg.toggle_tab(0);
         assert_eq!(cfg.visible_tabs(), [0, 8]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_settings_folder_is_readable_by_its_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("ripple-prefs-{}", std::process::id()));
+        let store = Store(Arc::new(Mutex::new(Inner { cfg: Config::default(), prefs: Prefs::at(dir.join("prefs.json")) })));
+        store.update(|c| c.api_key = "secret".into());
+        let mode = std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(mode, 0o700);
     }
 
     #[test]
