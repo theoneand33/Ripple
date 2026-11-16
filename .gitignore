@@ -24,3 +24,6 @@ native/mac-notch/prebuilds/
 *.njsproj
 *.sln
 *.sw?
+
+# Build output
+.vite

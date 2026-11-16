@@ -1,5 +1,4 @@
 import { useState, useEffect, useRef } from "react";
-import { Groq } from "groq-sdk";
 import { motion, AnimatePresence } from "framer-motion";
 import ReactMarkdown from "react-markdown";
 import { Camera, Mic, SkipBackIcon, Play, Pause, SkipForwardIcon, Music, Headphones, Zap, Settings, Sun, Cloud, Droplets, Trash2, ChevronRight, ChevronLeft, Plus, Check, X, CloudRain, CloudSnow, CloudLightning, CloudSun, Moon, Eye, EyeOff, GripVertical, List, Search, Star, Terminal } from "lucide-react";
@@ -108,7 +107,6 @@ const TABS = [
   { id: 0, name: "Browser Search", icon: (color) => <Search size={16} color={color} /> },
   { id: 1, name: "Workflows & QA", icon: (color) => <Zap size={16} color={color} /> },
   { id: 2, name: "Overview", icon: (color) => <Sun size={16} color={color} /> },
-  { id: 3, name: "Now Playing", icon: (color) => <Music size={16} color={color} /> },
   { id: 4, name: "AI Assistant", icon: (color) => <Mic size={16} color={color} /> },
   { id: 5, name: "Clipboard", icon: (color) => <List size={16} color={color} /> },
   { id: 6, name: "Tasks", icon: (color) => <Check size={16} color={color} /> },
@@ -120,17 +118,30 @@ const STATUS = { charge: '#4cc38a', low: '#e5484d', camera: '#e8b931', mic: '#f0
 
 const isSettingsWindow = window.location.hash === "#settings";
 
+// Runs fn now and every ms after, never overlapping with itself (a slow OS call must not pile up).
+function poll(fn, ms) {
+  let busy = false;
+  const tick = async () => {
+    if (busy) return;
+    busy = true;
+    try { await fn(); } finally { busy = false; }
+  };
+  tick();
+  const id = setInterval(tick, ms);
+  return () => clearInterval(id);
+}
+
 export default function Island() {
   const islandElementRef = useRef(null);
   const lastWindowShapeRef = useRef(null);
   const [time, setTime] = useState(null);
   const [mode, setMode] = useState("still");
   const [tabOrder, setTabOrder] = useState(() => {
-    const saved = JSON.parse(localStorage.getItem("tab-order") || "[]").filter(id => id !== 7); // 7 was the old Settings tab
+    const saved = JSON.parse(localStorage.getItem("tab-order") || "[]").filter(id => id !== 7 && id !== 3); // 7 was Settings, 3 was Now Playing (now in Overview)
     // Append tabs added after the order was saved.
     return [...saved, ...TABS.map(t => t.id).filter(id => !saved.includes(id))];
   });
-  const [hiddenTabs, setHiddenTabs] = useState(() => JSON.parse(localStorage.getItem("hidden-tabs") || "[]").filter(id => id !== 7));
+  const [hiddenTabs, setHiddenTabs] = useState(() => JSON.parse(localStorage.getItem("hidden-tabs") || "[]").filter(id => id !== 7 && id !== 3));
   const [defaultTabId, setDefaultTabId] = useState(() => Number(localStorage.getItem("default-tab") || 0));
 
 
@@ -220,12 +231,7 @@ export default function Island() {
   const [albumRotation, setAlbumRotation] = useState({ x: 0, y: 0 });
 
   // Tab calculations
-  const isMusicActive = !!spotifyTrack;
-  const visibleTabs = tabOrder.filter(id => {
-    if (hiddenTabs.includes(id)) return false;
-    if (id === 3 && !isMusicActive) return false;
-    return true;
-  });
+  const visibleTabs = tabOrder.filter(id => !hiddenTabs.includes(id));
 
   const [[currentTabId, direction], setTabState] = useState(() => {
     const id = visibleTabs.includes(defaultTabId) ? defaultTabId : (visibleTabs[0] ?? 0);
@@ -421,7 +427,7 @@ export default function Island() {
     )
   );
   let width = mode === "large"
-    ? (currentTab === 1 ? 480 : currentTab === 3 ? 330 : currentTab === 0 ? 405 : 380)
+    ? (currentTab === 1 ? 480 : currentTab === 0 ? 405 : 380)
     : (mode === "quick" && isPlaying && !alert && !chargingAlert && !bluetoothAlert && !cameraAlert && !microphoneAlert)
       ? nowPlayingWidth
       : (alert || chargingAlert || bluetoothAlert || cameraAlert || microphoneAlert)
@@ -438,7 +444,7 @@ export default function Island() {
   const quickTextFadeWidth = notchModeEnabled ? 5 : 15;
   const notchContentInset = notchModeEnabled ? 34 : 0;
   let height = mode === "large"
-    ? (currentTab === 6 || currentTab === 8 ? 250 : currentTab === 3 ? 150 : currentTab === 0 ? 120 : currentTab === 1 ? 210 : 190) + notchContentInset
+    ? (currentTab === 6 || currentTab === 8 ? 250 : currentTab === 0 ? 120 : currentTab === 1 ? 210 : 190) + notchContentInset
     : notchModeEnabled ? 34 : 40;
 
   const normalizeApps = (arr) => arr.map(a => typeof a === 'string' ? { name: a, launch: a } : a);
@@ -463,10 +469,6 @@ export default function Island() {
       window.electronAPI.setDisplay(savedDisplayId);
     }
     window.electronAPI?.setNotchMode?.(notchModeEnabled);
-
-    if (window.electronAPI?.updateWindowPosition) {
-      window.electronAPI.updateWindowPosition(islandX, islandY);
-    }
 
     if (window.electronAPI?.setAutoLaunch) {
       window.electronAPI.setAutoLaunch(autoLaunchEnabled);
@@ -613,13 +615,11 @@ export default function Island() {
   const handleIslandXChange = (e) => {
     const value = Number(e.target.value);
     setIslandX(value);
-    window.electronAPI?.updateWindowPosition?.(value, islandY);
   };
 
   const handleIslandYChange = (e) => {
     const value = Number(e.target.value);
     setIslandY(value);
-    window.electronAPI?.updateWindowPosition?.(islandX, value);
   };
 
   const savePosition = () => {
@@ -729,13 +729,16 @@ export default function Island() {
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let fullText = "";
+      let buffered = "";
 
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
 
-        const chunk = decoder.decode(value);
-        const lines = chunk.split("\n");
+        // A network chunk can end mid-line or mid-character: keep the tail for the next read.
+        buffered += decoder.decode(value, { stream: true });
+        const lines = buffered.split("\n");
+        buffered = lines.pop();
 
         for (const line of lines) {
           if (line.startsWith("data: ")) {
@@ -828,17 +831,18 @@ export default function Island() {
 
 
   // Get time
-  useEffect((date = new Date()) => {
-    let hours = date.getHours();
-    const minutes = String(date.getMinutes()).padStart(2, "0");
-    if (hourFormat) {
-      hours = hours % 12;
-      hours = hours ? hours : 12;
+  useEffect(() => {
+    const tick = () => {
+      const date = new Date();
+      let hours = date.getHours();
+      const minutes = String(date.getMinutes()).padStart(2, "0");
+      if (hourFormat) hours = hours % 12 || 12;
       setTime(`${hours}:${minutes}`);
-    } else {
-      setTime(`${hours}:${minutes}`);
-    }
-  });
+    };
+    tick();
+    const id = setInterval(tick, 1000);
+    return () => clearInterval(id);
+  }, [hourFormat]);
 
   //Standby Mode 
   useEffect(() => {
@@ -851,12 +855,11 @@ export default function Island() {
 
   // Get Weather
   useEffect(() => {
+    if (isSettingsWindow) return;
     const getWeather = async () => {
       try {
         const response = await fetch(
-          `https://api.weatherapi.com/v1/current.json?key=0b18c67c443543e0a6045401250911&q=${localStorage.getItem(
-            "location"
-          )}&aqi=no`
+          `https://api.weatherapi.com/v1/current.json?key=0b18c67c443543e0a6045401250911&q=${encodeURIComponent(localStorage.getItem("location") || "")}&aqi=no`
         );
         const data = await response.json();
         const unit = localStorage.getItem("weather-unit");
@@ -924,26 +927,21 @@ export default function Island() {
   async function getClipboard() {
     try {
       const text = await navigator.clipboard.readText();
-      setClipboard((prevClipboard) => {
-        if (prevClipboard[0] === text) {
-          return prevClipboard;
-        }
-        return [text, ...prevClipboard];
-      });
-    } catch (error) {
-      console.log(
-        `Error reading clipboard: ${error.toString()}`,
-      );
+      setClipboard((prev) => (!text || prev[0] === text ? prev : [text, ...prev.filter((t) => t !== text)].slice(0, 50)));
+    } catch {
+      // Unreadable while the window is unfocused; try again on the next tick.
     }
   }
 
   useEffect(() => {
-    getClipboard();
-  })
+    if (isSettingsWindow) return;
+    return poll(getClipboard, 2000);
+  }, []);
 
   // Get Bluetooth
   useEffect(() => {
-    const fetchBluetooth = async () => {
+    if (isSettingsWindow) return;
+    return poll(async () => {
       if (window.electronAPI?.getBluetoothStatus) {
         try {
           const isConnected = await window.electronAPI.getBluetoothStatus();
@@ -952,11 +950,7 @@ export default function Island() {
           console.error(e);
         }
       }
-    };
-
-    fetchBluetooth();
-    const interval = setInterval(fetchBluetooth, 5000); // Check every 5 seconds
-    return () => clearInterval(interval);
+    }, 10000);
   }, []);
 
   useEffect(() => {
@@ -975,7 +969,8 @@ export default function Island() {
 
   // Get Camera Status
   useEffect(() => {
-    const fetchCamera = async () => {
+    if (isSettingsWindow) return;
+    return poll(async () => {
       if (window.electronAPI?.getCameraStatus) {
         try {
           const inUse = await window.electronAPI.getCameraStatus();
@@ -984,16 +979,13 @@ export default function Island() {
           console.error(e);
         }
       }
-    };
-
-    fetchCamera();
-    const interval = setInterval(fetchCamera, 3000); // Check every 3 seconds
-    return () => clearInterval(interval);
+    }, 3000);
   }, []);
 
   // Get Microphone Status
   useEffect(() => {
-    const fetchMicrophone = async () => {
+    if (isSettingsWindow) return;
+    return poll(async () => {
       if (window.electronAPI?.getMicrophoneStatus) {
         try {
           const inUse = await window.electronAPI.getMicrophoneStatus();
@@ -1002,11 +994,7 @@ export default function Island() {
           console.error(e);
         }
       }
-    };
-
-    fetchMicrophone();
-    const interval = setInterval(fetchMicrophone, 3000); // Check every 3 seconds
-    return () => clearInterval(interval);
+    }, 3000);
   }, []);
 
   useEffect(() => {
@@ -1074,7 +1062,8 @@ export default function Island() {
 
   // Now Playing
   useEffect(() => {
-    const fetchMedia = async () => {
+    if (isSettingsWindow) return;
+    return poll(async () => {
       if (window.electronAPI?.getSystemMedia) {
         try {
           const track = await window.electronAPI.getSystemMedia();
@@ -1083,11 +1072,7 @@ export default function Island() {
           console.error(e);
         }
       }
-    };
-
-    fetchMedia();
-    const interval = setInterval(fetchMedia, 2000);
-    return () => clearInterval(interval);
+    }, 2000);
   }, []);
 
   useEffect(() => localStorage.setItem("tasks", JSON.stringify(tasks)), [tasks]);
@@ -1190,8 +1175,12 @@ export default function Island() {
   }
 
   // Keyboard Shortcuts and Navigation
+  // The listener below is registered once; it reads the latest tabs through this ref.
+  const navRef = useRef();
+  navRef.current = { visibleTabs, currentTabId, moveTab };
   useEffect(() => {
     const handleKeyDown = (e) => {
+      const { visibleTabs, currentTabId, moveTab } = navRef.current;
       if (e.key === "ArrowRight") {
         moveTab(1);
       } else if (e.key === "ArrowLeft") {
@@ -2031,7 +2020,7 @@ export default function Island() {
         backgroundRepeat: "no-repeat",
         backgroundPosition: "center",
         backgroundSize: "cover",
-        justifyContent: (mode === "large" && currentTab === 3) ? "flex-start" : "center",
+        justifyContent: "center",
         overflow: "hidden",
         // iOS-style continuous corners when expanded; compact stays a true capsule
         cornerShape: mode === "large" && theme !== "win95" ? "squircle" : "round",
@@ -2453,217 +2442,197 @@ export default function Island() {
                   title="Settings"
                   aria-label="Open settings"
                   onClick={() => window.electronAPI?.openSettings?.()}
-                  style={{ position: 'absolute', left: 18, bottom: 16, color: textColor, opacity: 0.6 }}
+                  style={{ position: 'absolute', [spotifyTrack ? 'right' : 'left']: 18, bottom: 16, color: textColor, opacity: 0.6 }}
                 >
                   <Settings size={16} />
                 </button>
-                <div id="date">
-                  <h1 className="text" style={{ fontSize: 52, fontWeight: 600, fontVariantNumeric: 'tabular-nums', animation: 'none' }}>
+                {spotifyTrack ? (
+                  <>
+                  <h1 className="text" style={{ fontSize: 15, top: 14, left: '50%', transform: 'translateX(-50%)', position: 'absolute', animation: 'none' }}>
                     {time}
                   </h1>
-                  <h2 className="text" style={{ fontSize: 15, fontWeight: 500, opacity: 0.6, animation: 'none' }}>
-                    {formatDateShort()}
-                  </h2>
-                </div>
-              </>
-            )}
-
-            {/* Now Playing*/}
-            {currentTab === 3 && (
-              <div style={{
-                display: 'flex',
-                alignItems: 'center',
-                width: '100%',
-                height: '100%',
-                userSelect: 'none'
-              }}>
-                <AnimatePresence mode="wait">
-                  {spotifyTrack ? (
-                    <motion.div
-                      key={spotifyTrack.name + spotifyTrack.artist}
-                      initial={{ opacity: 0, filter: 'blur(10px)', scale: 0.95 }}
-                      animate={{ opacity: 1, filter: 'blur(0px)', scale: 1 }}
-                      exit={{ opacity: 0, filter: 'blur(10px)', scale: 0.95 }}
-                      transition={{ duration: 0.2, ease: [0.4, 0, 0.2, 1] }}
-                      style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'flex-start',
-                        width: '100%',
-                        height: '100%',
-                        gap: '8px',
-                        paddingLeft: '17px',
-                        opacity: spotifyTrack.state === 'playing' ? 1 : 0.5,
-                        filter: spotifyTrack.state === 'playing' ? 'none' : 'grayscale(1)',
-                        transition: 'opacity 0.3s ease, filter 0.3s ease'
-                      }}
-                    >
-                      {spotifyTrack.artwork_url ? (
-                        <img
-                          ref={albumRef}
-                          src={spotifyTrack.artwork_url}
-                          onClick={() => openMusicPlayer(spotifyTrack.source)}
-                          onMouseEnter={() => setAlbumHovered(true)}
-                          onMouseLeave={() => {
-                            setAlbumHovered(false);
-                            setAlbumRotation({ x: 0, y: 0 });
-                          }}
-                          onMouseMove={(e) => {
-                            if (albumRef.current) {
-                              const rect = albumRef.current.getBoundingClientRect();
-                              const centerX = rect.left + rect.width / 2;
-                              const centerY = rect.top + rect.height / 2;
-                              const deltaX = e.clientX - centerX;
-                              const deltaY = e.clientY - centerY;
-                              const maxDistance = Math.sqrt(rect.width * rect.width + rect.height * rect.height) / 2;
-                              const angleX = (deltaY / maxDistance) * 15;
-                              const angleY = (deltaX / maxDistance) * -15;
-                              setAlbumRotation({ x: angleX, y: angleY });
-                            }
-                          }}
+                  <div style={{ display: 'flex', alignItems: 'center', width: '100%', height: '100%', paddingTop: 36, boxSizing: 'border-box', userSelect: 'none' }}>
+                    <AnimatePresence mode="wait">
+                        <motion.div
+                          key={spotifyTrack.name + spotifyTrack.artist}
+                          initial={{ opacity: 0, filter: 'blur(10px)', scale: 0.95 }}
+                          animate={{ opacity: 1, filter: 'blur(0px)', scale: 1 }}
+                          exit={{ opacity: 0, filter: 'blur(10px)', scale: 0.95 }}
+                          transition={{ duration: 0.2, ease: [0.4, 0, 0.2, 1] }}
                           style={{
-                            width: 110, height: 110, minWidth: 110,
-                            flexShrink: 0,
-                            borderRadius: 13, objectFit: 'cover',
-                            boxShadow: albumHovered ? '0 8px 24px rgba(0,0,0,0.35)' : '0 4px 12px rgba(0,0,0,0.2)',
-                            cursor: 'pointer',
-                            transition: 'transform 0.3s ease-out, box-shadow 0.3s ease-out',
-                            transform: `perspective(600px) rotateX(${albumRotation.x}deg) rotateY(${albumRotation.y}deg) scale(${albumHovered ? 1.08 : 1})`,
-                            transformStyle: 'preserve-3d'
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'flex-start',
+                            width: '100%',
+                            height: '100%',
+                            gap: '8px',
+                            paddingLeft: '17px',
+                            opacity: spotifyTrack.state === 'playing' ? 1 : 0.5,
+                            filter: spotifyTrack.state === 'playing' ? 'none' : 'grayscale(1)',
+                            transition: 'opacity 0.3s ease, filter 0.3s ease'
                           }}
-                        />
-                      ) : (
-                        <div style={{
-                          width: 110, height: 110, minWidth: 110,
-                          flexShrink: 0,
-                          borderRadius: 12, background: 'rgba(255,255,255,0.1)',
-                          display: 'flex', alignItems: 'center', justifyContent: 'center',
-                          fontSize: 24
-                        }}>
-                          <Music size={40} color={textColor} />
-                        </div>
-                      )}
+                        >
+                          {spotifyTrack.artwork_url ? (
+                            <img
+                              ref={albumRef}
+                              src={spotifyTrack.artwork_url}
+                              onClick={() => openMusicPlayer(spotifyTrack.source)}
+                              onMouseEnter={() => setAlbumHovered(true)}
+                              onMouseLeave={() => {
+                                setAlbumHovered(false);
+                                setAlbumRotation({ x: 0, y: 0 });
+                              }}
+                              onMouseMove={(e) => {
+                                if (albumRef.current) {
+                                  const rect = albumRef.current.getBoundingClientRect();
+                                  const centerX = rect.left + rect.width / 2;
+                                  const centerY = rect.top + rect.height / 2;
+                                  const deltaX = e.clientX - centerX;
+                                  const deltaY = e.clientY - centerY;
+                                  const maxDistance = Math.sqrt(rect.width * rect.width + rect.height * rect.height) / 2;
+                                  const angleX = (deltaY / maxDistance) * 15;
+                                  const angleY = (deltaX / maxDistance) * -15;
+                                  setAlbumRotation({ x: angleX, y: angleY });
+                                }
+                              }}
+                              style={{
+                                width: 110, height: 110, minWidth: 110,
+                                flexShrink: 0,
+                                borderRadius: 13, objectFit: 'cover',
+                                boxShadow: albumHovered ? '0 8px 24px rgba(0,0,0,0.35)' : '0 4px 12px rgba(0,0,0,0.2)',
+                                cursor: 'pointer',
+                                transition: 'transform 0.3s ease-out, box-shadow 0.3s ease-out',
+                                transform: `perspective(600px) rotateX(${albumRotation.x}deg) rotateY(${albumRotation.y}deg) scale(${albumHovered ? 1.08 : 1})`,
+                                transformStyle: 'preserve-3d'
+                              }}
+                            />
+                          ) : (
+                            <div style={{
+                              width: 110, height: 110, minWidth: 110,
+                              flexShrink: 0,
+                              borderRadius: 12, background: 'rgba(255,255,255,0.1)',
+                              display: 'flex', alignItems: 'center', justifyContent: 'center',
+                              fontSize: 24
+                            }}>
+                              <Music size={40} color={textColor} />
+                            </div>
+                          )}
 
-                      <div style={{
-                        display: 'flex',
-                        flexDirection: 'column',
-                        overflow: 'hidden',
-                        flex: 1,
-                        justifyContent: 'center',
-                        textAlign: 'left',
-                        minWidth: 0,
-                      }}>
-                        <div style={{ 
-                          width: '175px', 
-                          overflow: 'hidden',
-                          WebkitMaskImage: measureTextWidth(spotifyTrack.name, 18) > 175 
-                            ? 'linear-gradient(to right, transparent, black 15px, black 160px, transparent)' 
-                            : 'none',
-                          maskImage: measureTextWidth(spotifyTrack.name, 18) > 175 
-                            ? 'linear-gradient(to right, transparent, black 15px, black 160px, transparent)' 
-                            : 'none'
-                        }}>
-                          <motion.h2
-                            animate={measureTextWidth(spotifyTrack.name, 18) > 175 ? { x: [0, -(measureTextWidth(spotifyTrack.name, 18) + 30)] } : {}}
-                            transition={{ duration: 10, repeat: Infinity, ease: "linear" }}
-                            style={{
-                              margin: '0 0 0 5px',
-                              fontSize: 18,
-                              fontWeight: 600,
-                              whiteSpace: 'nowrap',
-                              display: 'inline-block',
-                              color: textColor,
-                              fontFamily: theme === "win95" ? "w95" : "OpenRunde"
+                          <div style={{
+                            display: 'flex',
+                            flexDirection: 'column',
+                            overflow: 'hidden',
+                            flex: 1,
+                            justifyContent: 'center',
+                            textAlign: 'left',
+                            minWidth: 0,
+                          }}>
+                            <div style={{ 
+                              width: '175px', 
+                              overflow: 'hidden',
+                              WebkitMaskImage: measureTextWidth(spotifyTrack.name, 18) > 175 
+                                ? 'linear-gradient(to right, transparent, black 15px, black 160px, transparent)' 
+                                : 'none',
+                              maskImage: measureTextWidth(spotifyTrack.name, 18) > 175 
+                                ? 'linear-gradient(to right, transparent, black 15px, black 160px, transparent)' 
+                                : 'none'
                             }}>
-                            <span style={{ paddingRight: measureTextWidth(spotifyTrack.name, 18) > 175 ? 30 : 0 }}>{spotifyTrack.name || "Unknown Title"}</span>
-                            {measureTextWidth(spotifyTrack.name, 18) > 175 && (
-                              <span style={{ paddingRight: 30 }}>{spotifyTrack.name || "Unknown Title"}</span>
-                            )}
-                          </motion.h2>
-                        </div>
-                        <div style={{ 
-                          width: '175px', 
-                          overflow: 'hidden',
-                          WebkitMaskImage: measureTextWidth(spotifyTrack.artist, 13) > 175 
-                            ? 'linear-gradient(to right, transparent, black 15px, black 160px, transparent)' 
-                            : 'none',
-                          maskImage: measureTextWidth(spotifyTrack.artist, 13) > 175 
-                            ? 'linear-gradient(to right, transparent, black 15px, black 160px, transparent)' 
-                            : 'none'
-                        }}>
-                          <motion.p
-                            animate={measureTextWidth(spotifyTrack.artist, 13) > 175 ? { x: [0, -(measureTextWidth(spotifyTrack.artist, 13) + 30)] } : {}}
-                            transition={{ duration: 10, repeat: Infinity, ease: "linear" }}
-                            style={{
-                              margin: '4px 0 0 5px',
-                              fontSize: 13,
-                              opacity: 0.8,
-                              whiteSpace: 'nowrap',
-                              display: 'inline-block',
-                              color: textColor,
-                              fontFamily: theme === "win95" ? "w95" : "OpenRunde"
+                              <motion.h2
+                                animate={measureTextWidth(spotifyTrack.name, 18) > 175 ? { x: [0, -(measureTextWidth(spotifyTrack.name, 18) + 30)] } : {}}
+                                transition={{ duration: 10, repeat: Infinity, ease: "linear" }}
+                                style={{
+                                  margin: '0 0 0 5px',
+                                  fontSize: 18,
+                                  fontWeight: 600,
+                                  whiteSpace: 'nowrap',
+                                  display: 'inline-block',
+                                  color: textColor,
+                                  fontFamily: theme === "win95" ? "w95" : "OpenRunde"
+                                }}>
+                                <span style={{ paddingRight: measureTextWidth(spotifyTrack.name, 18) > 175 ? 30 : 0 }}>{spotifyTrack.name || "Unknown Title"}</span>
+                                {measureTextWidth(spotifyTrack.name, 18) > 175 && (
+                                  <span style={{ paddingRight: 30 }}>{spotifyTrack.name || "Unknown Title"}</span>
+                                )}
+                              </motion.h2>
+                            </div>
+                            <div style={{ 
+                              width: '175px', 
+                              overflow: 'hidden',
+                              WebkitMaskImage: measureTextWidth(spotifyTrack.artist, 13) > 175 
+                                ? 'linear-gradient(to right, transparent, black 15px, black 160px, transparent)' 
+                                : 'none',
+                              maskImage: measureTextWidth(spotifyTrack.artist, 13) > 175 
+                                ? 'linear-gradient(to right, transparent, black 15px, black 160px, transparent)' 
+                                : 'none'
                             }}>
-                            <span style={{ paddingRight: measureTextWidth(spotifyTrack.artist, 13) > 175 ? 30 : 0 }}>{spotifyTrack.artist || "Unknown Artist"}</span>
-                            {measureTextWidth(spotifyTrack.artist, 13) > 175 && (
-                              <span style={{ paddingRight: 30 }}>{spotifyTrack.artist || "Unknown Artist"}</span>
-                            )}
-                          </motion.p>
-                        </div>
-                        <div style={{ display: 'flex', gap: 16, marginTop: 16, alignItems: 'center', marginLeft: 4 }}>
-                          <button
-                            className="media-btn"
-                            onClick={() => {
-                              window.electronAPI.controlSystemMedia('previous');
-                            }}
-                            style={{ background: 'none', border: 'none', color: textColor, cursor: 'pointer', padding: 4, opacity: 0.8, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
-                          ><SkipBackIcon size={20} color={textColor} fill={textColor} /></button>
-                          <button
-                            className="media-btn"
-                            onClick={() => {
-                              window.electronAPI.controlSystemMedia('playpause');
-                            }}
-                            style={{
-                              background: 'none',
-                              border: 'none',
-                              color: textColor,
-                              cursor: 'pointer',
-                              padding: 4,
-                              display: 'flex',
-                              alignItems: 'center',
-                              justifyContent: 'center'
-                            }}
-                          >
-                            {spotifyTrack.state === 'playing' ? <Pause size={24} color={textColor} fill={textColor} /> : <Play size={24} color={textColor} fill={textColor} />}
-                          </button>
-                          <button
-                            className="media-btn"
-                            onClick={() => {
-                              window.electronAPI.controlSystemMedia('next');
-                            }}
-                            style={{ background: 'none', border: 'none', color: textColor, cursor: 'pointer', padding: 4, opacity: 0.8, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
-                          ><SkipForwardIcon size={20} color={textColor} fill={textColor} /></button>
-                        </div>
-                      </div>
-                    </motion.div>
-                  ) : (
-                    <motion.div
-                      key="nothing"
-                      initial={{ opacity: 0 }}
-                      animate={{ opacity: 1 }}
-                      exit={{ opacity: 0 }}
-                      style={{
-                        width: '100%',
-                        textAlign: 'center',
-                        color: textColor,
-                        fontFamily: theme === "win95" ? "w95" : "OpenRunde"
-                      }}
-                    >
-                      <h3 style={{ margin: 0, fontSize: 16 }}>Nothing Playing</h3>
-                      <p style={{ margin: '5px 0 0 0', opacity: 0.7, fontSize: 13 }}>Play music on Spotify or Apple Music</p>
-                    </motion.div>
-                  )}
-                </AnimatePresence>
-              </div>
+                              <motion.p
+                                animate={measureTextWidth(spotifyTrack.artist, 13) > 175 ? { x: [0, -(measureTextWidth(spotifyTrack.artist, 13) + 30)] } : {}}
+                                transition={{ duration: 10, repeat: Infinity, ease: "linear" }}
+                                style={{
+                                  margin: '4px 0 0 5px',
+                                  fontSize: 13,
+                                  opacity: 0.8,
+                                  whiteSpace: 'nowrap',
+                                  display: 'inline-block',
+                                  color: textColor,
+                                  fontFamily: theme === "win95" ? "w95" : "OpenRunde"
+                                }}>
+                                <span style={{ paddingRight: measureTextWidth(spotifyTrack.artist, 13) > 175 ? 30 : 0 }}>{spotifyTrack.artist || "Unknown Artist"}</span>
+                                {measureTextWidth(spotifyTrack.artist, 13) > 175 && (
+                                  <span style={{ paddingRight: 30 }}>{spotifyTrack.artist || "Unknown Artist"}</span>
+                                )}
+                              </motion.p>
+                            </div>
+                            <div style={{ display: 'flex', gap: 16, marginTop: 16, alignItems: 'center', marginLeft: 4 }}>
+                              <button
+                                className="media-btn"
+                                onClick={() => {
+                                  window.electronAPI.controlSystemMedia('previous');
+                                }}
+                                style={{ background: 'none', border: 'none', color: textColor, cursor: 'pointer', padding: 4, opacity: 0.8, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                              ><SkipBackIcon size={20} color={textColor} fill={textColor} /></button>
+                              <button
+                                className="media-btn"
+                                onClick={() => {
+                                  window.electronAPI.controlSystemMedia('playpause');
+                                }}
+                                style={{
+                                  background: 'none',
+                                  border: 'none',
+                                  color: textColor,
+                                  cursor: 'pointer',
+                                  padding: 4,
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  justifyContent: 'center'
+                                }}
+                              >
+                                {spotifyTrack.state === 'playing' ? <Pause size={24} color={textColor} fill={textColor} /> : <Play size={24} color={textColor} fill={textColor} />}
+                              </button>
+                              <button
+                                className="media-btn"
+                                onClick={() => {
+                                  window.electronAPI.controlSystemMedia('next');
+                                }}
+                                style={{ background: 'none', border: 'none', color: textColor, cursor: 'pointer', padding: 4, opacity: 0.8, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                              ><SkipForwardIcon size={20} color={textColor} fill={textColor} /></button>
+                            </div>
+                          </div>
+                        </motion.div>
+                    </AnimatePresence>
+                  </div>
+                  </>
+                ) : (
+                  <div id="date">
+                    <h1 className="text" style={{ fontSize: 52, fontWeight: 600, fontVariantNumeric: 'tabular-nums', animation: 'none' }}>
+                      {time}
+                    </h1>
+                    <h2 className="text" style={{ fontSize: 15, fontWeight: 500, opacity: 0.6, animation: 'none' }}>
+                      {formatDateShort()}
+                    </h2>
+                  </div>
+                )}
+              </>
             )}
 
             {/* AI tab container */}
