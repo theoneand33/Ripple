@@ -30,3 +30,4 @@ native/mac-notch/prebuilds/
 
 # Rust build output
 /target
+!tests/fixtures/**/*.log

@@ -19,6 +19,8 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     strategy:
+      # One OS failing shouldn't hide whether the others pass.
+      fail-fast: false
       matrix:
         include:
           - name: macOS (x64)
