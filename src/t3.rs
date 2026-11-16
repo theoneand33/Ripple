@@ -226,15 +226,18 @@ impl Client {
         let Some(file) = &self.file else { return };
         let Ok(json) = serde_json::to_string(tokens) else { return };
         if let Some(dir) = file.parent() { let _ = std::fs::create_dir_all(dir); }
+        // Written beside the cache and renamed over it, so a crash never leaves half a file.
+        let tmp = file.with_extension("json.tmp");
         #[cfg(unix)]
         let written = {
             use std::io::Write;
             use std::os::unix::fs::OpenOptionsExt;
             // Bearer tokens: readable by the user only.
-            std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(file).and_then(|mut f| f.write_all(json.as_bytes()))
+            std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&tmp).and_then(|mut f| f.write_all(json.as_bytes()))
         };
         #[cfg(not(unix))]
-        let written = std::fs::write(file, json);
+        let written = std::fs::write(&tmp, json);
+        let written = written.and_then(|_| std::fs::rename(&tmp, file));
         if let Err(e) = written { eprintln!("Ripple: could not save T3 tokens: {e}") }
     }
 
@@ -275,7 +278,8 @@ impl Client {
             .iter().map(|(k, v)| format!("{k}={}", percent_encode(v))).collect::<Vec<_>>().join("&");
         let token = request("POST", &format!("{origin}/oauth/mcp/token"), &[("content-type", "application/x-www-form-urlencoded")], Some(&form))?;
         let access = token["access_token"].as_str().ok_or("T3 gave no MCP token")?.to_string();
-        let expires_in = token["expires_in"].as_f64().unwrap_or(0.0);
+        // T3's tokens last 30 days; assume that when the answer doesn't say.
+        let expires_in = token["expires_in"].as_f64().unwrap_or(30.0 * 86_400.0);
         // Renew a day early (or at half-life for short tokens) so a call never races the expiry.
         let lifetime = (expires_in / 2.0).max(expires_in - 86_400.0).max(0.0);
         let mut tokens = self.tokens.lock().unwrap();

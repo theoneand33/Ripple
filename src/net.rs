@@ -118,6 +118,9 @@ pub fn fetch_image(url: &str) -> Option<Vec<u8>> {
     }
     if let Some(path) = url.strip_prefix("file://") {
         let path = percent_decode(path);
+        // file:///C:/a.png names C:/a.png on Windows.
+        #[cfg(windows)]
+        let path = match path.strip_prefix('/') { Some(p) if p.get(1..2) == Some(":") => p.to_string(), _ => path };
         return (std::fs::metadata(&path).ok()?.len() <= LIMIT).then(|| std::fs::read(&path).ok()).flatten();
     }
     if !(url.starts_with("http://") || url.starts_with("https://")) { return None }

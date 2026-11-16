@@ -136,6 +136,8 @@ pub struct T3State {
     pub open: Option<&'static str>,
     /// Bumped on every load, so an answer for an earlier device or environment is dropped.
     pub generation: u64,
+    /// A thread launch is in flight.
+    pub starting: bool,
 }
 
 pub struct Island {
@@ -803,12 +805,13 @@ impl Island {
     }
 
     pub fn t3_can_start(&self) -> bool {
-        self.t3_project().is_some() && self.t3_model().is_some() && !self.t3.message.text.trim().is_empty()
+        !self.t3.starting && self.t3_project().is_some() && self.t3_model().is_some() && !self.t3.message.text.trim().is_empty()
     }
 
     pub fn t3_start(&mut self) {
         let (Some((_, device)), Some(project), Some(model), Some(me)) = (self.t3_device(), self.t3_project(), self.t3_model(), self.me.clone()) else { return };
-        if self.t3.message.text.trim().is_empty() { return }
+        // One launch at a time: a second Ctrl+Return or click while starting does nothing.
+        if self.t3.message.text.trim().is_empty() || self.t3.starting { return }
         let launch = t3::Launch {
             environment_id: self.t3_env().to_string(),
             project_id: project.id.clone(),
@@ -820,15 +823,16 @@ impl Island {
         };
         let (device, client, title) = (device.clone(), self.t3_client.clone(), project.title.clone());
         self.t3.status = "Starting...".into();
+        self.t3.starting = true;
         std::thread::spawn(move || {
             let result = client.start_thread(&device, &launch);
-            me.update(move |s, _| match result {
+            me.update(move |s, _| { s.t3.starting = false; match result {
                 Ok(_) => {
                     s.t3.message.clear();
                     s.t3.status = format!("Thread started in {title}");
                 }
                 Err(e) => s.t3.status = e,
-            });
+            } });
         });
     }
 }

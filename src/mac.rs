@@ -4,6 +4,7 @@
 
 use std::ffi::{CString, c_void};
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use objc2::encode::{Encode, Encoding};
 use objc2::rc::Retained;
@@ -93,12 +94,12 @@ pub fn tray(icon_png: &[u8], on_pick: impl Fn(&str) + Send + Sync + 'static) {
 
 // --- No frame constraint for the Island ---
 
-/// The Island's NSWindow; AppKit's frame constraint is skipped for it alone.
-static ISLAND_WINDOW: OnceLock<usize> = OnceLock::new();
+/// The Island's current NSWindow (retained); AppKit's frame constraint is skipped for it alone.
+static ISLAND_WINDOW: AtomicUsize = AtomicUsize::new(0);
 static ORIGINAL: OnceLock<usize> = OnceLock::new();
 
 unsafe extern "C-unwind" fn constrain(this: *mut AnyObject, sel: Sel, frame: Rect, screen: *mut AnyObject) -> Rect {
-    if ISLAND_WINDOW.get() == Some(&(this as usize)) { return frame }
+    if ISLAND_WINDOW.load(Ordering::Acquire) == this as usize { return frame }
     let original: unsafe extern "C-unwind" fn(*mut AnyObject, Sel, Rect, *mut AnyObject) -> Rect =
         // SAFETY: ORIGINAL holds the replaced implementation of this same method.
         unsafe { std::mem::transmute(*ORIGINAL.get().unwrap_or(&0)) };
@@ -109,16 +110,21 @@ unsafe extern "C-unwind" fn constrain(this: *mut AnyObject, sel: Sel, frame: Rec
 /// Lets the Island's window sit exactly where it's placed, over the menu bar in Notch Mode, as
 /// the Electron app's native helper did. Call it on the main thread with the window's NSView.
 pub fn unconstrain(ns_view: *mut c_void) {
-    if ns_view.is_null() || ISLAND_WINDOW.get().is_some() { return }
+    if ns_view.is_null() { return }
     // SAFETY: a live NSView on the main thread; the method swap keeps the original for every
     // other window of the class.
     unsafe {
         let window: *mut AnyObject = msg_send![ns_view.cast::<AnyObject>(), window];
         if window.is_null() { return }
         let Some(method) = (*window).class().instance_method(sel!(constrainFrameRect:toScreen:)) else { return };
-        // The original is stored before the swap, so a call racing it never finds it missing.
+        // A recreated window replaces the old one; the old one is released, the new one retained
+        // so its address can't be reused by another object while it's remembered.
+        let _: *mut AnyObject = msg_send![window, retain];
+        let old = ISLAND_WINDOW.swap(window as usize, Ordering::AcqRel);
+        if old != 0 && old != window as usize { let _: () = msg_send![old as *mut AnyObject, release]; }
+        // Swap the method once; the original is stored first, so a racing call never misses it.
+        if ORIGINAL.get().is_some() { return }
         let _ = ORIGINAL.set(method.implementation() as usize);
-        let _ = ISLAND_WINDOW.set(window as usize);
         let replacement: Imp = std::mem::transmute(constrain as unsafe extern "C-unwind" fn(*mut AnyObject, Sel, Rect, *mut AnyObject) -> Rect);
         method.set_implementation(replacement);
     }

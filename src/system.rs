@@ -25,20 +25,52 @@ fn command(program: &str) -> Command {
     cmd
 }
 
-/// Trimmed stdout, or None when the program is missing or failed.
-// shortcut: no timeout, a hung tool stalls only its own poller; add one if a poller is seen stuck
+/// A status tool that runs longer than this is killed, so a hung one can't stall its poller.
+const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Trimmed stdout, or None when the program is missing, failed or ran past `TIMEOUT`.
 fn output(program: &str, args: &[&str]) -> Option<String> {
-    let out = command(program).args(args).stdin(Stdio::null()).stderr(Stdio::null()).output().ok()?;
-    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+    use std::io::Read;
+    let mut child = command(program).args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().ok()?;
+    // Read stdout on its own thread: a full pipe would otherwise block the child forever.
+    let mut stdout = child.stdout.take()?;
+    let reader = std::thread::spawn(move || { let mut out = Vec::new(); let _ = stdout.read_to_end(&mut out); out });
+    let started = std::time::Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if started.elapsed() < TIMEOUT => std::thread::sleep(std::time::Duration::from_millis(20)),
+            _ => { let _ = child.kill(); let _ = child.wait(); return None }
+        }
+    };
+    let out = reader.join().ok()?;
+    status.success().then(|| String::from_utf8_lossy(&out).trim().to_string())
 }
 
-/// Starts a program Ripple doesn't wait for.
+/// Starts a program Ripple doesn't wait for, in its own process group so it outlives Ripple.
 fn spawn(mut cmd: Command) {
     cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
-    if let Ok(mut child) = cmd.spawn() {
-        // Reaps the child when it exits; otherwise it stays a zombie until Ripple quits.
-        std::thread::spawn(move || { let _ = child.wait(); });
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000 | 0x0000_0200); // CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP
     }
+    match cmd.spawn() {
+        // Reaps the child when it exits; otherwise it stays a zombie until Ripple quits.
+        Ok(mut child) => { std::thread::spawn(move || { let _ = child.wait(); }); }
+        Err(e) => eprintln!("Ripple: could not start {:?}: {e}", cmd.get_program()),
+    }
+}
+
+/// Text inside a PowerShell single-quoted string: PowerShell ends one at any of these quotes.
+#[cfg_attr(not(any(windows, test)), allow(dead_code))]
+fn ps_quote(text: &str) -> String {
+    text.chars().flat_map(|c| match c {
+        '\'' | '\u{2018}' | '\u{2019}' | '\u{201A}' | '\u{201B}' => vec![c, c],
+        c => vec![c],
+    }).collect()
 }
 
 /// Runs a PowerShell script through -EncodedCommand (a multi-line -Command is cut at the first
@@ -54,7 +86,7 @@ fn powershell(script: &str) -> String {
 #[cfg(windows)]
 fn start_process(target: &str) {
     let mut cmd = command("powershell");
-    cmd.args(["-NoProfile", "-WindowStyle", "Hidden", "-Command", &format!("Start-Process '{}'", target.replace('\'', "''"))]);
+    cmd.args(["-NoProfile", "-WindowStyle", "Hidden", "-Command", &format!("Start-Process '{}'", ps_quote(target))]);
     spawn(cmd);
 }
 
@@ -316,7 +348,8 @@ fn battery_now() -> Option<(u8, bool)> {
 // --- Launch at login ---
 
 pub fn set_auto_launch(enable: bool) {
-    let Ok(exe) = std::env::current_exe() else { return };
+    // An AppImage runs from a mount that changes each launch; $APPIMAGE is the file itself.
+    let Some(exe) = std::env::var_os("APPIMAGE").map(std::path::PathBuf::from).or_else(|| std::env::current_exe().ok()) else { return };
     #[cfg(target_os = "linux")]
     {
         let Some(dir) = rune::dirs::home().map(|h| h.join(".config/autostart")) else { return };
@@ -348,11 +381,7 @@ pub fn set_auto_launch(enable: bool) {
 /// Opens a web page or a document in its default app. `file:` is allowed for documents but
 /// not for anything that would execute.
 pub fn open_external(url: &str) {
-    let lower = url.to_ascii_lowercase();
-    let web = lower.starts_with("http://") || lower.starts_with("https://");
-    const EXECUTABLE: [&str; 12] = [".exe", ".bat", ".cmd", ".com", ".ps1", ".msi", ".scr", ".lnk", ".sh", ".app", ".desktop", ".jar"];
-    let document = lower.starts_with("file://") && !EXECUTABLE.iter().any(|ext| lower.ends_with(ext));
-    if !web && !document { return }
+    if !openable(url) { return }
     #[cfg(target_os = "linux")]
     let mut cmd = command("xdg-open");
     #[cfg(target_os = "macos")]
@@ -366,6 +395,18 @@ pub fn open_external(url: &str) {
     };
     cmd.arg(url);
     spawn(cmd);
+}
+
+/// Web pages, and `file:` documents that wouldn't run as programs.
+fn openable(url: &str) -> bool {
+    let lower = url.to_ascii_lowercase();
+    if lower.starts_with("http://") || lower.starts_with("https://") { return true }
+    let Some(path) = lower.strip_prefix("file://") else { return false };
+    // The file's own name: no query, fragment or trailing slash (a macOS bundle is a folder).
+    let path = path.split(['?', '#']).next().unwrap_or_default().trim_end_matches(['/', '\\']);
+    const EXECUTABLE: [&str; 19] = [".exe", ".bat", ".cmd", ".com", ".ps1", ".msi", ".scr", ".lnk", ".sh", ".app", ".desktop", ".jar",
+        ".vbs", ".vbe", ".js", ".jse", ".wsf", ".hta", ".reg"];
+    !path.is_empty() && !EXECUTABLE.iter().any(|ext| path.ends_with(ext))
 }
 
 /// Starts an app by name or command line. No shell: the text is split into argv, so it
@@ -415,7 +456,8 @@ fn launch_windows(input: &str) {
         cmd.args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", &exe]);
         cmd
     } else {
-        // .cmd and .bat run through cmd.exe; std quotes their arguments safely or refuses.
+        // std runs .cmd and .bat through cmd.exe itself, quoting their arguments safely, and
+        // refuses arguments it can't quote (`%`, `"`); `spawn` logs that refusal.
         command(&exe)
     };
     cmd.args(args);
@@ -536,6 +578,31 @@ mod tests {
         assert_eq!(classify("python3.11"), Target::App);
         assert_eq!(classify("Spotify"), Target::App);
         assert_eq!(classify("Apple Music"), Target::App);
+    }
+
+    #[test]
+    fn only_web_pages_and_documents_open() {
+        assert!(openable("https://example.com/a?b=1&c=2"));
+        assert!(openable("file:///home/me/notes.pdf"));
+        assert!(!openable("file:///x/Foo.app/"));
+        assert!(!openable("file:///C:/x.exe#a"));
+        assert!(!openable("file:///C:/x.exe?"));
+        assert!(!openable("file:///C:/run.vbs"));
+        assert!(!openable("javascript:alert(1)"));
+        assert!(!openable("file://"));
+    }
+
+    #[test]
+    fn powershell_strings_double_every_quote_it_ends_on() {
+        assert_eq!(ps_quote("it's"), "it''s");
+        assert_eq!(ps_quote("x\u{2019}; calc; \u{2019}"), "x\u{2019}\u{2019}; calc; \u{2019}\u{2019}");
+    }
+
+    #[test]
+    fn a_hung_tool_is_killed_and_reads_as_failed() {
+        assert_eq!(output("sh", &["-c", "echo hi"]).as_deref(), Some("hi"));
+        assert_eq!(output("sh", &["-c", "exit 3"]), None);
+        assert_eq!(output("ripple-no-such-program", &[]), None);
     }
 
     #[test]

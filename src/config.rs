@@ -308,6 +308,7 @@ mod tests {
         assert_eq!(parse_color("rgba(0, 0, 0, 0.64)").map(|c| c.a), Some(0.64));
         assert_eq!(parse_color("rgba(255, 255, 255)"), Some(Color::WHITE));
         assert_eq!(parse_color("#ffffff80").map(|c| (c.a * 255.0).round()), Some(128.0));
+        assert_eq!(parse_color("rgb(0 0 0 / 0.5)").map(|c| c.a), Some(0.5));
         assert_eq!(parse_color("blue"), None);
         assert_eq!(parse_color("#12"), None);
     }
