@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { Groq } from "groq-sdk";
 import { motion, AnimatePresence } from "framer-motion";
 import ReactMarkdown from "react-markdown";
-import { Camera, Mic, SkipBackIcon, Play, Pause, SkipForwardIcon, Music, Headphones, Zap, Settings, Sun, Cloud, Droplets, Trash2, ChevronRight, ChevronLeft, Plus, Check, X, CloudRain, CloudSnow, CloudLightning, CloudSun, Moon, Eye, EyeOff, GripVertical, List, Search, Star } from "lucide-react";
+import { Camera, Mic, SkipBackIcon, Play, Pause, SkipForwardIcon, Music, Headphones, Zap, Settings, Sun, Cloud, Droplets, Trash2, ChevronRight, ChevronLeft, Plus, Check, X, CloudRain, CloudSnow, CloudLightning, CloudSun, Moon, Eye, EyeOff, GripVertical, List, Search, Star, Terminal } from "lucide-react";
 import "./App.css";
 
 //Get Date
@@ -104,6 +104,7 @@ const TABS = [
   { id: 4, name: "AI Assistant", icon: (color) => <Mic size={16} color={color} /> },
   { id: 5, name: "Clipboard", icon: (color) => <List size={16} color={color} /> },
   { id: 6, name: "Tasks", icon: (color) => <Check size={16} color={color} /> },
+  { id: 8, name: "T3 Code", icon: (color) => <Terminal size={16} color={color} /> },
   { id: 7, name: "Settings", icon: (color) => <Settings size={16} color={color} /> },
 ];
 
@@ -112,7 +113,13 @@ export default function Island() {
   const lastWindowShapeRef = useRef(null);
   const [time, setTime] = useState(null);
   const [mode, setMode] = useState("still");
-  const [tabOrder, setTabOrder] = useState(() => JSON.parse(localStorage.getItem("tab-order") || "[0,1,2,3,4,5,6,7]"));
+  const [tabOrder, setTabOrder] = useState(() => {
+    // Insert tabs added after the order was saved just before Settings.
+    const saved = JSON.parse(localStorage.getItem("tab-order") || "[]");
+    const missing = TABS.map(t => t.id).filter(id => !saved.includes(id));
+    const i = saved.indexOf(7);
+    return i < 0 ? [...saved, ...missing] : [...saved.slice(0, i), ...missing, ...saved.slice(i)];
+  });
   const [hiddenTabs, setHiddenTabs] = useState(() => JSON.parse(localStorage.getItem("hidden-tabs") || "[]"));
   const [defaultTabId, setDefaultTabId] = useState(() => Number(localStorage.getItem("default-tab") || 0));
 
@@ -178,6 +185,19 @@ export default function Island() {
   const captureAlertDisplayed = useRef({ camera: false, microphone: false });
   const [tasks, setTasks] = useState(JSON.parse(localStorage.getItem("tasks") || "[]"));
   const [taskText, setTaskText] = useState("");
+  // T3 Code: each device is { name, url, token } for one T3 server (local or remote).
+  const [t3Devices, setT3Devices] = useState(() => JSON.parse(localStorage.getItem("t3-devices") || "[]"));
+  const [t3DeviceIdx, setT3DeviceIdx] = useState(() => Number(localStorage.getItem("t3-device") || 0));
+  const [t3Data, setT3Data] = useState(null);
+  // "" = the device itself, otherwise the id of one of its linked environments.
+  const [t3EnvId, setT3EnvId] = useState(localStorage.getItem("t3-env") || "");
+  const [t3ProjectList, setT3ProjectList] = useState(null);
+  const [t3ProjectId, setT3ProjectId] = useState(localStorage.getItem("t3-project") || "");
+  const [t3ModelKey, setT3ModelKey] = useState(localStorage.getItem("t3-model") || "");
+  const [t3Worktree, setT3Worktree] = useState(localStorage.getItem("t3-worktree") === "true");
+  const [t3Message, setT3Message] = useState("");
+  const [t3Status, setT3Status] = useState("");
+  const [t3NewDevice, setT3NewDevice] = useState({ name: "", url: "", token: "" });
   const [workflows, setWorkflows] = useState(JSON.parse(localStorage.getItem("workflows") || "[]"));
   const [workflowName, setWorkflowName] = useState("");
   const [workflowUrls, setWorkflowUrls] = useState("");
@@ -405,7 +425,7 @@ export default function Island() {
   const quickTextFadeWidth = notchModeEnabled ? 5 : 15;
   const notchContentInset = notchModeEnabled ? 34 : 0;
   let height = mode === "large"
-    ? (currentTab === 7 ? (positionMode === "free" ? 425 : 345) : currentTab === 6 ? 250 : currentTab === 3 ? 150 : currentTab === 0 ? 120 : currentTab === 1 ? 210 : 190) + notchContentInset
+    ? (currentTab === 7 ? (positionMode === "free" ? 425 : 345) : currentTab === 6 || currentTab === 8 ? 250 : currentTab === 3 ? 150 : currentTab === 0 ? 120 : currentTab === 1 ? 210 : 190) + notchContentInset
     : notchModeEnabled ? 34 : 40;
 
   const normalizeApps = (arr) => arr.map(a => typeof a === 'string' ? { name: a, launch: a } : a);
@@ -1082,6 +1102,60 @@ export default function Island() {
     const updatedWorkflows = workflows.filter((_, i) => i !== index);
     setWorkflows(updatedWorkflows);
     localStorage.setItem("workflows", JSON.stringify(updatedWorkflows));
+  }
+
+  const t3Device = t3Devices[t3DeviceIdx] || t3Devices[0];
+  const t3Env = t3Data?.links.some(l => l.id === t3EnvId) ? t3EnvId : "";
+  const t3Project = t3ProjectList?.find(p => p.id === t3ProjectId) || t3ProjectList?.[0];
+  const t3Model = t3Data?.favorites.find(f => `${f.instanceId}/${f.model}` === t3ModelKey) || t3Data?.favorites[0];
+  const t3Error = (e) => String(e?.message || e).replace(/^Error invoking remote method '[^']+': (Error: )?/, "");
+
+  useEffect(() => {
+    if (currentTab !== 8 || !t3Device || !window.electronAPI?.t3Load) return;
+    let cancelled = false;
+    setT3Data(null);
+    setT3ProjectList(null);
+    setT3Status("Loading...");
+    window.electronAPI.t3Load(t3Device)
+      .then(d => { if (!cancelled) { setT3Data(d); setT3Status(""); } })
+      .catch(e => { if (!cancelled) setT3Status(t3Error(e)); });
+    return () => { cancelled = true; };
+  }, [currentTab, t3Device]);
+
+  useEffect(() => {
+    if (!t3Data) return;
+    let cancelled = false;
+    setT3ProjectList(null);
+    setT3Status("Loading folders...");
+    window.electronAPI.t3Projects(t3Device, t3Env)
+      .then(list => { if (!cancelled) { setT3ProjectList(list); setT3Status(""); } })
+      .catch(e => { if (!cancelled) setT3Status(t3Error(e)); });
+    return () => { cancelled = true; };
+  }, [t3Data, t3Env]);
+
+  function saveT3Devices(devices) {
+    setT3Devices(devices);
+    localStorage.setItem("t3-devices", JSON.stringify(devices));
+  }
+
+  async function startT3Thread() {
+    if (!t3Device || !t3Project || !t3Model || !t3Message.trim()) return;
+    setT3Status("Starting...");
+    try {
+      await window.electronAPI.t3StartThread(t3Device, {
+        environmentId: t3Env,
+        projectId: t3Project.id,
+        instanceId: t3Model.instanceId,
+        model: t3Model.model,
+        message: t3Message,
+        worktree: t3Worktree,
+        runtimeMode: t3Data.runtimeMode,
+      });
+      setT3Message("");
+      setT3Status(`Thread started in ${t3Project.title}`);
+    } catch (e) {
+      setT3Status(t3Error(e));
+    }
   }
 
   // Keyboard Shortcuts and Navigation
@@ -2238,6 +2312,76 @@ export default function Island() {
               </div>
             )}
 
+            {/*T3 Code*/}
+            {currentTab === 8 && (
+              <div id="tasks-container" style={{ animation: 'none', gap: 8 }}>
+                {t3Devices.length === 0 ? (
+                  <p style={{ textAlign: 'center', marginTop: 30, opacity: 0.5 }}>Add a T3 Code device in Settings.</p>
+                ) : (
+                  <>
+                    <div style={{ display: 'flex', gap: 8 }}>
+                      {(t3Devices.length > 1 || t3Data?.links.length > 0) && (
+                        <select
+                          aria-label="Device"
+                          value={`${t3Devices.indexOf(t3Device)}|${t3Env}`}
+                          onChange={(e) => {
+                            const [idx, env] = e.target.value.split("|");
+                            setT3DeviceIdx(Number(idx));
+                            setT3EnvId(env);
+                            localStorage.setItem("t3-device", idx);
+                            localStorage.setItem("t3-env", env);
+                          }}
+                          style={{ flex: 1, minWidth: 0, maxWidth: "none" }}
+                        >
+                          {t3Devices.map((d, i) => [
+                            <option key={i} value={`${i}|`}>{d.name || d.url}</option>,
+                            ...(d === t3Device ? t3Data?.links ?? [] : []).map(l => (
+                              <option key={`${i}|${l.id}`} value={`${i}|${l.id}`}>{`↳ ${l.label} (linked)`}</option>
+                            )),
+                          ])}
+                        </select>
+                      )}
+                      <select aria-label="Folder" value={t3Project?.id || ""} disabled={!t3ProjectList} onChange={(e) => { setT3ProjectId(e.target.value); localStorage.setItem("t3-project", e.target.value); }} style={{ flex: 1, minWidth: 0, maxWidth: "none" }}>
+                        {t3ProjectList?.map(p => <option key={p.id} value={p.id} title={p.path}>{p.title}</option>)}
+                      </select>
+                    </div>
+                    <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                      <select aria-label="Model" value={t3Model ? `${t3Model.instanceId}/${t3Model.model}` : ""} disabled={!t3Data} onChange={(e) => { setT3ModelKey(e.target.value); localStorage.setItem("t3-model", e.target.value); }} style={{ flex: 1, minWidth: 0, maxWidth: "none" }}>
+                        {t3Data?.favorites.length === 0 && <option value="">No favorite models</option>}
+                        {t3Data?.favorites.map(f => <option key={`${f.instanceId}/${f.model}`} value={`${f.instanceId}/${f.model}`}>{f.label}</option>)}
+                      </select>
+                      <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, whiteSpace: 'nowrap', cursor: 'pointer' }}>
+                        <input type="checkbox" className="task-checkbox" checked={t3Worktree} onChange={(e) => { setT3Worktree(e.target.checked); localStorage.setItem("t3-worktree", String(e.target.checked)); }} />
+                        New worktree
+                      </label>
+                    </div>
+                    <textarea
+                      className="select-input"
+                      placeholder="What should the agent do?"
+                      value={t3Message}
+                      onChange={(e) => setT3Message(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "ArrowLeft" || e.key === "ArrowRight") e.stopPropagation();
+                        if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) startT3Thread();
+                      }}
+                      style={{ flex: 1, resize: 'none', boxSizing: 'border-box' }}
+                    />
+                    <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                      <span role="status" style={{ flex: 1, fontSize: 12, opacity: 0.6, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t3Status}</span>
+                      <button
+                        onClick={startT3Thread}
+                        disabled={!t3Project || !t3Model || !t3Message.trim()}
+                        className="task-add-btn"
+                        style={{ backgroundColor: textColor, color: bgColor, border: 'none', borderRadius: '12px', padding: '8px 16px', fontWeight: 600, cursor: 'pointer' }}
+                      >
+                        Start
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+
             {/*Settings Overhaul*/}
             {currentTab === 7 && (
               <div id="settings-container">
@@ -2745,6 +2889,29 @@ export default function Island() {
                       onChange={(e) => localStorage.setItem("api-key", e.target.value)}
                     />
                   </div>
+                </div>
+
+                <div className="settings-section" style={{ marginBottom: 30 }}>
+                  <h3 style={{ fontSize: 13, textTransform: 'uppercase', opacity: 0.5, letterSpacing: '0.05em' }}>T3 Code Devices</h3>
+                  <span className="settings-label" style={{ opacity: 0.6, fontSize: 12 }}>Token: run `t3 auth session issue --token-only` on that device.</span>
+                  {t3Devices.map((d, i) => (
+                    <div key={i} className="settings-row">
+                      <span className="settings-label" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.name || d.url}</span>
+                      <button aria-label={`Remove ${d.name || d.url}`} onClick={() => saveT3Devices(t3Devices.filter((_, j) => j !== i))} style={{ background: 'none', border: 'none', color: textColor, cursor: 'pointer' }}>
+                        <Trash2 size={16} />
+                      </button>
+                    </div>
+                  ))}
+                  <input className="select-input" placeholder="Name (e.g. Laptop)" value={t3NewDevice.name} onChange={(e) => setT3NewDevice({ ...t3NewDevice, name: e.target.value })} />
+                  <input className="select-input" placeholder="http://127.0.0.1:3773" value={t3NewDevice.url} onChange={(e) => setT3NewDevice({ ...t3NewDevice, url: e.target.value })} />
+                  <input className="select-input" type="password" placeholder="Bearer token" value={t3NewDevice.token} onChange={(e) => setT3NewDevice({ ...t3NewDevice, token: e.target.value })} />
+                  <button
+                    disabled={!/^https?:\/\//.test(t3NewDevice.url.trim()) || !t3NewDevice.token.trim()}
+                    onClick={() => { saveT3Devices([...t3Devices, { name: t3NewDevice.name.trim(), url: t3NewDevice.url.trim(), token: t3NewDevice.token.trim() }]); setT3NewDevice({ name: "", url: "", token: "" }); }}
+                    style={{ backgroundColor: textColor, color: bgColor, border: 'none', borderRadius: '12px', padding: '8px 16px', fontWeight: 600, cursor: 'pointer' }}
+                  >
+                    Add Device
+                  </button>
                 </div>
 
                 <div className="settings-section" style={{ marginBottom: 30 }}>
