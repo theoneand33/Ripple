@@ -176,6 +176,8 @@ fn x11_sticky(window: u32) -> Result<(), Box<dyn std::error::Error>> {
     conn.change_property32(PropMode::REPLACE, window, state, AtomEnum::ATOM, &wanted)?;
     // All desktops.
     conn.change_property32(PropMode::REPLACE, window, atom("_NET_WM_DESKTOP")?, AtomEnum::CARDINAL, &[u32::MAX])?;
+    // A user time of 0 asks the window manager not to focus the window when it maps.
+    conn.change_property32(PropMode::REPLACE, window, atom("_NET_WM_USER_TIME")?, AtomEnum::CARDINAL, &[0])?;
     for pair in wanted.chunks(2) {
         let event = ClientMessageEvent::new(32, window, state, [1, pair[0], *pair.get(1).unwrap_or(&0), 1, 0]);
         conn.send_event(false, root, EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY, event)?;

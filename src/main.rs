@@ -44,7 +44,7 @@ fn start_tray(island: AppHandle<Island>) {
     #[cfg(target_os = "macos")]
     {
         mac::tray(include_bytes!("../assets/icons/tray.png"), move |id| match id {
-            "toggle" => if island.is_visible() { island.hide() } else { island.open() },
+            "toggle" => if island.is_visible() { island.hide() } else { island.show() },
             "settings" => island.update(|s, _| if let Some(w) = &s.settings { w.open() }),
             _ => island.quit(),
         });
@@ -59,7 +59,8 @@ fn start_tray(island: AppHandle<Island>) {
         TrayItem::action("quit", "Quit"),
     ];
     let handle = island.clone();
-    let toggle = move || if handle.is_visible() { handle.hide() } else { handle.open() };
+    // show, not open: bringing the Island back mustn't take focus from the app in use.
+    let toggle = move || if handle.is_visible() { handle.hide() } else { handle.show() };
     let spec = TraySpec::new("Ripple", "Ripple", icon).tooltip("Ripple").icon_name("ripple").menu(menu);
     match Tray::new(spec, move |event| match event {
         TrayEvent::Activate { .. } => toggle(),
@@ -147,7 +148,8 @@ fn main() {
     rune::run_windows_with(RunOptions { accessory: true }, |displays| {
         let screens = Screen::all(displays);
         let store = Store::open();
-        let mut app = App::new(island_spec()).keep_running().on_focus(Island::window_focus);
+        // The Island only takes focus when clicked, never on launch (macOS and Windows).
+        let mut app = App::new(island_spec()).keep_running().open_inactive().on_focus(Island::window_focus);
         let island = app.handle();
 
         let settings_state = Settings::new(store.clone(), Some(island.clone()), &screens);
