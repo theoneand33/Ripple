@@ -119,6 +119,8 @@ pub fn fetch_image(url: &str) -> Option<Vec<u8>> {
     if let Some(data) = url.strip_prefix("data:") {
         use base64::Engine;
         let (meta, payload) = data.split_once(',')?;
+        // Artwork URLs come from other apps: refuse oversized payloads before decoding them.
+        if payload.len() as u64 / 4 * 3 > LIMIT { return None }
         return meta.ends_with(";base64").then(|| base64::engine::general_purpose::STANDARD.decode(payload.trim()).ok()).flatten();
     }
     if let Some(path) = url.strip_prefix("file://") {
@@ -179,6 +181,7 @@ mod tests {
     fn data_urls_decode_and_other_schemes_are_refused() {
         assert_eq!(fetch_image("data:image/png;base64,aGk="), Some(b"hi".to_vec()));
         assert_eq!(fetch_image("data:text/plain,hi"), None);
+        assert_eq!(fetch_image(&format!("data:image/png;base64,{}", "A".repeat(23 << 20))), None, "over 16 MiB decoded");
         assert_eq!(fetch_image("ftp://example.com/a.png"), None);
     }
 
