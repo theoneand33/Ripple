@@ -1290,14 +1290,12 @@ export default function Island() {
         x: sideStyles.x,
         borderRadius:
           notchModeEnabled
-            ? mode === "large" ? "0px 0px 30px 30px" : "0px 0px 14px 14px"
-            : mode === "large" && theme === "win95"
-            ? 0
-            : mode === "large"
-              ? (currentTab === 0 ? 28 : 30)
-              : theme === "win95"
-                ? 0
-                : 14,
+            ? mode === "large" ? "0px 0px 44px 44px" : `0px 0px ${height / 2}px ${height / 2}px`
+            : theme === "win95"
+              ? 0
+              : mode === "large"
+                ? 44
+                : height / 2, // compact = full capsule, like iOS
       }}
       onUpdate={syncLinuxWindowShape}
       onAnimationComplete={syncLinuxWindowShape}
@@ -1317,6 +1315,8 @@ export default function Island() {
         backgroundSize: "cover",
         justifyContent: (mode === "large" && currentTab === 3) ? "flex-start" : "center",
         overflow: "hidden",
+        // iOS-style continuous corners when expanded; compact stays a true capsule
+        cornerShape: mode === "large" && theme !== "win95" ? "squircle" : "round",
         fontFamily: theme === "win95" ? "w95" : "OpenRunde",
         border: theme === "win95" ? "2px solid rgb(254, 254, 254)" : islandBorderEnabled ? cameraInUse ? `1px solid rgba(255, 215, 0, 0.8)` : microphoneInUse ? `1px solid rgba(255, 154, 0, 0.8)` : (charging || chargingAlert) ? `1px solid rgba(111, 255, 123, 0.5)` : (percent <= 20 || alert) ? `1px solid rgba(255, 63, 63, 0.5)` : bluetoothAlert ? `1px solid rgba(0, 150, 255, 0.34)` : hideNotActiveIslandEnabled ? "none" : `1px solid color-mix(in srgb, ${textColor}, transparent 70%)` : "none",
         borderColor:
