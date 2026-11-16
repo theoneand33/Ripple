@@ -1,5 +1,6 @@
 "use strict";
 import x11Module from "x11";
+import { setT3TokenFile, t3Load, t3Projects, t3StartThread } from "./t3.mjs";
 
 const {
   app,
@@ -441,6 +442,10 @@ ipcMain.handle("open-external", async (event, url) => {
   await shell.openExternal(url);
 });
 
+ipcMain.handle("t3-load", (event, device) => t3Load(device));
+ipcMain.handle("t3-projects", (event, device, environmentId) => t3Projects(device, environmentId));
+ipcMain.handle("t3-start-thread", (event, device, options) => t3StartThread(device, options));
+
 ipcMain.handle("launch-app", async (event, appName) => {
   const platform = process.platform;
   if (platform === "darwin") {
@@ -714,6 +719,7 @@ const createWindow = () => {
 };
 
 app.whenReady().then(() => {
+  setT3TokenFile(path.join(app.getPath("userData"), "t3-mcp-tokens.json"));
   if (process.platform === "darwin") {
     app.dock.hide();
   }

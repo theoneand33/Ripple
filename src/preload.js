@@ -21,6 +21,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   updateWindowPosition: (xPerc, yPx) => ipcRenderer.invoke('update-window-position', xPerc, yPx),
   setAutoLaunch: (enable) => process.platform !== 'darwin' ? ipcRenderer.invoke('set-auto-launch', enable) : Promise.resolve(),
   focusWindow: () => ipcRenderer.invoke('focus-window'),
+  t3Load: (device) => ipcRenderer.invoke('t3-load', device),
+  t3Projects: (device, environmentId) => ipcRenderer.invoke('t3-projects', device, environmentId),
+  t3StartThread: (device, options) => ipcRenderer.invoke('t3-start-thread', device, options),
   openSettings: () => ipcRenderer.invoke('open-settings'),
   platform: process.platform
 });
