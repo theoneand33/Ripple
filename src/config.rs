@@ -270,8 +270,12 @@ impl Store {
     /// Headless runs (snapshots, tests) keep nothing on disk.
     pub fn open() -> Store {
         let prefs = if rune::is_headless() { Prefs::memory() } else { Prefs::open(APP_ID) };
-        let cfg = prefs.get::<Config>("settings").unwrap_or_default().normalized();
-        Store(Arc::new(Mutex::new(Inner { cfg, prefs })))
+        let saved = prefs.get::<Config>("settings");
+        // First launch after the Electron app: its settings live in the same folder.
+        let imported = saved.is_none().then(|| prefs.path().and_then(|p| p.parent()).and_then(crate::migrate::electron_settings)).flatten();
+        let store = Store(Arc::new(Mutex::new(Inner { cfg: saved.or(imported.clone()).unwrap_or_default().normalized(), prefs })));
+        if imported.is_some() { store.update(|_| {}) }
+        store
     }
 
     #[cfg(test)]

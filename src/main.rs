@@ -6,6 +6,7 @@ mod icons;
 mod island;
 #[cfg(target_os = "macos")]
 mod mac;
+mod migrate;
 mod net;
 mod platform;
 mod settings;
