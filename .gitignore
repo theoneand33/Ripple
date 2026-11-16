@@ -27,3 +27,7 @@ native/mac-notch/prebuilds/
 
 # Build output
 .vite
+
+# Rust build output
+/target
+!tests/fixtures/**/*.log

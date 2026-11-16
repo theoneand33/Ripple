@@ -2,13 +2,13 @@
 
 Dynamic Island, but for everyone.
 
-Ripple is a desktop app for Windows, Linux, and macOS that puts a Dynamic Island-style bar at the top of your screen. It shows notifications, widgets, and an AI assistant, and stays compact until you hover over it or click it.
+Ripple is a native desktop app for Windows, Linux, and macOS, written in Rust with [Rune](https://github.com/anomalyco/rune). It puts a Dynamic Island-style bar at the top of your screen. It shows notifications, widgets, and an AI assistant, and stays compact until you hover over it or click it.
 
 <div align="center">
 
 [![Discord](https://img.shields.io/badge/Discord-Join%20Us-5865F2)](https://discord.gg/a2xzVkxFVg)
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
-[![Version](https://img.shields.io/badge/Version-0.1.0-blue)](package.json)
+[![Version](https://img.shields.io/badge/Version-0.1.1-blue)](Cargo.toml)
 
 https://github.com/user-attachments/assets/a7b9ed8a-97b5-4603-bad7-6f4c4bef1f5d
 
@@ -51,9 +51,9 @@ Settings open in their own window from the gear button on the Island. Changes ap
 
 Download the latest release for your platform:
 
-- Windows: `.msi` installer or `.zip`
+- Windows: `.zip`
 - macOS: `.dmg` (Intel and Apple Silicon)
-- Linux: `.deb`, `.rpm`, or `.AppImage`
+- Linux: `.AppImage` or `.tar.gz`
 
 [Download Latest Release](https://github.com/TopMyster/Ripple/releases)
 
@@ -62,11 +62,11 @@ Download the latest release for your platform:
 1. Install and launch Ripple. The Island appears at the top of your screen.
 2. Hover over it to see Quick Mode.
 3. Click it to open Large Mode.
-4. Click the gear button to open Settings.
+4. Click the gear button on the Overview tab, or Settings in the tray menu, to open Settings.
 
 ### Connecting T3 Code
 
-Open Settings and add a device under T3 Code Devices with a name, URL, and bearer token. For linked environments, Ripple signs in to the device's `/mcp` endpoint and caches the 30-day token, so it does not register a new client on every launch.
+Open Settings and add a device under T3 Code Devices with a name, URL, and bearer token. For linked environments, Ripple signs in to the device's `/mcp` endpoint and caches the 30-day token (`t3-mcp-tokens.json` next to the settings file), so it does not register a new client on every launch.
 
 ## How to use
 
@@ -88,62 +88,44 @@ Large Mode opens when you click the Island. It shows the full interface with eve
 
 ### Prerequisites
 
-- Node.js 16+ and npm
-- Platform build tools:
-  - Windows: Visual Studio Build Tools
-  - macOS: Xcode Command Line Tools
-  - Linux: `build-essential` on Ubuntu/Debian
+- Rust 1.99 or newer, the version Rune pins (`rustup` or your distribution's package)
+- Linux: the development packages for `libxkbcommon` and `wayland` (`sudo apt-get install libxkbcommon-dev libwayland-dev`, or `sudo dnf install libxkbcommon-devel wayland-devel`)
+- Windows: the Visual Studio C++ build tools
+- macOS: Xcode Command Line Tools
 
-### Development setup
+At runtime on Linux, now playing and media keys use `playerctl`, Bluetooth uses `bluetoothctl`, the microphone check uses `pactl` and the camera check uses `fuser`. Ripple runs on X11, or on XWayland in a Wayland session.
+
+### Run
 
 ```bash
-# Clone the repository
 git clone https://github.com/TopMyster/Ripple.git
 cd Ripple
-
-# Install dependencies
-npm install
-
-# Start development server
-npm start
+cargo run
 ```
 
-`npm start` launches Ripple with hot reload. Press `Ctrl+R` (or `Cmd+R` on macOS) to refresh the app.
+Settings are saved as JSON in `prefs.json` in the app's config folder: `~/.config/Ripple` on Linux, `%APPDATA%\Ripple` on Windows, `~/Library/Application Support/Ripple` on macOS.
 
-#### Build for the current OS
+### Test
 
 ```bash
-npm run make
+cargo test
 ```
 
-#### Build for a specific platform
+Debug builds also render headlessly, so you can check a change without a display:
 
-Windows (x64)
 ```bash
-npm run make -- --platform=win32 --arch=x64
+cargo run -- --list-scenes
+cargo run -- --window island --scene large --snap island.png
+cargo run -- --window settings --snap settings.png --size 520x1400
 ```
 
-Linux (x64)
+### Build a release
+
 ```bash
-npm run make -- --platform=linux --arch=x64
+cargo build --release
 ```
 
-macOS (Apple Silicon)
-```bash
-npm run make -- --platform=darwin --arch=arm64
-```
-
-macOS (Intel)
-```bash
-npm run make -- --platform=darwin --arch=x64
-```
-
-> Building Linux packages requires `dpkg`, `fakeroot`, and `rpm`:
-> ```bash
-> sudo apt-get install dpkg fakeroot rpm
-> ```
-
-Built packages go to `out/make/`.
+The binary is `target/release/ripple` (`ripple.exe` on Windows). CI packages it as a `.dmg`, a `.zip`, an `.AppImage` and a `.tar.gz`; see `.github/workflows/build.yml`.
 
 ## Contributing
 

@@ -1,0 +1,8 @@
+[Desktop Entry]
+Name=Ripple
+Comment=A Dynamic Island for All
+Exec=ripple %U
+Icon=ripple
+Type=Application
+Categories=Utility;
+StartupNotify=true
