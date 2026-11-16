@@ -428,8 +428,8 @@ pub fn view(s: &Settings, cx: &mut Cx<Settings>) -> El {
 
     let content = sections.into_iter().fold(col().key("settings-content").w_full().px(24.0).pt(20.0).pb(36.0).gap(28.0), El::child);
     // An opaque base, so a translucent Island colour stays readable in a normal window.
-    let base = col().key("settings").w_full().h_full().fill(Color::BLACK)
-        .child(el().w_full().h_full().fill(cfg.bg()).scroll(ScrollSpec { stick_bottom: false }).child(content));
+    let base = col().key("settings").w_full().h_full().min_h(0.0).fill(Color::BLACK)
+        .child(el().key("settings-scroll").w_full().grow(1.0).min_h(0.0).fill(cfg.bg()).scroll(ScrollSpec { stick_bottom: false }).child(content));
     let _ = cx;
     rune_kit::root(base, layer)
 }
