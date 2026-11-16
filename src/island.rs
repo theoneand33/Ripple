@@ -156,6 +156,8 @@ pub struct Island {
     pub track: Option<Track>,
     pub art: Option<Image>,
     pub art_hovered: bool,
+    /// The pointer is over an open select's menu.
+    pub menu_hovered: bool,
     pub background: Option<Image>,
     bluetooth: bool,
     pub camera: bool,
@@ -226,6 +228,7 @@ impl Island {
             track: None,
             art: None,
             art_hovered: false,
+            menu_hovered: false,
             background: None,
             bluetooth: false,
             camera: false,
@@ -356,15 +359,18 @@ impl Island {
         if self.mode != Mode::Large { self.t3.open = None }
     }
 
-    pub fn hover(&mut self, hovered: bool, _: &mut Tx) {
+    pub fn hover(&mut self, hovered: bool, tx: &mut Tx) {
         self.hovered = hovered;
         if hovered {
             if self.mode == Mode::Still && self.cfg.show_info_idle && !self.playing() { self.set_mode(Mode::Large) }
             else if self.mode != Mode::Large { self.set_mode(Mode::Quick) }
         } else {
             self.art_hovered = false;
-            // An open select's menu hangs outside the Island; leaving for it isn't leaving.
-            if !self.input_focused() && self.t3.open.is_none() { self.set_mode(Mode::Still) }
+            // An open select's menu hangs outside the Island; leaving for it isn't leaving (poll closes both).
+            if self.t3.open.is_none() {
+                tx.blur();
+                self.set_mode(Mode::Still);
+            }
         }
     }
 
@@ -627,6 +633,15 @@ impl Island {
             self.save(|c| c.new_user = false);
         }
         self.schedule(tx);
+
+        // Leaving both the Island and an open select's menu closes them.
+        if self.t3.open.is_none() { self.menu_hovered = false }
+        else if !self.hovered && !self.menu_hovered {
+            tx.blur();
+            self.t3.open = None;
+            self.set_mode(Mode::Still);
+            changed = true;
+        }
 
         // A select's menu opens outside the Island: the whole window takes clicks while one is open.
         // The hover scale (1.05) draws the Island slightly past its layout rect.
@@ -899,6 +914,10 @@ pub fn view(s: &Island, _: &mut Cx<Island>) -> El {
                 .transition(Transition::blur_replace())
                 .child(tabs::view(s, &mut layer)),
         );
+        // The open select's menu is the layer's last element.
+        if s.t3.open.is_some() && let Some(menu) = layer.pop() {
+            layer.push(menu.on_hover_change(|s: &mut Island, hovered, _| s.menu_hovered = hovered));
+        }
     } else if s.mode == Mode::Quick || s.alert().is_some() || s.shows_track() || cfg.show_info_idle {
         island = island.child(if s.shows_track() && s.alert().is_none() { now_playing(s, fg) } else { glance(s, fg) });
     }
