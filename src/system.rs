@@ -614,6 +614,20 @@ mod tests {
         assert_eq!(output("ripple-no-such-program", &[]), None);
     }
 
+    /// Asks this machine's media player, battery, Bluetooth, camera and microphone, as the
+    /// Island's pollers do. CI runs it on every OS with `-- --ignored probes`.
+    #[test]
+    #[ignore = "asks the real OS"]
+    fn probes_answer_on_this_machine() {
+        let started = std::time::Instant::now();
+        let (percent, charging) = battery();
+        assert!(percent <= 100);
+        let track = media();
+        let (bluetooth, camera, microphone) = (bluetooth_connected(), camera_in_use(), microphone_in_use());
+        println!("battery {percent}% charging={charging} media={track:?} bluetooth={bluetooth} camera={camera} microphone={microphone}");
+        assert!(started.elapsed() < TIMEOUT * 5, "a hung tool must time out");
+    }
+
     #[test]
     fn pmset_output_gives_percent_and_power_source() {
         let ac = "Now drawing from 'AC Power'\n -InternalBattery-0 (id=4653155)\t100%; charged; 0:00 remaining present: true";

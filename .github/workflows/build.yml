@@ -66,6 +66,18 @@ jobs:
       - name: Test
         run: cargo test --locked
 
+      - name: Probe this OS (media, battery, Bluetooth, camera, microphone)
+        run: cargo test --locked -- --ignored --nocapture probes
+
+      - name: Render every view headlessly
+        shell: bash
+        run: |
+          mkdir -p out
+          for scene in quick large search workflows assistant clipboard tasks t3-device playing overview-playing camera notch win95; do
+            cargo run --locked -q -- --window island --scene "$scene" --snap "out/smoke-scene-$scene.png"
+          done
+          cargo run --locked -q -- --window settings --size 520x2600 --snap out/smoke-scene-settings.png
+
       - name: Build
         run: cargo build --release --locked --target ${{ matrix.target }}
 

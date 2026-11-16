@@ -462,4 +462,142 @@ mod tests {
         assert_ne!(Client::token_key(&a), Client::token_key(&c));
         assert_eq!(Client::token_key(&a).len(), 64);
     }
+
+    /// A T3 server: HTTP API, the /mcp OAuth sign-in and tools, and the /ws RPC.
+    fn mock_t3(rejected_tokens: usize) -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+        use crate::testserver::{Response, json, serve};
+        use std::sync::{Arc, Mutex};
+        let log = Arc::new(Mutex::new(Vec::<String>::new()));
+        let challenge = Arc::new(Mutex::new(String::new()));
+        let rejects = Arc::new(Mutex::new(rejected_tokens));
+        let (http_log, ws_log) = (log.clone(), log.clone());
+        let base = serve(move |r| {
+            http_log.lock().unwrap().push(format!("{} {}", r.method, r.path.split('?').next().unwrap_or_default()));
+            let body: Value = serde_json::from_str(&r.body).unwrap_or_default();
+            let bearer = r.header("authorization").unwrap_or_default().to_string();
+            match r.path.as_str() {
+                "/api/auth/websocket-ticket" | "/api/projects" | "/api/auth/pairing-token" if bearer != "Bearer dev-token" => json(401, json!({ "message": "bad token" })),
+                "/api/auth/websocket-ticket" => json(200, json!({ "ticket": "ticket+1" })),
+                "/api/projects" => json(200, json!({ "projects": [
+                    { "id": "p1", "title": "Ripple", "workspaceRoot": "/src/ripple" },
+                    { "id": "p2", "title": "Old", "workspaceRoot": "/src/old", "archivedAt": "2026-01-01" },
+                ] })),
+                "/api/auth/pairing-token" => json(200, json!({ "credential": "pair-code" })),
+                "/oauth/mcp/register" => json(200, json!({ "client_id": "client-1" })),
+                "/oauth/mcp/decision" => {
+                    let auth = &body["authorization"];
+                    assert_eq!(body["decision"]["code"], "pair-code");
+                    *challenge.lock().unwrap() = auth["code_challenge"].as_str().unwrap_or_default().into();
+                    json(200, json!({ "redirectTo": format!("{}?code=auth-code&state={}", auth["redirect_uri"].as_str().unwrap_or_default(), auth["state"].as_str().unwrap_or_default()) }))
+                }
+                "/oauth/mcp/token" => {
+                    // PKCE: the verifier must hash to the challenge sent with the decision.
+                    let verifier = query_param(&format!("?{}", r.body), "code_verifier").unwrap_or_default();
+                    let ok = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes())) == *challenge.lock().unwrap()
+                        && query_param(&format!("?{}", r.body), "code").as_deref() == Some("auth-code");
+                    if !ok { return json(400, json!({ "error_description": "bad PKCE" })) }
+                    json(200, json!({ "access_token": format!("mcp-{}", now_ms()), "expires_in": 2_592_000 }))
+                }
+                "/mcp" => {
+                    let mut left = rejects.lock().unwrap();
+                    if !bearer.starts_with("Bearer mcp-") || *left > 0 {
+                        *left = left.saturating_sub(1);
+                        return Response { status: 401, headers: vec![], body: String::new() };
+                    }
+                    let id = body["id"].clone();
+                    if id.is_null() { return Response { status: 202, headers: vec![], body: String::new() } }
+                    let result = match (body["method"].as_str(), body["params"]["name"].as_str()) {
+                        (Some("initialize"), _) => json!({ "protocolVersion": "2025-06-18" }),
+                        (_, Some("t3_environment_links")) => json!({ "structuredContent": { "links": [{ "environmentId": "env-1", "label": "Desktop" }] } }),
+                        (_, Some("t3_project_list")) => {
+                            let cursor = body["params"]["arguments"]["cursor"].as_i64().unwrap_or(0);
+                            json!({ "structuredContent": { "projects": [{ "id": format!("e{cursor}"), "title": format!("Env {cursor}"), "workspaceRoot": "/w" }], "nextCursor": if cursor == 0 { json!(1) } else { Value::Null } } })
+                        }
+                        (_, Some("t3_thread_launch")) => {
+                            let args = &body["params"]["arguments"];
+                            assert_eq!((args["environmentId"].as_str(), args["message"].as_str()), (Some("env-1"), Some("Fix it")));
+                            json!({ "structuredContent": { "threadId": "thread-env" } })
+                        }
+                        _ => json!({ "isError": true, "content": [{ "type": "text", "text": "{\"message\":\"no such tool\"}" }] }),
+                    };
+                    // Streamable HTTP answers as an event stream.
+                    Response { status: 200, headers: vec![("content-type".into(), "text/event-stream".into()), ("mcp-session-id".into(), "session-1".into())],
+                        body: format!("event: message\ndata: {}\n\n", json!({ "jsonrpc": "2.0", "id": id, "result": result })) }
+                }
+                _ => json(404, json!({})),
+            }
+        }, move |text| {
+            let call: Value = serde_json::from_str(text).unwrap_or_default();
+            ws_log.lock().unwrap().push(format!("ws {}", call["tag"].as_str().unwrap_or_default()));
+            let value = match call["tag"].as_str() {
+                Some("server.getConfig") => json!({
+                    "providers": [{ "instanceId": "claude", "models": [{ "slug": "opus", "name": "Claude Opus" }] }],
+                    "settings": { "favorites": [{ "provider": "claude", "model": "opus" }, { "provider": "codex", "model": "gpt" }],
+                        "defaultRuntimeMode": "approval-required", "linkedEnvironmentsEnabled": true },
+                }),
+                Some("orchestration.launchThread") => {
+                    let p = &call["payload"];
+                    assert_eq!((p["initialMessage"]["text"].as_str(), p["title"].as_str()), (Some("Fix it\nplease"), Some("Fix it")));
+                    assert_eq!(p["workspaceStrategy"]["type"], "worktree");
+                    json!({ "threadId": "thread-local" })
+                }
+                _ => return json!({ "_tag": "Exit", "exit": { "_tag": "Failure", "cause": [{ "error": { "message": "unknown tag" } }] } }).to_string(),
+            };
+            json!({ "_tag": "Exit", "exit": { "_tag": "Success", "value": value } }).to_string()
+        });
+        (base, log)
+    }
+
+    fn device(base: &str) -> T3Device {
+        T3Device { name: "Laptop".into(), url: format!("{base}/"), token: "dev-token".into() }
+    }
+
+    #[test]
+    fn the_client_loads_lists_and_starts_threads_on_a_device_and_its_linked_environment() {
+        let (base, log) = mock_t3(0);
+        let file = std::env::temp_dir().join(format!("ripple-t3-{}.json", std::process::id()));
+        let client = Client::new(Some(file.clone()));
+        let dev = device(&base);
+
+        let loaded = client.load(&dev).unwrap();
+        assert_eq!(loaded.favorites[0].label, "Claude Opus");
+        assert_eq!(loaded.favorites[1].label, "gpt", "a model the server can't name keeps its slug");
+        assert_eq!(loaded.runtime_mode, "approval-required");
+        assert_eq!(loaded.links, [Link { id: "env-1".into(), label: "Desktop".into() }]);
+
+        let local = client.projects(&dev, "").unwrap();
+        assert_eq!(local, [Project { id: "p1".into(), title: "Ripple".into(), path: "/src/ripple".into() }], "archived projects are left out");
+        let linked = client.projects(&dev, "env-1").unwrap();
+        assert_eq!(linked.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(), ["e0", "e1"], "every page is read");
+
+        let launch = |env: &str| Launch { environment_id: env.into(), project_id: "p1".into(), instance_id: "claude".into(), model: "opus".into(),
+            message: "Fix it\nplease".into(), worktree: true, runtime_mode: loaded.runtime_mode.clone() };
+        assert_eq!(client.start_thread(&dev, &launch("")).unwrap(), "thread-local");
+        assert_eq!(client.start_thread(&dev, &Launch { message: "Fix it".into(), ..launch("env-1") }).unwrap(), "thread-env");
+        assert_eq!(client.start_thread(&dev, &Launch { message: "  ".into(), ..launch("") }), Err("Message is empty".into()));
+
+        // One sign-in, cached on disk for the user alone, reused by the next app start.
+        let registered = || log.lock().unwrap().iter().filter(|l| l.as_str() == "POST /oauth/mcp/register").count();
+        assert_eq!(registered(), 1);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o600);
+        }
+        Client::new(Some(file.clone())).projects(&dev, "env-1").unwrap();
+        assert_eq!(registered(), 1, "a restarted client reuses the saved token");
+        let _ = std::fs::remove_file(&file);
+    }
+
+    #[test]
+    fn a_revoked_token_signs_in_again_once_and_bad_tokens_report_the_server_message() {
+        let (base, log) = mock_t3(1);
+        let client = Client::new(None);
+        assert_eq!(client.projects(&device(&base), "env-1").unwrap().len(), 2);
+        assert_eq!(log.lock().unwrap().iter().filter(|l| l.as_str() == "POST /oauth/mcp/register").count(), 2);
+        let wrong = T3Device { token: "nope".into(), ..device(&base) };
+        assert_eq!(client.projects(&wrong, ""), Err("bad token".into()));
+        assert!(Client::new(None).load(&T3Device { url: "http://127.0.0.1:9".into(), ..device(&base) }).unwrap_err().starts_with("Could not reach"));
+    }
+
 }

@@ -13,6 +13,8 @@ mod settings;
 mod system;
 mod t3;
 mod tabs;
+#[cfg(test)]
+mod testserver;
 
 use rune::{App, AppHandle, AppSpec, MacWindowOptions, RunOptions, Tray, TrayEvent, TrayIcon, TrayItem, TraySpec, WindowOptions, WindowSpec};
 

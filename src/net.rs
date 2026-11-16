@@ -43,8 +43,12 @@ const SYSTEM_PROMPT: &str = "You are Ripple, a sleek and helpful desktop AI assi
 
 /// Streams a chat completion, calling `on_delta` with each piece of the answer. Returns
 /// whether anything was received.
-pub fn ask_ai(provider: &str, model: &str, api_key: &str, question: &str, mut on_delta: impl FnMut(&str)) -> Result<bool, String> {
+pub fn ask_ai(provider: &str, model: &str, api_key: &str, question: &str, on_delta: impl FnMut(&str)) -> Result<bool, String> {
     let base = if provider == "groq" { "https://api.groq.com/openai/v1" } else { "https://openrouter.ai/api/v1" };
+    ask_ai_at(base, provider, model, api_key, question, on_delta)
+}
+
+fn ask_ai_at(base: &str, provider: &str, model: &str, api_key: &str, question: &str, mut on_delta: impl FnMut(&str)) -> Result<bool, String> {
     // A stream runs as long as the answer takes; only connecting and the first byte are timed.
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .timeout_connect(Some(Duration::from_secs(15)))
@@ -177,4 +181,25 @@ mod tests {
         assert_eq!(fetch_image("data:text/plain,hi"), None);
         assert_eq!(fetch_image("ftp://example.com/a.png"), None);
     }
+
+    #[test]
+    fn the_assistant_streams_an_answer_from_a_chat_completions_server() {
+        use crate::testserver::{Response, serve};
+        let base = serve(|r| {
+            let body: serde_json::Value = serde_json::from_str(&r.body).unwrap_or_default();
+            let ok = r.path == "/v1/chat/completions" && r.header("authorization") == Some("Bearer gsk_test")
+                && body["stream"] == true && body["messages"][1]["content"] == "Hi?" && body["model"] == "m";
+            if !ok { return Response { status: 401, headers: vec![], body: String::new() } }
+            let events = ["Hel", "lo **", "you** [DONE]"].iter()
+                .map(|d| format!("data: {}\n\n", json!({ "choices": [{ "delta": { "content": d } }] })))
+                .collect::<String>() + "data: [DONE]\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"late\"}}]}\n\n";
+            Response { status: 200, headers: vec![("content-type".into(), "text/event-stream".into())], body: events }
+        }, |_| String::new());
+        let mut answer = String::new();
+        assert_eq!(ask_ai_at(&format!("{base}/v1"), "groq", "m", "gsk_test", "Hi?", |d| answer.push_str(d)), Ok(true));
+        assert_eq!(answer, "Hello **you** [DONE]");
+        let refused = ask_ai_at(&format!("{base}/v1"), "groq", "m", "wrong", "Hi?", |_| {});
+        assert!(refused.unwrap_err().starts_with("API Error: 401"));
+    }
+
 }
