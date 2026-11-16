@@ -21,6 +21,7 @@ if (process.platform === "linux") {
 const x11 = process.platform === "linux" ? x11Module : null;
 let tray = null;
 let mainWindow = null;
+let settingsWindow = null;
 let mainWindowReady = false;
 let mainWindowInputShapeReady = false;
 let x11Display = null;
@@ -395,7 +396,7 @@ function launchWindows(input) {
 }
 
 ipcMain.handle("set-ignore-mouse-events", (event, ignore, forward) => {
-  if (mainWindow) {
+  if (mainWindow && event.sender === mainWindow.webContents) {
     // Linux cannot forward mouse movement while events are ignored. Keep the
     // window interactive there and use its native shape for click-through.
     if (process.platform === "linux") return;
@@ -404,7 +405,7 @@ ipcMain.handle("set-ignore-mouse-events", (event, ignore, forward) => {
 });
 
 ipcMain.on("set-window-input-shape", (event, rect) => {
-  if (process.platform !== "linux" || !mainWindow) return;
+  if (process.platform !== "linux" || !mainWindow || event.sender !== mainWindow.webContents) return;
 
   const { x, y, width, height } = rect || {};
   if (![x, y, width, height].every(Number.isFinite) || width <= 0 || height <= 0) {
@@ -430,8 +431,8 @@ ipcMain.handle('debug-get-system-media-raw', async () => {
   });
 });
 
-ipcMain.handle("focus-window", () => {
-  if (mainWindow) {
+ipcMain.handle("focus-window", (event) => {
+  if (mainWindow && event.sender === mainWindow.webContents) {
     mainWindow.focus();
   }
 });
@@ -593,6 +594,42 @@ const getIconPath = () => {
   return path.join(__dirname, `../../src/assets/icons/icon.${ext}`);
 };
 
+const loadRenderer = (win, hash) => {
+  if (!app.isPackaged || process.env.NODE_ENV === "development") {
+    win.loadURL(`http://localhost:5173${hash ? `/#${hash}` : ""}`);
+  } else {
+    win.loadFile(path.join(__dirname, "../renderer/main_window/index.html"), hash ? { hash } : undefined);
+  }
+};
+
+const openSettingsWindow = () => {
+  if (settingsWindow) {
+    settingsWindow.show();
+    settingsWindow.focus();
+    return;
+  }
+  settingsWindow = new BrowserWindow({
+    width: 520,
+    height: 720,
+    minWidth: 420,
+    minHeight: 400,
+    title: "Ripple Settings",
+    backgroundColor: "#000000",
+    autoHideMenuBar: true,
+    icon: getIconPath(),
+    webPreferences: {
+      preload: path.join(__dirname, "preload.js"),
+      devTools: false,
+    },
+  });
+  settingsWindow.on("closed", () => {
+    settingsWindow = null;
+  });
+  loadRenderer(settingsWindow, "settings");
+};
+
+ipcMain.handle("open-settings", () => openSettingsWindow());
+
 const createWindow = () => {
   mainWindowReady = false;
   mainWindowInputShapeReady = false;
@@ -673,15 +710,7 @@ const createWindow = () => {
     mainWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   } catch (_) {}
 
-  if (!app.isPackaged || process.env.NODE_ENV === "development") {
-    mainWindow.loadURL("http://localhost:5173");
-  } else {
-    const rendererPath = path.join(
-      __dirname,
-      "../renderer/main_window/index.html",
-    );
-    mainWindow.loadFile(rendererPath);
-  }
+  loadRenderer(mainWindow);
 };
 
 app.whenReady().then(() => {
@@ -714,6 +743,7 @@ app.whenReady().then(() => {
           }
         },
       },
+      { label: "Settings", click: openSettingsWindow },
       { type: "separator" },
       {
         label: "Quit",
