@@ -54,6 +54,10 @@ jobs:
         run: rustup toolchain install stable --profile minimal --target ${{ matrix.target }} && rustup default stable
         shell: bash
 
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
       - name: Get version from Cargo.toml
         id: pkg
         run: echo "version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)" >> $GITHUB_OUTPUT
@@ -65,13 +69,17 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libxkbcommon-dev libwayland-dev aria2 libxkbcommon-x11-0 mesa-vulkan-drivers xvfb x11-apps
 
+      # macOS x64 shares the arm64 runner, so tests there would repeat the arm64 job.
       - name: Test
+        if: matrix.target != 'x86_64-apple-darwin'
         run: cargo test --locked
 
       - name: Probe this OS (media, battery, Bluetooth, camera, microphone)
+        if: matrix.target != 'x86_64-apple-darwin'
         run: cargo test --locked -- --ignored --nocapture probes
 
       - name: Render every view headlessly
+        if: matrix.target != 'x86_64-apple-darwin'
         shell: bash
         run: |
           mkdir -p out
