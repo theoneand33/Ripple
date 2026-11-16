@@ -130,7 +130,7 @@ pub fn fetch_image(url: &str) -> Option<Vec<u8>> {
     res.body_mut().with_config().limit(LIMIT).read_to_vec().ok()
 }
 
-fn percent_decode(s: &str) -> String {
+pub fn percent_decode(s: &str) -> String {
     let bytes = s.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;

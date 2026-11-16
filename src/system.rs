@@ -402,10 +402,14 @@ fn openable(url: &str) -> bool {
     let lower = url.to_ascii_lowercase();
     if lower.starts_with("http://") || lower.starts_with("https://") { return true }
     let Some(path) = lower.strip_prefix("file://") else { return false };
-    // The file's own name: no query, fragment or trailing slash (a macOS bundle is a folder).
-    let path = path.split(['?', '#']).next().unwrap_or_default().trim_end_matches(['/', '\\']);
-    const EXECUTABLE: [&str; 19] = [".exe", ".bat", ".cmd", ".com", ".ps1", ".msi", ".scr", ".lnk", ".sh", ".app", ".desktop", ".jar",
-        ".vbs", ".vbe", ".js", ".jse", ".wsf", ".hta", ".reg"];
+    // The name the OS opens: decoded as the file-URL handler decodes it, without its query,
+    // fragment or trailing slash (a macOS bundle is a folder), and without the trailing dots
+    // and spaces Windows drops (`x.exe.` is `x.exe`).
+    let path = crate::net::percent_decode(path.split(['?', '#']).next().unwrap_or_default());
+    let path = path.trim_end_matches(['/', '\\', '.', ' ']);
+    const EXECUTABLE: [&str; 29] = [".exe", ".bat", ".cmd", ".com", ".ps1", ".msi", ".scr", ".lnk", ".sh", ".app", ".desktop", ".jar",
+        ".vbs", ".vbe", ".js", ".jse", ".wsf", ".hta", ".reg", ".command", ".tool", ".pkg", ".appimage", ".run", ".py", ".pl",
+        ".cpl", ".msc", ".pif"];
     !path.is_empty() && !EXECUTABLE.iter().any(|ext| path.ends_with(ext))
 }
 
@@ -588,6 +592,11 @@ mod tests {
         assert!(!openable("file:///C:/x.exe#a"));
         assert!(!openable("file:///C:/x.exe?"));
         assert!(!openable("file:///C:/run.vbs"));
+        assert!(!openable("file:///C:/x.exe."));
+        assert!(!openable("file:///C:/x.exe%20"));
+        assert!(!openable("file:///C:/x%2Eexe"));
+        assert!(!openable("file:///Users/me/run.command"));
+        assert!(!openable("file:///home/me/Tool.AppImage"));
         assert!(!openable("javascript:alert(1)"));
         assert!(!openable("file://"));
     }
