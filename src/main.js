@@ -1,6 +1,7 @@
 "use strict";
 import x11Module from "x11";
 import { setT3TokenFile, t3Load, t3Projects, t3StartThread } from "./t3.mjs";
+import { tokenizeArgs, parseCommand } from "./command.mjs";
 
 const {
   app,
@@ -157,6 +158,29 @@ const initializeLinuxInputShape = () => {
 
 const { exec, spawn } = require('child_process');
 
+// Only our own windows may call privileged IPC handlers (launch, open-external, ...).
+const trusted = (event) => [mainWindow, settingsWindow].some((w) => w && event.sender === w.webContents);
+
+// Runs a PowerShell script via -EncodedCommand (cmd.exe cuts a multi-line -Command at the
+// first newline). Resolves trimmed stdout, or "" on failure.
+const runPs = (script, maxBuffer = 1024 * 1024) => new Promise((resolve) => {
+  const enc = Buffer.from(script, "utf16le").toString("base64");
+  exec(`powershell -NoProfile -EncodedCommand ${enc}`, { maxBuffer, encoding: "utf8", timeout: 30000 }, (err, out) => {
+    if (err) console.error("PowerShell failed:", err.message);
+    resolve(err ? "" : out.trim());
+  });
+});
+const runPsList = async (script, maxBuffer) => {
+  try {
+    const d = JSON.parse(await runPs(script, maxBuffer));
+    return Array.isArray(d) ? d : d ? [d] : [];
+  } catch {
+    return [];
+  }
+};
+
+const MEDIA_PS = `[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Add-Type -AssemblyName System.Runtime.WindowsRuntime; $manager = [Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager, Windows.Media.Control, ContentType = WindowsRuntime]::RequestAsync().GetAwaiter().GetResult(); $session = $manager.GetCurrentSession(); if ($session) { $props = $session.TryGetMediaPropertiesAsync().GetAwaiter().GetResult(); $playback = $session.GetPlaybackInfo(); $status = $playback.PlaybackStatus; $thumbnail = $props.Thumbnail; $artwork = ''; if ($thumbnail) { try { $stream = $thumbnail.OpenReadAsync().GetAwaiter().GetResult(); $buffer = New-Object byte[] $stream.Size; $reader = New-Object Windows.Storage.Streams.DataReader $stream; $reader.LoadAsync($stream.Size).GetAwaiter().GetResult() | Out-Null; $reader.ReadBytes($buffer); $artwork = 'data:image/png;base64,' + [Convert]::ToBase64String($buffer); $reader.Close(); $stream.Close(); } catch { } } $info = @{ Title = $props.Title; Artist = $props.Artist; Album = $props.AlbumTitle; Status = $status.ToString().ToLower(); Source = $session.SourceAppUserModelId; Artwork = $artwork }; return $info | ConvertTo-Json -Compress; } return 'null';`;
+
 // --- App discovery providers ---
 
 // Scans Start Menu .lnk files and resolves them to Win32 exe paths.
@@ -184,20 +208,7 @@ foreach ($dir in $dirs) {
 }
 @($results) | ConvertTo-Json -Compress -Depth 2
 `;
-    const enc = Buffer.from(script, "utf16le").toString("base64");
-    exec(
-      `powershell -NoProfile -EncodedCommand ${enc}`,
-      { maxBuffer: 5 * 1024 * 1024 },
-      (err, out) => {
-        if (err || !out) return resolve([]);
-        try {
-          const d = JSON.parse(out.trim());
-          resolve(Array.isArray(d) ? d : d ? [d] : []);
-        } catch {
-          resolve([]);
-        }
-      },
-    );
+    resolve(runPsList(script, 5 * 1024 * 1024));
   });
 }
 
@@ -215,20 +226,7 @@ Get-StartApps -EA SilentlyContinue | ForEach-Object {
 }
 @($results) | ConvertTo-Json -Compress -Depth 2
 `;
-    const enc = Buffer.from(script, "utf16le").toString("base64");
-    exec(
-      `powershell -NoProfile -EncodedCommand ${enc}`,
-      { maxBuffer: 2 * 1024 * 1024 },
-      (err, out) => {
-        if (err || !out) return resolve([]);
-        try {
-          const d = JSON.parse(out.trim());
-          resolve(Array.isArray(d) ? d : d ? [d] : []);
-        } catch {
-          resolve([]);
-        }
-      },
-    );
+    resolve(runPsList(script, 2 * 1024 * 1024));
   });
 }
 
@@ -252,67 +250,6 @@ async function buildCache() {
     }
   }
   return entries.sort((a, b) => a.name.localeCompare(b.name));
-}
-
-// Tokenizes an argument string, correctly handling mid-token quotes.
-// --flag="hello world"  ->  ['--flag=hello world']
-// "quoted arg" --bare   ->  ['quoted arg', '--bare']
-function tokenizeArgs(str) {
-  const args = [];
-  let i = 0;
-  while (i < str.length) {
-    while (i < str.length && /\s/.test(str[i])) i++;
-    if (i >= str.length) break;
-    let token = "";
-    while (i < str.length && !/\s/.test(str[i])) {
-      if (str[i] === '"') {
-        i++;
-        while (i < str.length && str[i] !== '"') token += str[i++];
-        if (i < str.length) i++; // consume closing quote
-      } else {
-        token += str[i++];
-      }
-    }
-    if (token) args.push(token);
-  }
-  return args;
-}
-
-// Parses a Windows command string into { exe, args }.
-// Normalizes forward slashes and expands %ENV_VAR% before splitting.
-function parseCommand(input) {
-  const prepared = input
-    .replace(/\//g, "\\")
-    .replace(/%([^%]+)%/g, (_, v) => process.env[v] || `%${v}%`);
-
-  // Quoted exe path: "C:\path with spaces\app.exe" [args...]
-  const quotedMatch = prepared.match(/^"([^"]+)"(.*)/);
-  if (quotedMatch) {
-    return {
-      exe: quotedMatch[1],
-      args: quotedMatch[2].trim() ? tokenizeArgs(quotedMatch[2].trim()) : [],
-    };
-  }
-
-  // Unquoted path: find exe boundary by known extension so that spaces inside
-  // the path (C:\Program Files\...) don't cause premature splitting.
-  const extMatch = prepared.match(
-    /^(.+?\.(?:exe|cmd|bat|com|ps1))(?:\s+(.*))?$/i,
-  );
-  if (extMatch) {
-    return {
-      exe: extMatch[1],
-      args: extMatch[2] ? tokenizeArgs(extMatch[2]) : [],
-    };
-  }
-
-  // No recognised extension (e.g. cmd, wt) — split on first whitespace.
-  const spaceIdx = prepared.search(/\s/);
-  if (spaceIdx === -1) return { exe: prepared, args: [] };
-  return {
-    exe: prepared.slice(0, spaceIdx),
-    args: tokenizeArgs(prepared.slice(spaceIdx + 1).trim()),
-  };
 }
 
 // --- Launch abstraction ---
@@ -420,18 +357,6 @@ ipcMain.on("set-window-input-shape", (event, rect) => {
   }
 });
 
-// Debug helper: return raw PowerShell output for Windows media retrieval
-ipcMain.handle('debug-get-system-media-raw', async () => {
-  if (process.platform !== 'win32') return { error: 'not-windows' };
-  const psScript = `[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Add-Type -AssemblyName System.Runtime.WindowsRuntime; $manager = [Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager, Windows.Media.Control, ContentType = WindowsRuntime]::RequestAsync().GetAwaiter().GetResult(); $session = $manager.GetCurrentSession(); if ($session) { $props = $session.TryGetMediaPropertiesAsync().GetAwaiter().GetResult(); $playback = $session.GetPlaybackInfo(); $status = $playback.PlaybackStatus; $thumbnail = $props.Thumbnail; $artwork = ''; if ($thumbnail) { try { $stream = $thumbnail.OpenReadAsync().GetAwaiter().GetResult(); $buffer = New-Object byte[] $stream.Size; $reader = New-Object Windows.Storage.Streams.DataReader $stream; $reader.LoadAsync($stream.Size).GetAwaiter().GetResult() | Out-Null; $reader.ReadBytes($buffer); $artwork = 'data:image/png;base64,' + [Convert]::ToBase64String($buffer); $reader.Close(); $stream.Close(); } catch { } } $info = @{ Title = $props.Title; Artist = $props.Artist; Album = $props.AlbumTitle; Status = $status.ToString().ToLower(); Source = $session.SourceAppUserModelId; Artwork = $artwork }; return $info | ConvertTo-Json -Compress; } return 'null';`;
-  const enc = Buffer.from(psScript, 'utf16le').toString('base64');
-  return new Promise((resolve) => {
-    exec(`powershell -NoProfile -EncodedCommand ${enc}`, { maxBuffer: 10 * 1024 * 1024, encoding: 'utf8' }, (error, stdout) => {
-      resolve({ error: error ? String(error) : null, stdout: stdout ? stdout : null });
-    });
-  });
-});
-
 ipcMain.handle("focus-window", (event) => {
   if (mainWindow && event.sender === mainWindow.webContents) {
     mainWindow.focus();
@@ -439,22 +364,25 @@ ipcMain.handle("focus-window", (event) => {
 });
 
 ipcMain.handle("open-external", async (event, url) => {
+  // file:// is allowed for documents but not for anything that would execute.
+  if (!trusted(event) || !/^(https?|file):\/\//i.test(String(url)) || /^file:.*\.(exe|bat|cmd|com|ps1|msi|scr|lnk|sh|app|desktop|jar)$/i.test(String(url))) return;
   await shell.openExternal(url);
 });
 
-ipcMain.handle("t3-load", (event, device) => t3Load(device));
-ipcMain.handle("t3-projects", (event, device, environmentId) => t3Projects(device, environmentId));
-ipcMain.handle("t3-start-thread", (event, device, options) => t3StartThread(device, options));
+ipcMain.handle("t3-load", (event, device) => trusted(event) && t3Load(device));
+ipcMain.handle("t3-projects", (event, device, environmentId) => trusted(event) && t3Projects(device, environmentId));
+ipcMain.handle("t3-start-thread", (event, device, options) => trusted(event) && t3StartThread(device, options));
 
 ipcMain.handle("launch-app", async (event, appName) => {
+  if (!trusted(event) || typeof appName !== "string") return;
   const platform = process.platform;
-  if (platform === "darwin") {
-    exec(`open -a "${appName}"`);
-  } else if (platform === "win32") {
-    launchWindows(appName);
-  } else {
-    exec(appName);
-  }
+  if (platform === "win32") return launchWindows(appName);
+  // No shell: the text is split into argv, so it can't chain commands.
+  const [cmd, ...args] = platform === "darwin" ? ["open", "-a", appName] : tokenizeArgs(appName);
+  if (!cmd) return;
+  const child = spawn(cmd, args, { detached: true, stdio: "ignore" });
+  child.on("error", () => {});
+  child.unref();
 });
 
 ipcMain.handle("build-app-cache", async () => {
@@ -537,9 +465,8 @@ ipcMain.handle("set-notch-mode", (event, enabled) => {
   showMainWindow();
 });
 
-ipcMain.handle("update-window-position", (event, xPerc, yPx) => {});
-
 ipcMain.handle("set-auto-launch", (event, enable) => {
+  if (!trusted(event)) return;
   if (process.platform === "linux") {
     const autostartPath = path.join(
       app.getPath("home"),
@@ -627,6 +554,7 @@ const openSettingsWindow = () => {
       devTools: false,
     },
   });
+  lockNavigation(settingsWindow);
   settingsWindow.on("closed", () => {
     settingsWindow = null;
   });
@@ -634,6 +562,19 @@ const openSettingsWindow = () => {
 };
 
 ipcMain.handle("open-settings", () => openSettingsWindow());
+
+// A link inside the page (e.g. in an AI answer) must never load in a window that has the preload API.
+const lockNavigation = (win) => {
+  const block = (e, url) => {
+    if (url !== win.webContents.getURL()) e.preventDefault();
+  };
+  win.webContents.on("will-navigate", block);
+  win.webContents.on("will-redirect", block);
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    if (/^https?:\/\//i.test(url)) shell.openExternal(url);
+    return { action: "deny" };
+  });
+};
 
 const createWindow = () => {
   mainWindowReady = false;
@@ -707,6 +648,7 @@ const createWindow = () => {
     }
   });
 
+  lockNavigation(mainWindow);
   mainWindow.on("closed", () => {
     mainWindow = null;
   });
@@ -836,72 +778,45 @@ ipcMain.handle("get-system-media", async () => {
         }
       });
     } else if (platform === "win32") {
-      const psScript = `[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Add-Type -AssemblyName System.Runtime.WindowsRuntime; $manager = [Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager, Windows.Media.Control, ContentType = WindowsRuntime]::RequestAsync().GetAwaiter().GetResult(); $session = $manager.GetCurrentSession(); if ($session) { $props = $session.TryGetMediaPropertiesAsync().GetAwaiter().GetResult(); $playback = $session.GetPlaybackInfo(); $status = $playback.PlaybackStatus; $thumbnail = $props.Thumbnail; $artwork = ''; if ($thumbnail) { try { $stream = $thumbnail.OpenReadAsync().GetAwaiter().GetResult(); $buffer = New-Object byte[] $stream.Size; $reader = New-Object Windows.Storage.Streams.DataReader $stream; $reader.LoadAsync($stream.Size).GetAwaiter().GetResult() | Out-Null; $reader.ReadBytes($buffer); $artwork = 'data:image/png;base64,' + [Convert]::ToBase64String($buffer); $reader.Close(); $stream.Close(); } catch { } } $info = @{ Title = $props.Title; Artist = $props.Artist; Album = $props.AlbumTitle; Status = $status.ToString().ToLower(); Source = $session.SourceAppUserModelId; Artwork = $artwork }; return $info | ConvertTo-Json -Compress; } return 'null';`;
-
-      // Use EncodedCommand to avoid quoting/escaping issues and increase buffer
-      const enc = Buffer.from(psScript, "utf16le").toString("base64");
-      exec(
-        `powershell -NoProfile -EncodedCommand ${enc}`,
-        { maxBuffer: 10 * 1024 * 1024, encoding: "utf8" },
-        (error, stdout) => {
-          // Debug logging for Windows media retrieval
-          if (error) console.error("get-system-media: PowerShell error:", error);
-          if (stdout) console.debug("get-system-media: raw stdout length:", Buffer.from(stdout || "", "utf8").length);
-
-          if (
-            error ||
-            !stdout ||
-            stdout.trim() === "null" ||
-            stdout.trim() === "'null'"
-          ) {
-            // Fallback: try reading Spotify window title
-            exec(
-              `powershell -NoProfile -Command "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Get-Process | Where-Object {$_.ProcessName -eq 'Spotify'} | Select-Object MainWindowTitle"`,
-              { encoding: "utf8" },
-              (err, out) => {
-                if (err || !out) {
-                  console.debug("get-system-media: spotify title fallback failed", err, out && out.trim());
-                  return resolve(null);
-                }
-                const title = out
-                  .split("\n")
-                  .find((l) => l.includes("-"))
-                  ?.trim();
-                if (title) {
-                  const [artist, ...songParts] = title.split(" - ");
-                  const song = songParts.join(" - ");
-                  console.debug("get-system-media: parsed spotify title fallback:", { title, artist, song });
-                  resolve({
-                    name: song || title,
-                    artist: artist || "Unknown",
-                    state: "playing",
-                    source: "Spotify",
-                  });
-                } else {
-                  resolve(null);
-                }
-              },
-            );
-            return;
-          }
-
-          try {
-            const data = JSON.parse(stdout);
-            console.debug("get-system-media: parsed data:", data && { Title: data.Title, Artist: data.Artist, Album: data.Album, ArtworkLen: data.Artwork ? data.Artwork.length : 0 });
-            resolve({
-              name: data.Title || "Unknown Title",
-              artist: data.Artist || "Unknown Artist",
-              album: data.Album || "",
-              artwork_url: data.Artwork || null,
-              state: data.Status === "playing" ? "playing" : "paused",
-              source: data.Source || "System",
-            });
-          } catch (e) {
-            console.error("get-system-media: failed to parse PowerShell JSON:", e, stdout && stdout.slice(0, 200));
-            resolve(null);
-          }
-        },
-      );
+      runPs(MEDIA_PS, 10 * 1024 * 1024).then((stdout) => {
+        if (!stdout || stdout === "null" || stdout === "'null'") {
+          // Fallback: try reading Spotify window title
+          exec(
+            `powershell -NoProfile -Command "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Get-Process | Where-Object {$_.ProcessName -eq 'Spotify'} | Select-Object MainWindowTitle"`,
+            { encoding: "utf8" },
+            (err, out) => {
+              if (err || !out) return resolve(null);
+              const title = out
+                .split("\n")
+                .find((l) => l.includes("-"))
+                ?.trim();
+              if (!title) return resolve(null);
+              const [artist, ...songParts] = title.split(" - ");
+              resolve({
+                name: songParts.join(" - ") || title,
+                artist: artist || "Unknown",
+                state: "playing",
+                source: "Spotify",
+              });
+            },
+          );
+          return;
+        }
+        try {
+          const data = JSON.parse(stdout);
+          resolve({
+            name: data.Title || "Unknown Title",
+            artist: data.Artist || "Unknown Artist",
+            album: data.Album || "",
+            artwork_url: data.Artwork || null,
+            state: data.Status === "playing" ? "playing" : "paused",
+            source: data.Source || "System",
+          });
+        } catch (e) {
+          console.error("get-system-media: failed to parse PowerShell JSON:", e);
+          resolve(null);
+        }
+      });
     } else if (platform === "linux") {
       exec(
         'playerctl metadata --format "{{title}}||{{artist}}||{{album}}||{{status}}"',
@@ -977,10 +892,7 @@ ipcMain.handle("get-camera-status", async () => {
         }
         $inUse
       `;
-      exec(`powershell -NoProfile -Command "${psScript}"`, (error, stdout) => {
-        if (error) return resolve(false);
-        resolve(stdout.trim().toLowerCase() === "true");
-      });
+      runPs(psScript).then((out) => resolve(out.toLowerCase() === "true"));
     } else if (platform === "linux") {
       exec("fuser /dev/video* 2>/dev/null", (error, stdout) => {
         resolve(stdout.trim().length > 0);
@@ -1021,7 +933,14 @@ app.on("window-all-closed", () => {
 });
 
 // System Media Controls Handler
+const MEDIA_COMMANDS = {
+  playpause: { linux: "play-pause", win: "TryTogglePlayPauseAsync" },
+  next: { linux: "next", win: "TrySkipNextAsync" },
+  previous: { linux: "previous", win: "TrySkipPreviousAsync" },
+};
 ipcMain.handle("control-system-media", async (event, command) => {
+  const cmd = MEDIA_COMMANDS[command]; // whitelist: command is spliced into AppleScript below
+  if (!trusted(event) || !cmd) return;
   const platform = process.platform;
   if (platform === "darwin") {
     const script = `
@@ -1037,8 +956,8 @@ ipcMain.handle("control-system-media", async (event, command) => {
         `;
     exec(`osascript -e '${script}'`);
   } else if (platform === "linux") {
-    let cmd = command;
-    if (command === "playpause") cmd = "play-pause";
-    exec(`playerctl ${cmd}`);
+    exec(`playerctl ${cmd.linux}`);
+  } else if (platform === "win32") {
+    runPs(`Add-Type -AssemblyName System.Runtime.WindowsRuntime; $m = [Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager, Windows.Media.Control, ContentType = WindowsRuntime]::RequestAsync().GetAwaiter().GetResult(); $s = $m.GetCurrentSession(); if ($s) { $s.${cmd.win}().GetAwaiter().GetResult() | Out-Null }`);
   }
 });

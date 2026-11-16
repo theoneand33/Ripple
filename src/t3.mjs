@@ -101,8 +101,8 @@ async function signInMcp(device) {
     headers: { "content-type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({ grant_type: "authorization_code", code, redirect_uri: REDIRECT_URI, client_id: client.client_id, code_verifier: verifier, resource }),
   });
-  // Renew a day early so a call never races the expiry.
-  mcpTokens[tokenKey(device)] = { token: token.access_token, expiresAt: Date.now() + (token.expires_in - 86400) * 1000 };
+  // Renew a day early (or at half-life for short tokens) so a call never races the expiry.
+  mcpTokens[tokenKey(device)] = { token: token.access_token, expiresAt: Date.now() + Math.max(token.expires_in / 2, token.expires_in - 86400) * 1000 };
   saveTokens();
 }
 
