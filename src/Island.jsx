@@ -96,6 +96,14 @@ function openMusicPlayer(source) {
   }
 }
 
+const SEARCH_ENGINES = {
+  google: { name: "Google", url: "https://www.google.com/search?q=" },
+  duckduckgo: { name: "DuckDuckGo", url: "https://duckduckgo.com/?q=" },
+  brave: { name: "Brave Search", url: "https://search.brave.com/search?q=" },
+  bing: { name: "Bing", url: "https://www.bing.com/search?q=" },
+  startpage: { name: "Startpage", url: "https://www.startpage.com/do/search?q=" },
+};
+
 const TABS = [
   { id: 0, name: "Browser Search", icon: (color) => <Search size={16} color={color} /> },
   { id: 1, name: "Workflows & QA", icon: (color) => <Zap size={16} color={color} /> },
@@ -163,6 +171,7 @@ export default function Island() {
   const [textColor, setTextColor] = useState(localStorage.getItem("text-color") || "#FFFFFF");
   const [bgImage, setBgImage] = useState(localStorage.getItem("bg-image") || "none");
   const [browserSearch, setBrowserSearch] = useState("");
+  const [searchEngine, setSearchEngine] = useState(() => SEARCH_ENGINES[localStorage.getItem("search-engine")] ? localStorage.getItem("search-engine") : "google");
   const [clipboard, setClipboard] = useState([]);
   const [charging, setCharging] = useState(false);
   const [chargingAlert, setChargingAlert] = useState(false);
@@ -864,9 +873,12 @@ export default function Island() {
       const urlToOpen = hasProtocol ? trimmedSearch : `https://${trimmedSearch}`;
       window.electronAPI?.openExternal ? window.electronAPI.openExternal(urlToOpen) : window.open(urlToOpen, "_blank");
     } else {
-      const encodedQuery = encodeURIComponent(trimmedSearch);
-      window.electronAPI?.openExternal ? window.electronAPI.openExternal(`https://www.google.com/search?q=${encodedQuery}`) : window.open(`https://www.google.com/search?q=${encodedQuery}`, "_blank");
+      const searchUrl = SEARCH_ENGINES[searchEngine].url + encodeURIComponent(trimmedSearch);
+      window.electronAPI?.openExternal ? window.electronAPI.openExternal(searchUrl) : window.open(searchUrl, "_blank");
     }
+    setBrowserSearch("");
+    document.activeElement?.blur();
+    setMode(standbyBorderEnabled ? "quick" : largeStandbyEnabled ? "large" : "still");
   }
 
   // Clipboard 
@@ -1563,7 +1575,7 @@ export default function Island() {
               <div style={{ width: '100%', display: 'flex', justifyContent: 'center' }}>
                 <input
                   id="browser-searchbar"
-                  placeholder="Search google or enter URL"
+                  placeholder={`Search ${SEARCH_ENGINES[searchEngine].name} or enter URL`}
                   value={browserSearch}
                   onChange={(e) => setBrowserSearch(e.target.value)}
                   onKeyDown={(e) => {
@@ -2561,6 +2573,16 @@ export default function Island() {
                     <select value={showInfoWhenIdleEnabled ? "true" : "false"} onChange={handleShowInfoWhenIdleChange}>
                       <option value="true">Enabled</option>
                       <option value="false">Disabled</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div className="settings-section">
+                  <h3 style={{ fontSize: 13, textTransform: 'uppercase', opacity: 0.5, letterSpacing: '0.05em' }}>Browser Search</h3>
+                  <div className="settings-row">
+                    <span className="settings-label">Search Engine</span>
+                    <select value={searchEngine} onChange={(e) => { setSearchEngine(e.target.value); localStorage.setItem("search-engine", e.target.value); }}>
+                      {Object.entries(SEARCH_ENGINES).map(([id, engine]) => <option key={id} value={id}>{engine.name}</option>)}
                     </select>
                   </div>
                 </div>
