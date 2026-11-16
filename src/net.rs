@@ -98,7 +98,8 @@ enum Sse {
 /// One line of an OpenAI-style event stream.
 fn sse_delta(line: &str) -> Sse {
     let Some(data) = line.strip_prefix("data: ") else { return Sse::Other };
-    if data.contains("[DONE]") { return Sse::Done }
+    // Only the sentinel line ends the stream; an answer may mention `[DONE]` itself.
+    if data.trim() == "[DONE]" { return Sse::Done }
     match serde_json::from_str::<Value>(data) {
         Ok(v) => match v["choices"][0]["delta"]["content"].as_str() {
             Some(delta) if !delta.is_empty() => Sse::Delta(delta.into()),
@@ -158,6 +159,7 @@ mod tests {
         assert_eq!(sse_delta(r#"data: {"choices":[{"delta":{"content":"Hi"}}]}"#), Sse::Delta("Hi".into()));
         assert_eq!(sse_delta(r#"data: {"choices":[{"delta":{}}]}"#), Sse::Other);
         assert_eq!(sse_delta("data: [DONE]"), Sse::Done);
+        assert_eq!(sse_delta(r#"data: {"choices":[{"delta":{"content":"say [DONE]"}}]}"#), Sse::Delta("say [DONE]".into()));
         assert_eq!(sse_delta(": keep-alive"), Sse::Other);
         assert_eq!(sse_delta("data: {broken"), Sse::Other);
     }
