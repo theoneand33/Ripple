@@ -355,7 +355,7 @@ pub fn set_auto_launch(enable: bool) {
         let Some(dir) = rune::dirs::home().map(|h| h.join(".config/autostart")) else { return };
         let file = dir.join("ripple.desktop");
         let result = if enable {
-            let entry = format!("[Desktop Entry]\nType=Application\nVersion=1.0\nName=Ripple\nComment=Ripple Desktop Assistant\nExec=\"{}\"\nIcon=ripple\nTerminal=false\n", exe.display());
+            let entry = format!("[Desktop Entry]\nType=Application\nVersion=1.0\nName=Ripple\nComment=Ripple Desktop Assistant\nExec={}\nIcon=ripple\nTerminal=false\n", desktop_exec(&exe.to_string_lossy()));
             std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&file, entry))
         } else if file.exists() {
             std::fs::remove_file(&file)
@@ -374,6 +374,18 @@ pub fn set_auto_launch(enable: bool) {
     // macOS: not offered, as before (Settings hides the row).
     #[cfg(target_os = "macos")]
     let _ = (exe, enable);
+}
+
+/// A path as one quoted Exec argument: `"`, `` ` ``, `$` and `\` take a backslash, `%` doubles,
+/// then every backslash doubles again, since Exec is itself an escaped string.
+#[cfg_attr(not(any(target_os = "linux", test)), allow(dead_code))]
+fn desktop_exec(path: &str) -> String {
+    let quoted: String = path.chars().flat_map(|c| match c {
+        '"' | '`' | '$' | '\\' => vec!['\\', c],
+        '%' => vec!['%', '%'],
+        c => vec![c],
+    }).collect();
+    format!("\"{}\"", quoted.replace('\\', "\\\\"))
 }
 
 // --- Opening links and apps ---
@@ -626,6 +638,12 @@ mod tests {
         let (bluetooth, camera, microphone) = (bluetooth_connected(), camera_in_use(), microphone_in_use());
         println!("battery {percent}% charging={charging} media={track:?} bluetooth={bluetooth} camera={camera} microphone={microphone}");
         assert!(started.elapsed() < TIMEOUT * 5, "a hung tool must time out");
+    }
+
+    #[test]
+    fn launch_at_login_paths_are_escaped_for_the_desktop_entry() {
+        assert_eq!(desktop_exec("/opt/Ripple/ripple"), r#""/opt/Ripple/ripple""#);
+        assert_eq!(desktop_exec(r#"/a "b"/$c`d`/100%\e"#), r#""/a \\"b\\"/\\$c\\`d\\`/100%%\\\\e""#);
     }
 
     #[test]
