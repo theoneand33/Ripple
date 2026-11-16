@@ -24,5 +24,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   t3Load: (device) => ipcRenderer.invoke('t3-load', device),
   t3Projects: (device, environmentId) => ipcRenderer.invoke('t3-projects', device, environmentId),
   t3StartThread: (device, options) => ipcRenderer.invoke('t3-start-thread', device, options),
+  openSettings: () => ipcRenderer.invoke('open-settings'),
   platform: process.platform
 });

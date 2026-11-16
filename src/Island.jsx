@@ -96,6 +96,14 @@ function openMusicPlayer(source) {
   }
 }
 
+const SEARCH_ENGINES = {
+  google: { name: "Google", url: "https://www.google.com/search?q=" },
+  duckduckgo: { name: "DuckDuckGo", url: "https://duckduckgo.com/?q=" },
+  brave: { name: "Brave Search", url: "https://search.brave.com/search?q=" },
+  bing: { name: "Bing", url: "https://www.bing.com/search?q=" },
+  startpage: { name: "Startpage", url: "https://www.startpage.com/do/search?q=" },
+};
+
 const TABS = [
   { id: 0, name: "Browser Search", icon: (color) => <Search size={16} color={color} /> },
   { id: 1, name: "Workflows & QA", icon: (color) => <Zap size={16} color={color} /> },
@@ -105,8 +113,9 @@ const TABS = [
   { id: 5, name: "Clipboard", icon: (color) => <List size={16} color={color} /> },
   { id: 6, name: "Tasks", icon: (color) => <Check size={16} color={color} /> },
   { id: 8, name: "T3 Code", icon: (color) => <Terminal size={16} color={color} /> },
-  { id: 7, name: "Settings", icon: (color) => <Settings size={16} color={color} /> },
 ];
+
+const isSettingsWindow = window.location.hash === "#settings";
 
 export default function Island() {
   const islandElementRef = useRef(null);
@@ -114,13 +123,11 @@ export default function Island() {
   const [time, setTime] = useState(null);
   const [mode, setMode] = useState("still");
   const [tabOrder, setTabOrder] = useState(() => {
-    // Insert tabs added after the order was saved just before Settings.
-    const saved = JSON.parse(localStorage.getItem("tab-order") || "[]");
-    const missing = TABS.map(t => t.id).filter(id => !saved.includes(id));
-    const i = saved.indexOf(7);
-    return i < 0 ? [...saved, ...missing] : [...saved.slice(0, i), ...missing, ...saved.slice(i)];
+    const saved = JSON.parse(localStorage.getItem("tab-order") || "[]").filter(id => id !== 7); // 7 was the old Settings tab
+    // Append tabs added after the order was saved.
+    return [...saved, ...TABS.map(t => t.id).filter(id => !saved.includes(id))];
   });
-  const [hiddenTabs, setHiddenTabs] = useState(() => JSON.parse(localStorage.getItem("hidden-tabs") || "[]"));
+  const [hiddenTabs, setHiddenTabs] = useState(() => JSON.parse(localStorage.getItem("hidden-tabs") || "[]").filter(id => id !== 7));
   const [defaultTabId, setDefaultTabId] = useState(() => Number(localStorage.getItem("default-tab") || 0));
 
 
@@ -156,7 +163,7 @@ export default function Island() {
   const [userText, setUserText] = useState("");
   const [batteryAlertsEnabled, setBatteryAlertsEnabled] = useState(localStorage.getItem("battery-alerts") !== "false");
   const [islandBorderEnabled, setIslandBorderEnabled] = useState(localStorage.getItem("island-border") === "true");
-  const [standbyBorderEnabled, setStandbyEnabled] = useState(localStorage.getItem("standby-mode") === "true");
+  const [standbyBorderEnabled, setStandbyEnabled] = useState(localStorage.getItem("standby-mode") !== "false");
   const [largeStandbyEnabled, setLargeStandbyEnabled] = useState(localStorage.getItem("large-standby-mode") === "true");
   const [hideNotActiveIslandEnabled, sethideNotActiveIslandEnabled] = useState(localStorage.getItem("hide-island-notactive") === "true");
   const [showInfoWhenIdleEnabled, setShowInfoWhenIdleEnabled] = useState(
@@ -165,11 +172,12 @@ export default function Island() {
   const [hourFormat, setHourFormat] = useState((localStorage.getItem("hour-format") || "12-hr") === "12-hr");
   const [weather, setWeather] = useState({ temp: "", status: "" });
   const [weatherUnit, setweatherUnit] = useState(localStorage.getItem("weather-unit") || "f");
-  const [theme, setTheme] = useState("default");
+  const [theme, setTheme] = useState(localStorage.getItem("theme") || "default"); // persisted so the island sees the settings window's choice
   const [bgColor, setBgColor] = useState(localStorage.getItem("bg-color") || "#000000");
   const [textColor, setTextColor] = useState(localStorage.getItem("text-color") || "#FFFFFF");
   const [bgImage, setBgImage] = useState(localStorage.getItem("bg-image") || "none");
   const [browserSearch, setBrowserSearch] = useState("");
+  const [searchEngine, setSearchEngine] = useState(() => SEARCH_ENGINES[localStorage.getItem("search-engine")] ? localStorage.getItem("search-engine") : "google");
   const [clipboard, setClipboard] = useState([]);
   const [charging, setCharging] = useState(false);
   const [chargingAlert, setChargingAlert] = useState(false);
@@ -410,14 +418,16 @@ export default function Island() {
     )
   );
   let width = mode === "large"
-    ? (currentTab === 7 ? 495 : currentTab === 1 ? 480 : currentTab === 3 ? 330 : currentTab === 0 ? 405 : 380)
+    ? (currentTab === 1 ? 480 : currentTab === 3 ? 330 : currentTab === 0 ? 405 : 380)
     : (mode === "quick" && isPlaying && !alert && !chargingAlert && !bluetoothAlert && !cameraAlert && !microphoneAlert)
       ? nowPlayingWidth
-      : (mode === "quick" || alert || chargingAlert || bluetoothAlert || cameraAlert || microphoneAlert)
-        ? 260
-        : isPlaying
-          ? nowPlayingWidth
-          : 170;
+      : (alert || chargingAlert || bluetoothAlert || cameraAlert || microphoneAlert)
+        ? (notchModeEnabled ? 260 : 160) // fits icon + "Microphone"
+        : mode === "quick"
+          ? (notchModeEnabled ? 260 : 140) // fits "23:59" + weather/"100%"
+          : isPlaying
+            ? nowPlayingWidth
+            : (notchModeEnabled ? 170 : 140);
   if (notchModeEnabled && mode !== "large") width = Math.max(isPlaying ? 300 : 0, width + 40);
   const quickTextViewportWidth = notchModeEnabled
     ? Math.min(100, Math.max(80, Math.floor(width * 0.3)))
@@ -425,7 +435,7 @@ export default function Island() {
   const quickTextFadeWidth = notchModeEnabled ? 5 : 15;
   const notchContentInset = notchModeEnabled ? 34 : 0;
   let height = mode === "large"
-    ? (currentTab === 7 ? (positionMode === "free" ? 425 : 345) : currentTab === 6 || currentTab === 8 ? 250 : currentTab === 3 ? 150 : currentTab === 0 ? 120 : currentTab === 1 ? 210 : 190) + notchContentInset
+    ? (currentTab === 6 || currentTab === 8 ? 250 : currentTab === 3 ? 150 : currentTab === 0 ? 120 : currentTab === 1 ? 210 : 190) + notchContentInset
     : notchModeEnabled ? 34 : 40;
 
   const normalizeApps = (arr) => arr.map(a => typeof a === 'string' ? { name: a, launch: a } : a);
@@ -490,7 +500,7 @@ export default function Island() {
   }
 
   if (!localStorage.getItem("standby-mode")) {
-    localStorage.setItem("standby-mode", "false");
+    localStorage.setItem("standby-mode", "true");
   }
 
   if (!localStorage.getItem("hour-format")) {
@@ -615,10 +625,25 @@ export default function Island() {
   };
 
   useEffect(() => {
-    if (currentTab === 7 && window.electronAPI?.getDisplays) {
+    if (isSettingsWindow && window.electronAPI?.getDisplays) {
       window.electronAPI.getDisplays().then(setDisplays);
     }
-  }, [currentTab]);
+  }, []);
+
+  // shortcut: island reloads to pick up changes made in the settings window; replace with per-key sync if reload flicker matters
+  useEffect(() => {
+    if (isSettingsWindow) return;
+    let timer;
+    const onStorage = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => window.location.reload(), 400);
+    };
+    window.addEventListener("storage", onStorage);
+    return () => {
+      clearTimeout(timer);
+      window.removeEventListener("storage", onStorage);
+    };
+  }, []);
 
   const handleBgImageChange = (e) => {
     const value = e.target.value;
@@ -884,9 +909,12 @@ export default function Island() {
       const urlToOpen = hasProtocol ? trimmedSearch : `https://${trimmedSearch}`;
       window.electronAPI?.openExternal ? window.electronAPI.openExternal(urlToOpen) : window.open(urlToOpen, "_blank");
     } else {
-      const encodedQuery = encodeURIComponent(trimmedSearch);
-      window.electronAPI?.openExternal ? window.electronAPI.openExternal(`https://www.google.com/search?q=${encodedQuery}`) : window.open(`https://www.google.com/search?q=${encodedQuery}`, "_blank");
+      const searchUrl = SEARCH_ENGINES[searchEngine].url + encodeURIComponent(trimmedSearch);
+      window.electronAPI?.openExternal ? window.electronAPI.openExternal(searchUrl) : window.open(searchUrl, "_blank");
     }
+    setBrowserSearch("");
+    document.activeElement?.blur();
+    setMode(standbyBorderEnabled ? "quick" : largeStandbyEnabled ? "large" : "still");
   }
 
   // Clipboard 
@@ -1277,6 +1305,633 @@ export default function Island() {
     return () => window.removeEventListener("resize", syncLinuxWindowShape);
   }, []);
 
+  const settingsPanel = (
+    <div id="settings-container">
+      <div className="settings-section">
+        <h3 style={{ fontSize: 13, textTransform: 'uppercase', opacity: 0.5, letterSpacing: '0.05em' }}>General</h3>
+        <div className="settings-row">
+          <span className="settings-label">12/24 Hour Format</span>
+          <select value={hourFormat ? "12-hr" : "24-hr"} onChange={handleHourFormatChange}>
+            <option value="12-hr">12-hour</option>
+            <option value="24-hr">24-hour</option>
+          </select>
+        </div>
+        {window.electronAPI?.platform !== 'darwin' && (
+          <div className="settings-row">
+            <span className="settings-label">Auto Launch on Boot</span>
+            <select value={autoLaunchEnabled ? "true" : "false"} onChange={handleAutoLaunchChange}>
+              <option value="true">Enabled</option>
+              <option value="false">Disabled</option>
+            </select>
+          </div>
+        )}
+        {displays.length > 0 && (
+          <div className="settings-row">
+            <span className="settings-label">Target Display</span>
+            <select value={currentDisplayId} onChange={handleDisplayChange}>
+              {displays.map(d => (
+                <option key={d.id} value={d.id}>{d.label}</option>
+              ))}
+            </select>
+          </div>
+        )}
+      </div>
+      <div className="settings-section">
+        <h3 style={{ fontSize: 13, textTransform: 'uppercase', opacity: 0.5, letterSpacing: '0.05em', marginBottom: '4px' }}>Tab Management</h3>
+        <p style={{ fontSize: 11, opacity: 0.4, marginTop: -8, marginBottom: 8 }}>Drag to reorder, click eye to hide.</p>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+          {tabOrder.map((id, i) => {
+            const tabDef = TABS.find(t => t.id === id);
+            const isHidden = hiddenTabs.includes(id);
+            return (
+              <div
+                key={id}
+                className={`tab-order-item ${isHidden ? 'hidden' : ''}`}
+                style={{ cursor: 'grab' }}
+                draggable
+                onDragStart={(e) => {
+                  e.dataTransfer.setData("text/plain", i);
+                  e.currentTarget.style.opacity = '0.4';
+                  e.currentTarget.style.borderStyle = 'dashed';
+                }}
+                onDragEnd={(e) => {
+                  e.currentTarget.style.opacity = isHidden ? '0.45' : '1';
+                  e.currentTarget.style.borderStyle = isHidden ? 'dashed' : 'solid';
+                }}
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  e.currentTarget.style.background = `color-mix(in srgb, ${textColor}, transparent 90%)`;
+                  e.currentTarget.style.transform = 'translateY(-2px)';
+                }}
+                onDragLeave={(e) => {
+                  e.currentTarget.style.background = '';
+                  e.currentTarget.style.transform = '';
+                }}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  e.currentTarget.style.background = '';
+                  e.currentTarget.style.transform = '';
+                  const fromIdx = parseInt(e.dataTransfer.getData("text/plain"));
+                  moveTabOrder(fromIdx, i);
+                }}
+              >
+                <GripVertical size={16} style={{ opacity: 0.3, cursor: 'grab' }} />
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, flex: 1 }}>
+                  {tabDef.icon(textColor)}
+                  <span style={{ fontSize: 14, fontWeight: 500 }}>{tabDef.name}</span>
+                </div>
+                <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+                  <button
+                    className="tab-order-btn"
+                    onClick={() => {
+                      setDefaultTabId(id);
+                      localStorage.setItem("default-tab", id);
+                    }}
+                    title="Set as default"
+                    style={{ opacity: defaultTabId === id ? 1 : 0.3, color: defaultTabId === id ? '#FFD700' : textColor }}
+                  >
+                    <Star size={16} fill={defaultTabId === id ? '#FFD700' : 'none'} />
+                  </button>
+                  <div style={{ width: 1, height: 16, background: textColor, opacity: 0.1, margin: '0 4px' }} />
+                  <button
+                    className="tab-order-btn"
+                    onClick={() => toggleTabVisibility(id)}
+                    title={isHidden ? "Show" : "Hide"}
+                    style={{ opacity: isHidden ? 1 : 0.6 }}
+                  >
+                    {isHidden ? <EyeOff size={16} /> : <Eye size={16} />}
+                  </button>
+                  <div style={{ width: 1, height: 16, background: textColor, opacity: 0.1, margin: '0 4px' }} />
+                  <button
+                    className="tab-order-btn"
+                    disabled={i === 0}
+                    onClick={() => moveTabOrder(i, i - 1)}
+                  >
+                    <ChevronLeft size={16} style={{ transform: 'rotate(90deg)' }} />
+                  </button>
+                  <button
+                    className="tab-order-btn"
+                    disabled={i === tabOrder.length - 1}
+                    onClick={() => moveTabOrder(i, i + 1)}
+                  >
+                    <ChevronLeft size={16} style={{ transform: 'rotate(-90deg)' }} />
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      <div className="settings-section">
+        <h3 style={{ fontSize: 13, textTransform: 'uppercase', opacity: 0.5, letterSpacing: '0.05em' }}>Island Style</h3>
+        <div className="settings-row">
+          <span className="settings-label">Notch Mode</span>
+          <select
+            value={notchModeEnabled ? "true" : "false"}
+            onChange={(e) => {
+              const enabled = e.target.value === "true";
+              setNotchModeEnabled(enabled);
+              localStorage.setItem("notch-mode", enabled ? "true" : "false");
+              window.electronAPI?.setNotchMode?.(enabled);
+            }}
+          >
+            <option value="true">Enabled</option>
+            <option value="false">Disabled</option>
+          </select>
+        </div>
+        <div className="settings-row">
+          <span className="settings-label">Theme</span>
+          <select value={theme} onChange={(e) => { setTheme(e.target.value); localStorage.setItem("theme", e.target.value); }}>
+            <option value="none">Default</option>
+            <option value="sleek-black">Sleek Black</option>
+            <option value="win95">Windows 95</option>
+          </select>
+        </div>
+        <div className="settings-section" style={{ alignItems: 'center', background: 'rgba(255,255,255,0.03)', padding: '15px', borderRadius: '18px', border: '1px solid rgba(255,255,255,0.05)' }}>
+          <span className="settings-label" style={{ textAlign: 'center', marginBottom: '8px', opacity: 1, color: textColor }}>Position Mode</span>
+          <div className="radio-group" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', width: '100%', gap: '15px 10px' }}>
+            {[
+              { val: "top-left", label: "Top L" },
+              { val: "top-center", label: "Top C" },
+              { val: "top-right", label: "Top R" },
+              { val: "bottom-left", label: "Bot L" },
+              { val: "bottom-center", label: "Bot C" },
+              { val: "bottom-right", label: "Bot R" }
+            ].map((mode) => (
+              <label key={mode.val} className="radio-label" style={{ justifyContent: 'center' }}>
+                <input
+                  type="radio"
+                  name="positionMode"
+                  value={mode.val}
+                  checked={positionMode === mode.val}
+                  onChange={(e) => {
+                    setPositionMode(e.target.value);
+                    localStorage.setItem("position-mode", e.target.value);
+                  }}
+                />
+                <span className="radio-custom"></span>
+                {mode.label}
+              </label>
+            ))}
+          </div>
+          <div style={{ width: '100%', height: '1px', background: 'rgba(255,255,255,0.1)', margin: '10px 0' }}></div>
+          <label className="radio-label" style={{ justifyContent: 'center' }}>
+            <input
+              type="radio"
+              name="positionMode"
+              value="free"
+              checked={positionMode === "free"}
+              onChange={(e) => {
+                setPositionMode(e.target.value);
+                localStorage.setItem("position-mode", e.target.value);
+              }}
+            />
+            <span className="radio-custom"></span>
+            FREE (MANUAL)
+          </label>
+        </div>
+        <AnimatePresence>
+          {isFree && (
+            <motion.div
+              initial={{ opacity: 0, height: 0 }}
+              animate={{ opacity: 1, height: 'auto' }}
+              exit={{ opacity: 0, height: 0 }}
+              transition={{ duration: 0.15 }}
+              style={{ overflow: 'hidden', display: 'flex', flexDirection: 'column', gap: '12px' }}
+            >
+              <div className="settings-row">
+                <span className="settings-label">Position X ({islandX.toFixed(1)}%)</span>
+                <input
+                  type="range"
+                  min="0"
+                  max="100"
+                  step="0.1"
+                  value={islandX}
+                  onPointerDown={(e) => {
+                    e.stopPropagation();
+                    updateDragging(true);
+                  }}
+                  onChange={handleIslandXChange}
+                  onPointerUp={(e) => {
+                    e.stopPropagation();
+                    savePosition();
+                    handleDragEndChecks(e);
+                    e.target.blur();
+                  }}
+                  list="tickmarks"
+                  style={{ flex: 1, accentColor: textColor }}
+                />
+                <datalist id="tickmarks">
+                  <option value="50" label="50%"></option>
+                </datalist>
+              </div>
+              <div className="settings-row">
+                <span className="settings-label">Position Y ({islandY}px)</span>
+                <input
+                  type="range"
+                  min="0"
+                  max="500"
+                  value={islandY}
+                  onPointerDown={(e) => {
+                    e.stopPropagation();
+                    updateDragging(true);
+                  }}
+                  onChange={handleIslandYChange}
+                  onPointerUp={(e) => {
+                    e.stopPropagation();
+                    savePosition();
+                    handleDragEndChecks(e);
+                    e.target.blur();
+                  }}
+                  style={{ flex: 1, accentColor: textColor }}
+                />
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+        <div className="settings-row">
+          <span className="settings-label">Island Border</span>
+          <select value={islandBorderEnabled ? "true" : "false"} onChange={handleIslandBorderChange}>
+            <option value="true">Show</option>
+            <option value="false">Hide</option>
+          </select>
+        </div>
+        <div className="settings-row">
+          <span className="settings-label">Hide When Inactive</span>
+          <select value={hideNotActiveIslandEnabled ? "true" : "false"} onChange={handlehideNotActiveIslandChange}>
+            <option value="true">Yes</option>
+            <option value="false">No</option>
+          </select>
+        </div>
+      </div>
+
+      <div className="settings-section">
+        <h3 style={{ fontSize: 13, textTransform: 'uppercase', opacity: 0.5, letterSpacing: '0.05em' }}>Colors & Assets</h3>
+        <div className="settings-row">
+          <span className="settings-label">Island Color</span>
+          <input
+            className="select-input"
+            style={{ width: '100px' }}
+            placeholder="#000000"
+            value={bgColor}
+            onChange={handleBgColorChange}
+          />
+        </div>
+        <div className="settings-row">
+          <span className="settings-label">Text Color</span>
+          <input
+            className="select-input"
+            style={{ width: '100px' }}
+            placeholder="#FAFAFA"
+            value={textColor}
+            onChange={handleTextColorChange}
+          />
+        </div>
+        <div className="settings-row" style={{ flexDirection: 'column', alignItems: 'flex-start' }}>
+          <span className="settings-label">Background Image URL</span>
+          <input
+            className="select-input"
+            placeholder="https://..."
+            value={bgImage}
+            onChange={handleBgImageChange}
+          />
+        </div>
+      </div>
+
+      <div className="settings-section">
+        <h3 style={{ fontSize: 13, textTransform: 'uppercase', opacity: 0.5, letterSpacing: '0.05em' }}>Features</h3>
+        <div className="settings-row">
+          <span className="settings-label">Low Battery Alerts</span>
+          <select value={batteryAlertsEnabled ? "true" : "false"} onChange={handleBatteryAlertsChange}>
+            <option value="true">Enabled</option>
+            <option value="false">Disabled</option>
+          </select>
+        </div>
+        <div className="settings-row">
+          <span className="settings-label">Standby Mode</span>
+          <select value={standbyBorderEnabled ? "true" : "false"} onChange={handleStandbyChange}>
+            <option value="true">Enabled</option>
+            <option value="false">Disabled</option>
+          </select>
+        </div>
+        <div className="settings-row">
+          <span className="settings-label">Large Standby Mode</span>
+          <select value={largeStandbyEnabled ? "true" : "false"} onChange={handleLargeStandbyChange}>
+            <option value="true">Enabled</option>
+            <option value="false">Disabled</option>
+          </select>
+        </div>
+        <div className="settings-row">
+          <span className="settings-label">Show Info when idle</span>
+          <select value={showInfoWhenIdleEnabled ? "true" : "false"} onChange={handleShowInfoWhenIdleChange}>
+            <option value="true">Enabled</option>
+            <option value="false">Disabled</option>
+          </select>
+        </div>
+      </div>
+
+      <div className="settings-section">
+        <h3 style={{ fontSize: 13, textTransform: 'uppercase', opacity: 0.5, letterSpacing: '0.05em' }}>Browser Search</h3>
+        <div className="settings-row">
+          <span className="settings-label">Search Engine</span>
+          <select value={searchEngine} onChange={(e) => { setSearchEngine(e.target.value); localStorage.setItem("search-engine", e.target.value); }}>
+            {Object.entries(SEARCH_ENGINES).map(([id, engine]) => <option key={id} value={id}>{engine.name}</option>)}
+          </select>
+        </div>
+      </div>
+
+      <div className="settings-section">
+        <h3 style={{ fontSize: 13, textTransform: 'uppercase', opacity: 0.5, letterSpacing: '0.05em' }}>Weather</h3>
+        <div className="settings-row">
+          <span className="settings-label">Location</span>
+          <input
+            className="select-input"
+            placeholder="City, ST, Country"
+            value={weatherLocation}
+            onChange={(e) => {
+              setWeatherLocation(e.target.value);
+              localStorage.setItem("location", e.target.value);
+            }}
+          />
+        </div>
+        <div className="settings-row">
+          <span className="settings-label">Unit</span>
+          <select value={weatherUnit} onChange={handleWeatherUnitChange}>
+            <option value="f">Fahrenheit (°F)</option>
+            <option value="c">Celsius (°C)</option>
+          </select>
+        </div>
+      </div>
+
+      <div className="settings-section">
+        <h3 style={{ fontSize: 13, textTransform: 'uppercase', opacity: 0.5, letterSpacing: '0.05em' }}>Quick Apps</h3>
+        <div style={{ display: 'flex', gap: '8px', marginBottom: '12px', position: 'relative', flexDirection: 'column' }}>
+          <div style={{ display: 'flex', gap: '8px' }}>
+            <input
+              className="select-input"
+              style={{ flex: 1 }}
+              value={newQuickApp}
+              placeholder="Add app (e.g. Apple Music)"
+              onChange={(e) => {
+                const val = e.target.value;
+                setNewQuickApp(val);
+                selectedAppRef.current = null;
+                clearTimeout(appSearchTimer.current);
+                if (window.electronAPI?.platform === 'win32' && val.trim().length > 1) {
+                  appSearchTimer.current = setTimeout(async () => {
+                    const results = await window.electronAPI.searchApps(val.trim());
+                    setAppSuggestions(results);
+                    setShowSuggestions(results.length > 0);
+                  }, 200);
+                } else {
+                  setAppSuggestions([]);
+                  setShowSuggestions(false);
+                }
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') addQuickApp();
+                if (e.key === 'Escape') setShowSuggestions(false);
+              }}
+              onBlur={() => setTimeout(() => setShowSuggestions(false), 150)}
+            />
+            <button
+              onClick={addQuickApp}
+              style={{
+                backgroundColor: textColor,
+                color: bgColor,
+                border: 'none',
+                borderRadius: '12px',
+                padding: '8px 12px',
+                fontWeight: 600,
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center'
+              }}
+            >
+              <Plus size={18} />
+            </button>
+          </div>
+          {showSuggestions && appSuggestions.length > 0 && (
+            <div style={{
+              position: 'absolute',
+              top: '100%',
+              left: 0,
+              right: 0,
+              zIndex: 999,
+              borderRadius: '12px',
+              overflow: 'hidden',
+              boxShadow: '0 4px 20px rgba(0,0,0,0.3)',
+              backgroundColor: bgColor,
+              border: `1px solid ${textColor}22`,
+              marginTop: '4px'
+            }}>
+              {appSuggestions.map((s, i) => (
+                <div
+                  key={i}
+                  onMouseDown={() => {
+                    selectedAppRef.current = s;
+                    setNewQuickApp(s.name);
+                    setShowSuggestions(false);
+                  }}
+                  style={{
+                    padding: '8px 12px',
+                    cursor: 'pointer',
+                    color: textColor,
+                    fontSize: 13,
+                    borderBottom: i < appSuggestions.length - 1 ? `1px solid ${textColor}11` : 'none',
+                  }}
+                  onMouseEnter={e => e.currentTarget.style.backgroundColor = `${textColor}11`}
+                  onMouseLeave={e => e.currentTarget.style.backgroundColor = 'transparent'}
+                >
+                  <div style={{ fontWeight: 600 }}>{s.name}</div>
+                  <div style={{ opacity: 0.4, fontSize: 11, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.launch}</div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
+          <AnimatePresence>
+            {quickApps.map((app, idx) => (
+              <motion.div
+                key={`qa-${idx}`}
+                className="settings-row"
+                style={{ justifyContent: 'space-between', padding: '5px 0' }}
+                initial={{ opacity: 0, height: 0 }}
+                animate={{ opacity: 1, height: 'auto' }}
+                exit={{ opacity: 0, x: -20, height: 0, padding: 0 }}
+                transition={{ duration: 0.2 }}
+              >
+                <input
+                  className="select-input"
+                  style={{ flex: 1, border: 'none', background: 'transparent', padding: 0 }}
+                  value={app.name}
+                  onChange={(e) => handleQaChange(idx, e.target.value)}
+                />
+                <button
+                  onClick={() => removeQuickApp(idx)}
+                  style={{ color: '#ff4d4d', background: 'none', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                >
+                  <Trash2 size={16} />
+                </button>
+              </motion.div>
+            ))}
+          </AnimatePresence>
+        </div>
+      </div>
+
+      <div className="settings-section" style={{ marginBottom: 30 }}>
+        <h3 style={{ fontSize: 13, textTransform: 'uppercase', opacity: 0.5, letterSpacing: '0.05em' }}>Integrations</h3>
+        <div className="settings-row">
+          <span className="settings-label">AI Provider</span>
+          <select
+            value={aiProvider}
+            onChange={(e) => {
+              setAiProvider(e.target.value);
+              localStorage.setItem("ai-provider", e.target.value);
+              const model = e.target.value === "groq" ? "llama-3.3-70b-versatile" : "meta-llama/llama-3.3-70b-instruct";
+              setAiModel(model);
+              localStorage.setItem("ai-model", model);
+            }}
+          >
+            <option value="groq">Groq</option>
+            <option value="openrouter">OpenRouter</option>
+          </select>
+        </div>
+        <div className="settings-row" style={{ flexDirection: 'column', alignItems: 'flex-start' }}>
+          <span className="settings-label">AI Model</span>
+          <input
+            className="select-input"
+            value={aiModel}
+            placeholder={aiProvider === "groq" ? "llama-3.3-70b-versatile" : "meta-llama/llama-3.3-70b-instruct"}
+            onChange={(e) => {
+              setAiModel(e.target.value);
+              localStorage.setItem("ai-model", e.target.value);
+            }}
+          />
+        </div>
+        <div className="settings-row" style={{ flexDirection: 'column', alignItems: 'flex-start' }}>
+          <span className="settings-label">API Key</span>
+          <input
+            className="select-input"
+            type="password"
+            placeholder={aiProvider === "groq" ? "gsk_..." : "sk-or-..."}
+            onChange={(e) => localStorage.setItem("api-key", e.target.value)}
+          />
+        </div>
+      </div>
+
+      <div className="settings-section" style={{ marginBottom: 30 }}>
+        <h3 style={{ fontSize: 13, textTransform: 'uppercase', opacity: 0.5, letterSpacing: '0.05em' }}>T3 Code Devices</h3>
+        <span className="settings-label" style={{ opacity: 0.6, fontSize: 12 }}>Token: run `t3 auth session issue --token-only` on that device.</span>
+        {t3Devices.map((d, i) => (
+          <div key={i} className="settings-row">
+            <span className="settings-label" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.name || d.url}</span>
+            <button aria-label={`Remove ${d.name || d.url}`} onClick={() => saveT3Devices(t3Devices.filter((_, j) => j !== i))} style={{ background: 'none', border: 'none', color: textColor, cursor: 'pointer' }}>
+              <Trash2 size={16} />
+            </button>
+          </div>
+        ))}
+        <input className="select-input" placeholder="Name (e.g. Laptop)" value={t3NewDevice.name} onChange={(e) => setT3NewDevice({ ...t3NewDevice, name: e.target.value })} />
+        <input className="select-input" placeholder="http://127.0.0.1:3773" value={t3NewDevice.url} onChange={(e) => setT3NewDevice({ ...t3NewDevice, url: e.target.value })} />
+        <input className="select-input" type="password" placeholder="Bearer token" value={t3NewDevice.token} onChange={(e) => setT3NewDevice({ ...t3NewDevice, token: e.target.value })} />
+        <button
+          disabled={!/^https?:\/\//.test(t3NewDevice.url.trim()) || !t3NewDevice.token.trim()}
+          onClick={() => { saveT3Devices([...t3Devices, { name: t3NewDevice.name.trim(), url: t3NewDevice.url.trim(), token: t3NewDevice.token.trim() }]); setT3NewDevice({ name: "", url: "", token: "" }); }}
+          style={{ backgroundColor: textColor, color: bgColor, border: 'none', borderRadius: '12px', padding: '8px 16px', fontWeight: 600, cursor: 'pointer' }}
+        >
+          Add Device
+        </button>
+      </div>
+
+      <div className="settings-section" style={{ marginBottom: 30 }}>
+        <h3 style={{ fontSize: 13, textTransform: 'uppercase', opacity: 0.5, letterSpacing: '0.05em' }}>Manage Workflows</h3>
+
+        <div id="add-workflow-form" style={{
+          display: 'flex', flexDirection: 'column', gap: '6px', width: '100%',
+          boxSizing: 'border-box'
+        }}>
+          <span className="settings-label" style={{ opacity: 0.8 }}>Workflow Name</span>
+          <input
+            className="select-input"
+            style={{ width: '100%', boxSizing: 'border-box' }}
+            placeholder="e.g. Work Tools"
+            value={workflowName}
+            onChange={(e) => setWorkflowName(e.target.value)}
+          />
+          <span className="settings-label" style={{ marginTop: 15, opacity: 0.8 }}>Apps or URLs (Comma Separated)</span>
+          <textarea
+            className="select-input"
+            style={{ width: '100%', minHeight: '50px', padding: '8px', boxSizing: 'border-box' }}
+            placeholder="e.g. Spotify, docs.google.com"
+            value={workflowUrls}
+            onChange={(e) => setWorkflowUrls(e.target.value)}
+          />
+          <button
+            onClick={() => {
+              addWorkflow();
+            }}
+            style={{
+              backgroundColor: textColor,
+              color: bgColor,
+              border: 'none',
+              borderRadius: '12px',
+              padding: '8px',
+              fontWeight: 600,
+              cursor: 'pointer',
+              marginTop: 2
+            }}
+          >
+            Save Workflow
+          </button>
+        </div>
+
+        <div id="workflows-list" style={{ marginTop: '15px' }}>
+          <AnimatePresence>
+            {workflows.map((wf, idx) => (
+              <motion.div
+                key={`wf-${wf.name}-${idx}`}
+                className="settings-row"
+                style={{ justifyContent: 'space-between', padding: '10px 0', borderBottom: `1px solid color-mix(in srgb, ${textColor}, transparent 95%)` }}
+                initial={{ opacity: 0, height: 0 }}
+                animate={{ opacity: 1, height: 'auto' }}
+                exit={{ opacity: 0, x: -20, height: 0, padding: 0 }}
+                transition={{ duration: 0.2 }}
+              >
+                <div style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden', paddingRight: '10px' }}>
+                  <span style={{ fontWeight: 600 }}>{wf.name}</span>
+                  <span style={{ fontSize: 11, opacity: 0.6 }}>
+                    {wf.urls.length} items
+                  </span>
+                </div>
+                <button
+                  onClick={() => removeWorkflow(idx)}
+                  style={{ color: '#ff4d4d', background: 'none', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4 }}
+                >
+                  <Trash2 size={14} />
+                  <span style={{ fontSize: 12 }}>Remove</span>
+                </button>
+              </motion.div>
+            ))}
+          </AnimatePresence>
+        </div>
+      </div>
+    </div>
+  );
+
+  if (isSettingsWindow) {
+    return (
+      // opaque base so translucent/invisible themes stay readable in a normal window
+      <div style={{ position: 'fixed', inset: 0, background: '#000000' }}>
+        <div style={{ position: 'absolute', inset: 0, background: bgColor, color: theme === 'invisible' ? '#FFFFFF' : textColor, '--island-text-color': theme === 'invisible' ? '#FFFFFF' : textColor, '--island-bg-color': bgColor, fontFamily: theme === 'win95' ? 'w95' : 'OpenRunde' }}>
+          {settingsPanel}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <motion.div
       id="Island"
@@ -1350,14 +2005,12 @@ export default function Island() {
         x: sideStyles.x,
         borderRadius:
           notchModeEnabled
-            ? mode === "large" ? "0px 0px 30px 30px" : "0px 0px 14px 14px"
-            : mode === "large" && theme === "win95"
-            ? 0
-            : mode === "large"
-              ? (currentTab === 0 ? 28 : 30)
-              : theme === "win95"
-                ? 0
-                : 14,
+            ? mode === "large" ? "0px 0px 44px 44px" : `0px 0px ${height / 2}px ${height / 2}px`
+            : theme === "win95"
+              ? 0
+              : mode === "large"
+                ? 44
+                : height / 2, // compact = full capsule, like iOS
       }}
       onUpdate={syncLinuxWindowShape}
       onAnimationComplete={syncLinuxWindowShape}
@@ -1377,6 +2030,8 @@ export default function Island() {
         backgroundSize: "cover",
         justifyContent: (mode === "large" && currentTab === 3) ? "flex-start" : "center",
         overflow: "hidden",
+        // iOS-style continuous corners when expanded; compact stays a true capsule
+        cornerShape: mode === "large" && theme !== "win95" ? "squircle" : "round",
         fontFamily: theme === "win95" ? "w95" : "OpenRunde",
         border: theme === "win95" ? "2px solid rgb(254, 254, 254)" : islandBorderEnabled ? cameraInUse ? `1px solid rgba(255, 215, 0, 0.8)` : microphoneInUse ? `1px solid rgba(255, 154, 0, 0.8)` : (charging || chargingAlert) ? `1px solid rgba(111, 255, 123, 0.5)` : (percent <= 20 || alert) ? `1px solid rgba(255, 63, 63, 0.5)` : bluetoothAlert ? `1px solid rgba(0, 150, 255, 0.34)` : hideNotActiveIslandEnabled ? "none" : `1px solid color-mix(in srgb, ${textColor}, transparent 70%)` : "none",
         borderColor:
@@ -1637,7 +2292,7 @@ export default function Island() {
               <div style={{ width: '100%', display: 'flex', justifyContent: 'center' }}>
                 <input
                   id="browser-searchbar"
-                  placeholder="Search google or enter URL"
+                  placeholder={`Search ${SEARCH_ENGINES[searchEngine].name} or enter URL`}
                   value={browserSearch}
                   onChange={(e) => setBrowserSearch(e.target.value)}
                   onKeyDown={(e) => {
@@ -1788,6 +2443,15 @@ export default function Island() {
                     <span>{weather.temp ? weather.temp : "??"}º</span>
                   </div>
                 </h1>
+                <button
+                  className="tab-order-btn"
+                  title="Settings"
+                  aria-label="Open settings"
+                  onClick={() => window.electronAPI?.openSettings?.()}
+                  style={{ position: 'absolute', left: 21, bottom: 12, color: textColor, opacity: 0.6 }}
+                >
+                  <Settings size={16} />
+                </button>
                 <div id="date">
                   <h1 className="text" style={{ fontSize: 50, animation: 'none' }}>
                     {time}
@@ -2379,613 +3043,6 @@ export default function Island() {
                     </div>
                   </>
                 )}
-              </div>
-            )}
-
-            {/*Settings Overhaul*/}
-            {currentTab === 7 && (
-              <div id="settings-container">
-                <div className="settings-section">
-                  <h3 style={{ fontSize: 13, textTransform: 'uppercase', opacity: 0.5, letterSpacing: '0.05em' }}>General</h3>
-                  <div className="settings-row">
-                    <span className="settings-label">12/24 Hour Format</span>
-                    <select value={hourFormat ? "12-hr" : "24-hr"} onChange={handleHourFormatChange}>
-                      <option value="12-hr">12-hour</option>
-                      <option value="24-hr">24-hour</option>
-                    </select>
-                  </div>
-                  {window.electronAPI?.platform !== 'darwin' && (
-                    <div className="settings-row">
-                      <span className="settings-label">Auto Launch on Boot</span>
-                      <select value={autoLaunchEnabled ? "true" : "false"} onChange={handleAutoLaunchChange}>
-                        <option value="true">Enabled</option>
-                        <option value="false">Disabled</option>
-                      </select>
-                    </div>
-                  )}
-                  {displays.length > 0 && (
-                    <div className="settings-row">
-                      <span className="settings-label">Target Display</span>
-                      <select value={currentDisplayId} onChange={handleDisplayChange}>
-                        {displays.map(d => (
-                          <option key={d.id} value={d.id}>{d.label}</option>
-                        ))}
-                      </select>
-                    </div>
-                  )}
-                </div>
-                <div className="settings-section">
-                  <h3 style={{ fontSize: 13, textTransform: 'uppercase', opacity: 0.5, letterSpacing: '0.05em', marginBottom: '4px' }}>Tab Management</h3>
-                  <p style={{ fontSize: 11, opacity: 0.4, marginTop: -8, marginBottom: 8 }}>Drag to reorder, click eye to hide.</p>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                    {tabOrder.map((id, i) => {
-                      const tabDef = TABS.find(t => t.id === id);
-                      const isHidden = hiddenTabs.includes(id);
-                      return (
-                        <div
-                          key={id}
-                          className={`tab-order-item ${isHidden ? 'hidden' : ''}`}
-                          style={{ cursor: 'grab' }}
-                          draggable
-                          onDragStart={(e) => {
-                            e.dataTransfer.setData("text/plain", i);
-                            e.currentTarget.style.opacity = '0.4';
-                            e.currentTarget.style.borderStyle = 'dashed';
-                          }}
-                          onDragEnd={(e) => {
-                            e.currentTarget.style.opacity = isHidden ? '0.45' : '1';
-                            e.currentTarget.style.borderStyle = isHidden ? 'dashed' : 'solid';
-                          }}
-                          onDragOver={(e) => {
-                            e.preventDefault();
-                            e.currentTarget.style.background = `color-mix(in srgb, ${textColor}, transparent 90%)`;
-                            e.currentTarget.style.transform = 'translateY(-2px)';
-                          }}
-                          onDragLeave={(e) => {
-                            e.currentTarget.style.background = '';
-                            e.currentTarget.style.transform = '';
-                          }}
-                          onDrop={(e) => {
-                            e.preventDefault();
-                            e.currentTarget.style.background = '';
-                            e.currentTarget.style.transform = '';
-                            const fromIdx = parseInt(e.dataTransfer.getData("text/plain"));
-                            moveTabOrder(fromIdx, i);
-                          }}
-                        >
-                          <GripVertical size={16} style={{ opacity: 0.3, cursor: 'grab' }} />
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flex: 1 }}>
-                            {tabDef.icon(textColor)}
-                            <span style={{ fontSize: 14, fontWeight: 500 }}>{tabDef.name}</span>
-                          </div>
-                          <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
-                            <button
-                              className="tab-order-btn"
-                              onClick={() => {
-                                setDefaultTabId(id);
-                                localStorage.setItem("default-tab", id);
-                              }}
-                              title="Set as default"
-                              style={{ opacity: defaultTabId === id ? 1 : 0.3, color: defaultTabId === id ? '#FFD700' : textColor }}
-                            >
-                              <Star size={16} fill={defaultTabId === id ? '#FFD700' : 'none'} />
-                            </button>
-                            <div style={{ width: 1, height: 16, background: textColor, opacity: 0.1, margin: '0 4px' }} />
-                            <button
-                              className="tab-order-btn"
-                              onClick={() => toggleTabVisibility(id)}
-                              title={isHidden ? "Show" : "Hide"}
-                              style={{ opacity: isHidden ? 1 : 0.6 }}
-                            >
-                              {isHidden ? <EyeOff size={16} /> : <Eye size={16} />}
-                            </button>
-                            <div style={{ width: 1, height: 16, background: textColor, opacity: 0.1, margin: '0 4px' }} />
-                            <button
-                              className="tab-order-btn"
-                              disabled={i === 0}
-                              onClick={() => moveTabOrder(i, i - 1)}
-                            >
-                              <ChevronLeft size={16} style={{ transform: 'rotate(90deg)' }} />
-                            </button>
-                            <button
-                              className="tab-order-btn"
-                              disabled={i === tabOrder.length - 1}
-                              onClick={() => moveTabOrder(i, i + 1)}
-                            >
-                              <ChevronLeft size={16} style={{ transform: 'rotate(-90deg)' }} />
-                            </button>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-
-                <div className="settings-section">
-                  <h3 style={{ fontSize: 13, textTransform: 'uppercase', opacity: 0.5, letterSpacing: '0.05em' }}>Island Style</h3>
-                  <div className="settings-row">
-                    <span className="settings-label">Notch Mode</span>
-                    <select
-                      value={notchModeEnabled ? "true" : "false"}
-                      onChange={(e) => {
-                        const enabled = e.target.value === "true";
-                        setNotchModeEnabled(enabled);
-                        localStorage.setItem("notch-mode", enabled ? "true" : "false");
-                        window.electronAPI?.setNotchMode?.(enabled);
-                      }}
-                    >
-                      <option value="true">Enabled</option>
-                      <option value="false">Disabled</option>
-                    </select>
-                  </div>
-                  <div className="settings-row">
-                    <span className="settings-label">Theme</span>
-                    <select value={theme} onChange={(e) => setTheme(e.target.value)}>
-                      <option value="none">Default</option>
-                      <option value="sleek-black">Sleek Black</option>
-                      <option value="win95">Windows 95</option>
-                    </select>
-                  </div>
-                  <div className="settings-section" style={{ alignItems: 'center', background: 'rgba(255,255,255,0.03)', padding: '15px', borderRadius: '18px', border: '1px solid rgba(255,255,255,0.05)' }}>
-                    <span className="settings-label" style={{ textAlign: 'center', marginBottom: '8px', opacity: 1, color: textColor }}>Position Mode</span>
-                    <div className="radio-group" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', width: '100%', gap: '15px 10px' }}>
-                      {[
-                        { val: "top-left", label: "Top L" },
-                        { val: "top-center", label: "Top C" },
-                        { val: "top-right", label: "Top R" },
-                        { val: "bottom-left", label: "Bot L" },
-                        { val: "bottom-center", label: "Bot C" },
-                        { val: "bottom-right", label: "Bot R" }
-                      ].map((mode) => (
-                        <label key={mode.val} className="radio-label" style={{ justifyContent: 'center' }}>
-                          <input
-                            type="radio"
-                            name="positionMode"
-                            value={mode.val}
-                            checked={positionMode === mode.val}
-                            onChange={(e) => {
-                              setPositionMode(e.target.value);
-                              localStorage.setItem("position-mode", e.target.value);
-                            }}
-                          />
-                          <span className="radio-custom"></span>
-                          {mode.label}
-                        </label>
-                      ))}
-                    </div>
-                    <div style={{ width: '100%', height: '1px', background: 'rgba(255,255,255,0.1)', margin: '10px 0' }}></div>
-                    <label className="radio-label" style={{ justifyContent: 'center' }}>
-                      <input
-                        type="radio"
-                        name="positionMode"
-                        value="free"
-                        checked={positionMode === "free"}
-                        onChange={(e) => {
-                          setPositionMode(e.target.value);
-                          localStorage.setItem("position-mode", e.target.value);
-                        }}
-                      />
-                      <span className="radio-custom"></span>
-                      FREE (MANUAL)
-                    </label>
-                  </div>
-                  <AnimatePresence>
-                    {isFree && (
-                      <motion.div
-                        initial={{ opacity: 0, height: 0 }}
-                        animate={{ opacity: 1, height: 'auto' }}
-                        exit={{ opacity: 0, height: 0 }}
-                        transition={{ duration: 0.15 }}
-                        style={{ overflow: 'hidden', display: 'flex', flexDirection: 'column', gap: '12px' }}
-                      >
-                        <div className="settings-row">
-                          <span className="settings-label">Position X ({islandX.toFixed(1)}%)</span>
-                          <input
-                            type="range"
-                            min="0"
-                            max="100"
-                            step="0.1"
-                            value={islandX}
-                            onPointerDown={(e) => {
-                              e.stopPropagation();
-                              updateDragging(true);
-                            }}
-                            onChange={handleIslandXChange}
-                            onPointerUp={(e) => {
-                              e.stopPropagation();
-                              savePosition();
-                              handleDragEndChecks(e);
-                              e.target.blur();
-                            }}
-                            list="tickmarks"
-                            style={{ flex: 1, accentColor: textColor }}
-                          />
-                          <datalist id="tickmarks">
-                            <option value="50" label="50%"></option>
-                          </datalist>
-                        </div>
-                        <div className="settings-row">
-                          <span className="settings-label">Position Y ({islandY}px)</span>
-                          <input
-                            type="range"
-                            min="0"
-                            max="500"
-                            value={islandY}
-                            onPointerDown={(e) => {
-                              e.stopPropagation();
-                              updateDragging(true);
-                            }}
-                            onChange={handleIslandYChange}
-                            onPointerUp={(e) => {
-                              e.stopPropagation();
-                              savePosition();
-                              handleDragEndChecks(e);
-                              e.target.blur();
-                            }}
-                            style={{ flex: 1, accentColor: textColor }}
-                          />
-                        </div>
-                      </motion.div>
-                    )}
-                  </AnimatePresence>
-                  <div className="settings-row">
-                    <span className="settings-label">Island Border</span>
-                    <select value={islandBorderEnabled ? "true" : "false"} onChange={handleIslandBorderChange}>
-                      <option value="true">Show</option>
-                      <option value="false">Hide</option>
-                    </select>
-                  </div>
-                  <div className="settings-row">
-                    <span className="settings-label">Hide When Inactive</span>
-                    <select value={hideNotActiveIslandEnabled ? "true" : "false"} onChange={handlehideNotActiveIslandChange}>
-                      <option value="true">Yes</option>
-                      <option value="false">No</option>
-                    </select>
-                  </div>
-                </div>
-
-                <div className="settings-section">
-                  <h3 style={{ fontSize: 13, textTransform: 'uppercase', opacity: 0.5, letterSpacing: '0.05em' }}>Colors & Assets</h3>
-                  <div className="settings-row">
-                    <span className="settings-label">Island Color</span>
-                    <input
-                      className="select-input"
-                      style={{ width: '100px' }}
-                      placeholder="#000000"
-                      value={bgColor}
-                      onChange={handleBgColorChange}
-                    />
-                  </div>
-                  <div className="settings-row">
-                    <span className="settings-label">Text Color</span>
-                    <input
-                      className="select-input"
-                      style={{ width: '100px' }}
-                      placeholder="#FAFAFA"
-                      value={textColor}
-                      onChange={handleTextColorChange}
-                    />
-                  </div>
-                  <div className="settings-row" style={{ flexDirection: 'column', alignItems: 'flex-start' }}>
-                    <span className="settings-label">Background Image URL</span>
-                    <input
-                      className="select-input"
-                      placeholder="https://..."
-                      value={bgImage}
-                      onChange={handleBgImageChange}
-                    />
-                  </div>
-                </div>
-
-                <div className="settings-section">
-                  <h3 style={{ fontSize: 13, textTransform: 'uppercase', opacity: 0.5, letterSpacing: '0.05em' }}>Features</h3>
-                  <div className="settings-row">
-                    <span className="settings-label">Low Battery Alerts</span>
-                    <select value={batteryAlertsEnabled ? "true" : "false"} onChange={handleBatteryAlertsChange}>
-                      <option value="true">Enabled</option>
-                      <option value="false">Disabled</option>
-                    </select>
-                  </div>
-                  <div className="settings-row">
-                    <span className="settings-label">Standby Mode</span>
-                    <select value={standbyBorderEnabled ? "true" : "false"} onChange={handleStandbyChange}>
-                      <option value="true">Enabled</option>
-                      <option value="false">Disabled</option>
-                    </select>
-                  </div>
-                  <div className="settings-row">
-                    <span className="settings-label">Large Standby Mode</span>
-                    <select value={largeStandbyEnabled ? "true" : "false"} onChange={handleLargeStandbyChange}>
-                      <option value="true">Enabled</option>
-                      <option value="false">Disabled</option>
-                    </select>
-                  </div>
-                  <div className="settings-row">
-                    <span className="settings-label">Show Info when idle</span>
-                    <select value={showInfoWhenIdleEnabled ? "true" : "false"} onChange={handleShowInfoWhenIdleChange}>
-                      <option value="true">Enabled</option>
-                      <option value="false">Disabled</option>
-                    </select>
-                  </div>
-                </div>
-
-                <div className="settings-section">
-                  <h3 style={{ fontSize: 13, textTransform: 'uppercase', opacity: 0.5, letterSpacing: '0.05em' }}>Weather</h3>
-                  <div className="settings-row">
-                    <span className="settings-label">Location</span>
-                    <input
-                      className="select-input"
-                      placeholder="City, ST, Country"
-                      value={weatherLocation}
-                      onChange={(e) => {
-                        setWeatherLocation(e.target.value);
-                        localStorage.setItem("location", e.target.value);
-                      }}
-                    />
-                  </div>
-                  <div className="settings-row">
-                    <span className="settings-label">Unit</span>
-                    <select value={weatherUnit} onChange={handleWeatherUnitChange}>
-                      <option value="f">Fahrenheit (°F)</option>
-                      <option value="c">Celsius (°C)</option>
-                    </select>
-                  </div>
-                </div>
-
-                <div className="settings-section">
-                  <h3 style={{ fontSize: 13, textTransform: 'uppercase', opacity: 0.5, letterSpacing: '0.05em' }}>Quick Apps</h3>
-                  <div style={{ display: 'flex', gap: '8px', marginBottom: '12px', position: 'relative', flexDirection: 'column' }}>
-                    <div style={{ display: 'flex', gap: '8px' }}>
-                      <input
-                        className="select-input"
-                        style={{ flex: 1 }}
-                        value={newQuickApp}
-                        placeholder="Add app (e.g. Apple Music)"
-                        onChange={(e) => {
-                          const val = e.target.value;
-                          setNewQuickApp(val);
-                          selectedAppRef.current = null;
-                          clearTimeout(appSearchTimer.current);
-                          if (window.electronAPI?.platform === 'win32' && val.trim().length > 1) {
-                            appSearchTimer.current = setTimeout(async () => {
-                              const results = await window.electronAPI.searchApps(val.trim());
-                              setAppSuggestions(results);
-                              setShowSuggestions(results.length > 0);
-                            }, 200);
-                          } else {
-                            setAppSuggestions([]);
-                            setShowSuggestions(false);
-                          }
-                        }}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter') addQuickApp();
-                          if (e.key === 'Escape') setShowSuggestions(false);
-                        }}
-                        onBlur={() => setTimeout(() => setShowSuggestions(false), 150)}
-                      />
-                      <button
-                        onClick={addQuickApp}
-                        style={{
-                          backgroundColor: textColor,
-                          color: bgColor,
-                          border: 'none',
-                          borderRadius: '12px',
-                          padding: '8px 12px',
-                          fontWeight: 600,
-                          cursor: 'pointer',
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'center'
-                        }}
-                      >
-                        <Plus size={18} />
-                      </button>
-                    </div>
-                    {showSuggestions && appSuggestions.length > 0 && (
-                      <div style={{
-                        position: 'absolute',
-                        top: '100%',
-                        left: 0,
-                        right: 0,
-                        zIndex: 999,
-                        borderRadius: '12px',
-                        overflow: 'hidden',
-                        boxShadow: '0 4px 20px rgba(0,0,0,0.3)',
-                        backgroundColor: bgColor,
-                        border: `1px solid ${textColor}22`,
-                        marginTop: '4px'
-                      }}>
-                        {appSuggestions.map((s, i) => (
-                          <div
-                            key={i}
-                            onMouseDown={() => {
-                              selectedAppRef.current = s;
-                              setNewQuickApp(s.name);
-                              setShowSuggestions(false);
-                            }}
-                            style={{
-                              padding: '8px 12px',
-                              cursor: 'pointer',
-                              color: textColor,
-                              fontSize: 13,
-                              borderBottom: i < appSuggestions.length - 1 ? `1px solid ${textColor}11` : 'none',
-                            }}
-                            onMouseEnter={e => e.currentTarget.style.backgroundColor = `${textColor}11`}
-                            onMouseLeave={e => e.currentTarget.style.backgroundColor = 'transparent'}
-                          >
-                            <div style={{ fontWeight: 600 }}>{s.name}</div>
-                            <div style={{ opacity: 0.4, fontSize: 11, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.launch}</div>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
-                    <AnimatePresence>
-                      {quickApps.map((app, idx) => (
-                        <motion.div
-                          key={`qa-${idx}`}
-                          className="settings-row"
-                          style={{ justifyContent: 'space-between', padding: '5px 0' }}
-                          initial={{ opacity: 0, height: 0 }}
-                          animate={{ opacity: 1, height: 'auto' }}
-                          exit={{ opacity: 0, x: -20, height: 0, padding: 0 }}
-                          transition={{ duration: 0.2 }}
-                        >
-                          <input
-                            className="select-input"
-                            style={{ flex: 1, border: 'none', background: 'transparent', padding: 0 }}
-                            value={app.name}
-                            onChange={(e) => handleQaChange(idx, e.target.value)}
-                          />
-                          <button
-                            onClick={() => removeQuickApp(idx)}
-                            style={{ color: '#ff4d4d', background: 'none', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
-                          >
-                            <Trash2 size={16} />
-                          </button>
-                        </motion.div>
-                      ))}
-                    </AnimatePresence>
-                  </div>
-                </div>
-
-                <div className="settings-section" style={{ marginBottom: 30 }}>
-                  <h3 style={{ fontSize: 13, textTransform: 'uppercase', opacity: 0.5, letterSpacing: '0.05em' }}>Integrations</h3>
-                  <div className="settings-row">
-                    <span className="settings-label">AI Provider</span>
-                    <select
-                      value={aiProvider}
-                      onChange={(e) => {
-                        setAiProvider(e.target.value);
-                        localStorage.setItem("ai-provider", e.target.value);
-                        const model = e.target.value === "groq" ? "llama-3.3-70b-versatile" : "meta-llama/llama-3.3-70b-instruct";
-                        setAiModel(model);
-                        localStorage.setItem("ai-model", model);
-                      }}
-                    >
-                      <option value="groq">Groq</option>
-                      <option value="openrouter">OpenRouter</option>
-                    </select>
-                  </div>
-                  <div className="settings-row" style={{ flexDirection: 'column', alignItems: 'flex-start' }}>
-                    <span className="settings-label">AI Model</span>
-                    <input
-                      className="select-input"
-                      value={aiModel}
-                      placeholder={aiProvider === "groq" ? "llama-3.3-70b-versatile" : "meta-llama/llama-3.3-70b-instruct"}
-                      onChange={(e) => {
-                        setAiModel(e.target.value);
-                        localStorage.setItem("ai-model", e.target.value);
-                      }}
-                    />
-                  </div>
-                  <div className="settings-row" style={{ flexDirection: 'column', alignItems: 'flex-start' }}>
-                    <span className="settings-label">API Key</span>
-                    <input
-                      className="select-input"
-                      type="password"
-                      placeholder={aiProvider === "groq" ? "gsk_..." : "sk-or-..."}
-                      onChange={(e) => localStorage.setItem("api-key", e.target.value)}
-                    />
-                  </div>
-                </div>
-
-                <div className="settings-section" style={{ marginBottom: 30 }}>
-                  <h3 style={{ fontSize: 13, textTransform: 'uppercase', opacity: 0.5, letterSpacing: '0.05em' }}>T3 Code Devices</h3>
-                  <span className="settings-label" style={{ opacity: 0.6, fontSize: 12 }}>Token: run `t3 auth session issue --token-only` on that device.</span>
-                  {t3Devices.map((d, i) => (
-                    <div key={i} className="settings-row">
-                      <span className="settings-label" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.name || d.url}</span>
-                      <button aria-label={`Remove ${d.name || d.url}`} onClick={() => saveT3Devices(t3Devices.filter((_, j) => j !== i))} style={{ background: 'none', border: 'none', color: textColor, cursor: 'pointer' }}>
-                        <Trash2 size={16} />
-                      </button>
-                    </div>
-                  ))}
-                  <input className="select-input" placeholder="Name (e.g. Laptop)" value={t3NewDevice.name} onChange={(e) => setT3NewDevice({ ...t3NewDevice, name: e.target.value })} />
-                  <input className="select-input" placeholder="http://127.0.0.1:3773" value={t3NewDevice.url} onChange={(e) => setT3NewDevice({ ...t3NewDevice, url: e.target.value })} />
-                  <input className="select-input" type="password" placeholder="Bearer token" value={t3NewDevice.token} onChange={(e) => setT3NewDevice({ ...t3NewDevice, token: e.target.value })} />
-                  <button
-                    disabled={!/^https?:\/\//.test(t3NewDevice.url.trim()) || !t3NewDevice.token.trim()}
-                    onClick={() => { saveT3Devices([...t3Devices, { name: t3NewDevice.name.trim(), url: t3NewDevice.url.trim(), token: t3NewDevice.token.trim() }]); setT3NewDevice({ name: "", url: "", token: "" }); }}
-                    style={{ backgroundColor: textColor, color: bgColor, border: 'none', borderRadius: '12px', padding: '8px 16px', fontWeight: 600, cursor: 'pointer' }}
-                  >
-                    Add Device
-                  </button>
-                </div>
-
-                <div className="settings-section" style={{ marginBottom: 30 }}>
-                  <h3 style={{ fontSize: 13, textTransform: 'uppercase', opacity: 0.5, letterSpacing: '0.05em' }}>Manage Workflows</h3>
-
-                  <div id="add-workflow-form" style={{
-                    display: 'flex', flexDirection: 'column', gap: '6px', width: '100%',
-                    boxSizing: 'border-box'
-                  }}>
-                    <span className="settings-label" style={{ opacity: 0.8 }}>Workflow Name</span>
-                    <input
-                      className="select-input"
-                      style={{ width: '100%', boxSizing: 'border-box' }}
-                      placeholder="e.g. Work Tools"
-                      value={workflowName}
-                      onChange={(e) => setWorkflowName(e.target.value)}
-                    />
-                    <span className="settings-label" style={{ marginTop: 15, opacity: 0.8 }}>Apps or URLs (Comma Separated)</span>
-                    <textarea
-                      className="select-input"
-                      style={{ width: '100%', minHeight: '50px', padding: '8px', boxSizing: 'border-box' }}
-                      placeholder="e.g. Spotify, docs.google.com"
-                      value={workflowUrls}
-                      onChange={(e) => setWorkflowUrls(e.target.value)}
-                    />
-                    <button
-                      onClick={() => {
-                        addWorkflow();
-                      }}
-                      style={{
-                        backgroundColor: textColor,
-                        color: bgColor,
-                        border: 'none',
-                        borderRadius: '12px',
-                        padding: '8px',
-                        fontWeight: 600,
-                        cursor: 'pointer',
-                        marginTop: 2
-                      }}
-                    >
-                      Save Workflow
-                    </button>
-                  </div>
-
-                  <div id="workflows-list" style={{ marginTop: '15px' }}>
-                    <AnimatePresence>
-                      {workflows.map((wf, idx) => (
-                        <motion.div
-                          key={`wf-${wf.name}-${idx}`}
-                          className="settings-row"
-                          style={{ justifyContent: 'space-between', padding: '10px 0', borderBottom: `1px solid color-mix(in srgb, ${textColor}, transparent 95%)` }}
-                          initial={{ opacity: 0, height: 0 }}
-                          animate={{ opacity: 1, height: 'auto' }}
-                          exit={{ opacity: 0, x: -20, height: 0, padding: 0 }}
-                          transition={{ duration: 0.2 }}
-                        >
-                          <div style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden', paddingRight: '10px' }}>
-                            <span style={{ fontWeight: 600 }}>{wf.name}</span>
-                            <span style={{ fontSize: 11, opacity: 0.6 }}>
-                              {wf.urls.length} items
-                            </span>
-                          </div>
-                          <button
-                            onClick={() => removeWorkflow(idx)}
-                            style={{ color: '#ff4d4d', background: 'none', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4 }}
-                          >
-                            <Trash2 size={14} />
-                            <span style={{ fontSize: 12 }}>Remove</span>
-                          </button>
-                        </motion.div>
-                      ))}
-                    </AnimatePresence>
-                  </div>
-                </div>
               </div>
             )}
           </motion.div>
