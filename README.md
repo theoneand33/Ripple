@@ -1,101 +1,101 @@
 # Ripple
 
-**Dynamic Island, but for everyone**
+Dynamic Island, but for everyone.
 
-Ripple is a cross-platform desktop application that recreates Apple's Dynamic Island experience on Windows, Linux, and macOS. It's a notification hub, widget system, and smart assistant that stays out of your way until you need it.
+Ripple is a desktop app for Windows, Linux, and macOS that puts a Dynamic Island-style bar at the top of your screen. It shows notifications, widgets, and an AI assistant, and stays compact until you hover over it or click it.
 
 <div align="center">
 
 [![Discord](https://img.shields.io/badge/Discord-Join%20Us-5865F2)](https://discord.gg/a2xzVkxFVg)
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
-[![Version](https://img.shields.io/badge/Version-3.3.0-blue)](package.json)
+[![Version](https://img.shields.io/badge/Version-0.1.0-blue)](package.json)
 
 https://github.com/user-attachments/assets/a7b9ed8a-97b5-4603-bad7-6f4c4bef1f5d
 
 </div>
 
----
-
 ## Features
 
-### Core Functionality
-- **Multi-Monitor & Desktop Support** — Island syncs seamlessly across all desktops and monitors
-- **Media Controls** — Now playing preview with playback controls for your music
-- **Customizable Themes** — Multiple themes including Win95, SleekBlack, and more
-- **Quick Apps** — One-click access to 4 apps of your choice
-- **Keyboard Shortcuts** — Quick navigation with Ctrl + number shortcuts
+### Island
 
-### Information & Alerts
-- **Weather Display** — Real-time weather information
-- **Battery Alerts** — Charging status and low battery notifications
-- **Bluetooth Alerts** — Get notified when devices connect/disconnect
+- The Island follows you across every desktop and monitor.
+- Notch Mode on macOS moves the Island into the MacBook notch.
+- Standby mode is on by default, so the Island rests in Quick Mode instead of hiding. You can also make it rest in Large Mode.
+- Corners use iOS-style radii.
+- Themes include Win95, SleekBlack, and more.
+- On Linux, clicks pass through the empty area around the Island to the windows underneath.
 
-### Smart Features
-- **AI Ask Feature** — Integrated AI assistant powered by Groq
-- **Browser Search** — Quick search integration
-- **Clipboard Manager** — Access your clipboard history
-- **Tasks List** — Built-in task management
+### Tabs
 
----
+- Browser Search sends queries to Google, DuckDuckGo, Brave Search, Bing, or Startpage. Pick the engine in Settings.
+- Workflows & QA opens a saved set of URLs with one click and keeps quick-access apps.
+- Overview shows the time, weather, and battery.
+- Now Playing shows the current track with playback controls. Long titles scroll with soft blurred edges, and the track stays on screen for 3 seconds after you pause.
+- AI Assistant answers questions using Groq.
+- Clipboard keeps your clipboard history.
+- Tasks is a simple to-do list.
+- T3 Code starts an agent thread on a project on one of your T3 devices. You choose the model, the worktree, and the linked environment.
 
-## Quick Start
+You can reorder and hide tabs in Settings.
+
+### Alerts
+
+Ripple alerts you when a charger connects or the battery runs low, when a Bluetooth device connects or disconnects, and when an app starts using your camera or microphone.
+
+### Settings
+
+Settings open in their own window from the gear button on the Island. Changes apply to the Island right away.
+
+## Quick start
 
 ### Installation
 
 Download the latest release for your platform:
-- **Windows**: `.exe` installer
-- **macOS**: `.dmg` package (Intel & Apple Silicon supported)
-- **Linux**: `.deb` or `.rpm` packages
+
+- Windows: `.msi` installer or `.zip`
+- macOS: `.dmg` (Intel and Apple Silicon)
+- Linux: `.deb`, `.rpm`, or `.AppImage`
 
 [Download Latest Release](https://github.com/TopMyster/Ripple/releases)
 
-### First Run
-1. Install and launch Ripple
-2. The Island will appear on your screen
-3. **Click** the Island to open Large Mode
-4. **Hover** over it to see Quick Mode
-5. Visit **Settings** (last tab) to customize everything
+### First run
 
----
+1. Install and launch Ripple. The Island appears at the top of your screen.
+2. Hover over it to see Quick Mode.
+3. Click it to open Large Mode.
+4. Click the gear button to open Settings.
 
-## How to Use
+### Connecting T3 Code
 
-### The Three Modes
+Open Settings and add a device under T3 Code Devices with a name, URL, and bearer token. For linked environments, Ripple signs in to the device's `/mcp` endpoint and caches the 30-day token, so it does not register a new client on every launch.
 
-**Still Mode** — The default idle state
-- Compact display
-- Minimal visual footprint
-- Ready to expand on interaction
+## How to use
 
-**Quick Mode** — Hover over the Island
-- See current time, weather, and battery status
-- If music is playing, view now-playing info
-- Hover playback controls for music
+### The three modes
 
-**Large Mode** — Click the Island
-- Full interface with all tabs
-- Switch tabs with arrow keys or mouse scroll
-- Access all features and settings
-- Default view for focused work
+Still Mode is the compact idle state. With standby mode on, the Island rests in Quick Mode instead.
 
-### Using Tabs
-- **Arrow Keys** — Navigate between tabs
-- **Mouse Wheel** — Scroll horizontally between tabs
-- **Ctrl + Number** — Jump to a specific tab
+Quick Mode appears when you hover over the Island. It shows the time, weather, and battery, or the current track with playback controls when music is playing.
 
+Large Mode opens when you click the Island. It shows the full interface with every tab.
 
----
+### Switching tabs
 
-## Build & Development
+- Arrow keys move between tabs.
+- The mouse wheel scrolls between tabs.
+- Ctrl + 1 to 8 jumps to a tab.
+
+## Build and development
 
 ### Prerequisites
-- **Node.js** 16+ and npm
-- Platform-specific build tools:
-  - **Windows**: Visual Studio Build Tools
-  - **macOS**: Xcode Command Line Tools
-  - **Linux**: Build essentials (`build-essential` on Ubuntu/Debian)
 
-### Development Setup
+- Node.js 16+ and npm
+- Platform build tools:
+  - Windows: Visual Studio Build Tools
+  - macOS: Xcode Command Line Tools
+  - Linux: `build-essential` on Ubuntu/Debian
+
+### Development setup
 
 ```bash
 # Clone the repository
@@ -109,60 +109,47 @@ npm install
 npm start
 ```
 
-The development server will launch Ripple with hot reload enabled. Press `Ctrl+R` (or `Cmd+R` on macOS) to refresh the app.
+`npm start` launches Ripple with hot reload. Press `Ctrl+R` (or `Cmd+R` on macOS) to refresh the app.
 
-#### Build for Current OS
+#### Build for the current OS
+
 ```bash
 npm run make
 ```
 
-#### Build for Specific Platforms
+#### Build for a specific platform
 
-**Windows (x64)**
+Windows (x64)
 ```bash
 npm run make -- --platform=win32 --arch=x64
 ```
 
-**Linux (x64)**
+Linux (x64)
 ```bash
 npm run make -- --platform=linux --arch=x64
 ```
 
-**macOS (Apple Silicon)**
+macOS (Apple Silicon)
 ```bash
 npm run make -- --platform=darwin --arch=arm64
 ```
 
-**macOS (Intel)**
+macOS (Intel)
 ```bash
 npm run make -- --platform=darwin --arch=x64
 ```
 
-> **Linux Note**: Building Linux packages requires `dpkg`, `fakeroot`, and `rpm`:
+> Building Linux packages requires `dpkg`, `fakeroot`, and `rpm`:
 > ```bash
 > sudo apt-get install dpkg fakeroot rpm
 > ```
 
-**Output**: Compiled binaries are found in `out/make/`
-
----
+Built packages go to `out/make/`.
 
 ## Contributing
 
-We welcome contributions!:
-- Bug reports and fixes
-- New features and improvements
-- Documentation updates
-- Theme designs
-- Ideas and suggestions
-
-Please check [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
-
----
+Bug reports, fixes, features, documentation, themes, and ideas are all welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 ## License
 
-Ripple is open source and available under the [MIT License](LICENSE).
-
----
-
+Ripple is open source under the [MIT License](LICENSE).
