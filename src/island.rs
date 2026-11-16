@@ -7,7 +7,7 @@ use std::sync::mpsc::Sender;
 use rune::time::LocalTime;
 use rune::tok::{Family, TextStyle};
 use rune::{
-    AppHandle, Color, Cx, Display, DisplayTarget, Drag, Easing, El, Image, ImageCache, Key, KeyEvent, LoopSpec, OverlayPlacement,
+    AppHandle, Color, Cx, Display, DisplayTarget, Drag, Easing, Edge, GesturePhase, El, Image, ImageCache, Key, KeyEvent, LoopSpec, OverlayPlacement,
     Phase, Shadow, Spring, SurfaceFit, TextEdit, Transition, Tx, Waker, WheelEvent, WindowHandle, el, icon, row, text,
 };
 use rune_kit::{Kit, PaletteSeed};
@@ -190,6 +190,10 @@ pub struct Island {
     weather_kick: Option<Sender<()>>,
     wheel: f32,
     wheel_reset: f64,
+    /// This wheel gesture already changed tab; the rest of it, momentum included, is ignored.
+    wheel_spent: bool,
+    /// The way the last tab change went: 1 to the next tab, -1 to the previous.
+    pub tab_dir: i32,
     swipe_lock_until: f64,
     next_second: f64,
     next_clipboard: f64,
@@ -256,6 +260,8 @@ impl Island {
             weather_kick: None,
             wheel: 0.0,
             wheel_reset: 0.0,
+            wheel_spent: false,
+            tab_dir: 1,
             swipe_lock_until: 0.0,
             next_second: 0.0,
             next_clipboard: 0.0,
@@ -388,6 +394,7 @@ impl Island {
         let next = i as i32 + direction;
         if next < 0 || next >= visible.len() as i32 { return }
         self.tab = visible[next as usize];
+        self.tab_dir = direction.signum();
         self.entered_tab();
     }
 
@@ -401,7 +408,10 @@ impl Island {
             Key::Right => self.move_tab(1),
             Key::Left => self.move_tab(-1),
             Key::Command(c @ '1'..='8') => {
-                let Some(&id) = self.cfg.visible_tabs().get(c as usize - '1' as usize) else { return false };
+                let visible = self.cfg.visible_tabs();
+                let Some(&id) = visible.get(c as usize - '1' as usize) else { return false };
+                let at = |t: u8| visible.iter().position(|v| *v == t);
+                if at(id) != at(self.tab) { self.tab_dir = if at(id) > at(self.tab) { 1 } else { -1 } }
                 self.mode = Mode::Large;
                 self.tab = id;
                 self.entered_tab();
@@ -414,16 +424,22 @@ impl Island {
     /// A horizontal wheel or trackpad swipe over the Large Island changes tab.
     pub fn wheel(&mut self, e: WheelEvent, tx: &mut Tx) -> bool {
         let now = tx.clock();
-        if self.mode != Mode::Large || e.dy.abs() > e.dx.abs() { return false }
-        if now < self.swipe_lock_until { return true }
-        if now > self.wheel_reset { self.wheel = 0.0 }
-        self.wheel_reset = now + 0.15;
+        if self.mode != Mode::Large { return false }
+        // A pause or a fresh touch starts a new gesture; a fixed timeout would let a long
+        // momentum tail change tab a second time.
+        if now > self.wheel_reset || (e.phase == GesturePhase::Began && !e.momentum) {
+            self.wheel = 0.0;
+            self.wheel_spent = false;
+        }
+        self.wheel_reset = now + 0.2;
+        if e.dy.abs() > e.dx.abs() { return false }
+        if self.wheel_spent { return true }
         // Content moving left (negative dx) is a swipe to the next tab.
         self.wheel -= e.dx;
         if self.wheel.abs() >= 60.0 {
             let direction = if self.wheel > 0.0 { 1 } else { -1 };
             self.wheel = 0.0;
-            self.swipe_lock_until = now + 0.8;
+            self.wheel_spent = true;
             self.move_tab(direction);
         }
         true
@@ -894,10 +910,17 @@ pub fn view(s: &Island, _: &mut Cx<Island>) -> El {
 
     if large {
         let inset = s.notch_inset();
+        // Tabs slide the way the swipe went; the old one leaves with this build's direction.
+        let push = Transition::push(if s.tab_dir < 0 { Edge::Leading } else { Edge::Trailing });
         island = island.child(
-            el().key(format!("tab-{}", s.tab)).pin(Some(0.0), Some(inset), Some(0.0), Some(0.0))
+            el().key("tabs").pin(Some(0.0), Some(inset), Some(0.0), Some(0.0))
                 .transition(Transition::blur_replace())
-                .child(tabs::view(s, &mut layer)),
+                .child_exit(push)
+                .child(
+                    el().key(format!("tab-{}", s.tab)).pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
+                        .transition(push)
+                        .child(tabs::view(s, &mut layer)),
+                ),
         );
     } else if s.mode == Mode::Quick || s.alert().is_some() || s.shows_track() || cfg.show_info_idle {
         island = island.child(if s.shows_track() && s.alert().is_none() { now_playing(s, fg) } else { glance(s, fg) });
@@ -1128,6 +1151,25 @@ mod tests {
         rt.key(KeyEvent { key: Key::Right, mods: rune::Mods::default() });
         rt.frame(1.0 / 60.0);
         assert_eq!(rt.state.tab, 1);
+    }
+
+    #[test]
+    fn one_long_swipe_changes_tab_once_and_a_new_one_again() {
+        let mut s = island(Config { default_tab: 0, ..Config::default() });
+        s.mode = Mode::Large;
+        let [left, top, w, h] = s.rect();
+        let mut rt = rune::Runtime::new(s, view, CANVAS, rune::Env { system_dark: true, scale: 1.0 });
+        rt.frame(0.0);
+        let mut swipe = |rt: &mut rune::Runtime<Island>| for _ in 0..90 {
+            rt.wheel_event(WheelEvent::new(-10.0, 0.0).at(left + w / 2.0, top + h / 2.0).precise(true));
+            rt.frame(1.0 / 60.0);
+        };
+        // 1.5 s of fingers and momentum outlasts any fixed lock.
+        swipe(&mut rt);
+        assert_eq!(rt.state.tab, 1);
+        rt.frame(0.3);
+        swipe(&mut rt);
+        assert_eq!(rt.state.tab, 2);
     }
 
 }
