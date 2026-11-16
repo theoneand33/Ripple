@@ -24,20 +24,22 @@ jobs:
           - name: macOS (x64)
             os: macos-latest
             platform: macos
-            arch: x64
+            target: x86_64-apple-darwin
             os-label: macOS-x64
           - name: macOS (arm64)
             os: macos-latest
             platform: macos
-            arch: arm64
+            target: aarch64-apple-darwin
             os-label: macOS-arm64
           - name: Windows
             os: windows-latest
             platform: windows
+            target: x86_64-pc-windows-msvc
             os-label: Windows
           - name: Linux
             os: ubuntu-latest
             platform: linux
+            target: x86_64-unknown-linux-gnu
             os-label: Linux
 
     steps:
@@ -46,97 +48,125 @@ jobs:
         with:
           ref: ${{ inputs.ref }}
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          cache: 'npm'
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal --target ${{ matrix.target }} && rustup default stable
+        shell: bash
 
-      - name: Get version from package.json
+      - name: Get version from Cargo.toml
         id: pkg
-        run: node -p "\"version=\" + require('./package.json').version" >> $GITHUB_OUTPUT
+        run: echo "version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)" >> $GITHUB_OUTPUT
         shell: bash
 
       - name: Install system dependencies (Linux)
         if: matrix.platform == 'linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y rpm fakeroot dpkg aria2
-          # rpm >= 4.20 runs %install in BUILD/<name>-<ver>-build; electron-installer-redhat stages files in BUILD/usr
-          echo '%__spec_install_pre %{___build_pre} && cd %{_topdir}/BUILD' >> ~/.rpmmacros
+          sudo apt-get install -y libxkbcommon-dev libwayland-dev aria2 libxkbcommon-x11-0 mesa-vulkan-drivers xvfb x11-apps
 
-      - name: Install Dependencies
-        run: npm install
+      - name: Test
+        run: cargo test --locked
 
-      - name: Build Application (macOS)
+      - name: Build
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Package (macOS)
         if: matrix.platform == 'macos'
-        run: npm run make -- --arch=${{ matrix.arch }}
+        env:
+          VERSION: ${{ steps.pkg.outputs.version }}
+        run: |
+          APP=out/Ripple.app
+          mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+          cp target/${{ matrix.target }}/release/ripple "$APP/Contents/MacOS/Ripple"
+          cp assets/icons/icon.icns "$APP/Contents/Resources/icon.icns"
+          cat > "$APP/Contents/Info.plist" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+            <key>CFBundleName</key><string>Ripple</string>
+            <key>CFBundleIdentifier</key><string>com.topmyster.ripple</string>
+            <key>CFBundleExecutable</key><string>Ripple</string>
+            <key>CFBundleIconFile</key><string>icon</string>
+            <key>CFBundleShortVersionString</key><string>${VERSION}</string>
+            <key>CFBundleVersion</key><string>${VERSION}</string>
+            <key>LSUIElement</key><true/>
+            <key>NSAppleEventsUsageDescription</key><string>Ripple reads and controls what Spotify and Music are playing.</string>
+          </dict></plist>
+          EOF
+          codesign --force --deep --sign - "$APP"
+          hdiutil create -volname Ripple -srcfolder "$APP" -ov -format UDZO "out/Ripple-${{ matrix.os-label }}-v${VERSION}.dmg"
 
-      - name: Package Application (Windows & Linux)
-        if: matrix.platform != 'macos'
-        run: npm run package
+      - name: Package (Windows)
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force out | Out-Null
+          Compress-Archive -Path target/${{ matrix.target }}/release/ripple.exe -DestinationPath "out/Ripple-${{ matrix.os-label }}-v${{ steps.pkg.outputs.version }}.zip"
 
-      - name: Make Distributables (Windows & Linux)
-        if: matrix.platform != 'macos'
-        run: npm run make -- --skip-package
-
-      - name: Build AppImage (Linux)
+      - name: Package (Linux AppImage and tarball)
         if: matrix.platform == 'linux'
         env:
           APPIMAGE_EXTRACT_AND_RUN: '1'
           VERSION: ${{ steps.pkg.outputs.version }}
         run: |
+          mkdir -p out
+          tar -czf "out/Ripple-Linux-v${VERSION}.tar.gz" -C target/${{ matrix.target }}/release ripple
           aria2c -c -x 8 -s 8 -k 1M -d "$RUNNER_TEMP" -o appimagetool \
             https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
           chmod +x "$RUNNER_TEMP/appimagetool"
           APPDIR="$RUNNER_TEMP/Ripple.AppDir"
-          cp -r out/Ripple-linux-x64 "$APPDIR"
-          cp src/assets/icons/icon.png "$APPDIR/ripple.png"
-          cat > "$APPDIR/ripple.desktop" <<'EOF'
-          [Desktop Entry]
-          Name=Ripple
-          Comment=A Dynamic Island for All
-          Exec=ripple %U
-          Icon=ripple
-          Type=Application
-          Categories=Utility;
-          StartupNotify=true
-          EOF
-          # --no-sandbox: AppImages can't ship a setuid chrome-sandbox
-          cat > "$APPDIR/AppRun" <<'EOF'
-          #!/bin/sh
-          HERE="$(dirname "$(readlink -f "$0")")"
-          exec "$HERE/ripple" --ozone-platform=x11 --no-sandbox "$@"
-          EOF
-          chmod +x "$APPDIR/AppRun"
-          # forge leaves the package dir 0700; appimagetool requires world-readable
-          chmod -R a+rX "$APPDIR"
-          mkdir -p out/make/appimage
-          ARCH=x86_64 "$RUNNER_TEMP/appimagetool" "$APPDIR" "out/make/appimage/Ripple-Linux-v${VERSION}.AppImage"
+          mkdir -p "$APPDIR/usr/bin"
+          cp target/${{ matrix.target }}/release/ripple "$APPDIR/usr/bin/ripple"
+          cp assets/icons/icon.png "$APPDIR/ripple.png"
+          cp assets/ripple.desktop "$APPDIR/ripple.desktop"
+          ln -s usr/bin/ripple "$APPDIR/AppRun"
+          ARCH=x86_64 "$RUNNER_TEMP/appimagetool" "$APPDIR" "out/Ripple-Linux-v${VERSION}.AppImage"
 
-      - name: Upload macOS Artifacts
-        if: matrix.platform == 'macos'
-        uses: actions/upload-artifact@v4
-        with:
-          name: Ripple-${{ matrix.os-label }}-v${{ steps.pkg.outputs.version }}
-          path: out/make/**/*.dmg
-          if-no-files-found: error
+      # Launch the real app for 15 seconds: it must still be running, and the screen is kept.
+      - name: Smoke run (macOS)
+        if: matrix.platform == 'macos' && matrix.target == 'aarch64-apple-darwin'
+        run: |
+          target/${{ matrix.target }}/release/ripple > out/smoke-${{ matrix.os-label }}.log 2>&1 &
+          PID=$!
+          sleep 15
+          screencapture -x out/smoke-${{ matrix.os-label }}.png || true
+          cat out/smoke-${{ matrix.os-label }}.log
+          kill -0 $PID
+          kill $PID
 
-      - name: Upload Windows Artifacts
+      - name: Smoke run (Windows)
         if: matrix.platform == 'windows'
-        uses: actions/upload-artifact@v4
-        with:
-          name: Ripple-${{ matrix.os-label }}-v${{ steps.pkg.outputs.version }}
-          path: out/make/wix/x64/*.msi
-          if-no-files-found: error
+        shell: pwsh
+        run: |
+          $p = Start-Process target/${{ matrix.target }}/release/ripple.exe -PassThru -RedirectStandardError out/smoke-Windows.log
+          Start-Sleep 15
+          Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+          $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+          $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
+          [System.Drawing.Graphics]::FromImage($bmp).CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
+          $bmp.Save("out/smoke-Windows.png")
+          Get-Content out/smoke-Windows.log -ErrorAction SilentlyContinue
+          if ($p.HasExited) { throw "Ripple exited with code $($p.ExitCode)" }
+          Stop-Process $p
 
-      - name: Upload Linux Artifacts
+      - name: Smoke run (Linux)
         if: matrix.platform == 'linux'
+        run: |
+          xvfb-run -a -s "-screen 0 1920x1080x24" bash -c '
+            target/${{ matrix.target }}/release/ripple > out/smoke-Linux.log 2>&1 &
+            PID=$!
+            sleep 15
+            xwd -root -silent > out/smoke-Linux.xwd || true
+            cat out/smoke-Linux.log
+            kill -0 $PID && kill $PID'
+
+      - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: Ripple-${{ matrix.os-label }}-v${{ steps.pkg.outputs.version }}
           path: |
-            out/make/deb/**/*.deb
-            out/make/rpm/**/*.rpm
-            out/make/appimage/*.AppImage
+            out/*.dmg
+            out/*.zip
+            out/*.tar.gz
+            out/*.AppImage
+            out/smoke-*
           if-no-files-found: error
