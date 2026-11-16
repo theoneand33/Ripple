@@ -68,6 +68,10 @@ impl Settings {
     fn save(&mut self, f: impl FnOnce(&mut Config)) {
         self.store.update(f);
         self.cfg = self.store.get();
+        // A theme rewrites both colours; the fields show what it set unless one is being typed in.
+        for (edit, value) in [(&mut self.bg_color, &self.cfg.bg_color), (&mut self.text_color, &self.cfg.text_color)] {
+            if !edit.focused && edit.text != *value { edit.replace_text(value) }
+        }
         if let Some(island) = &self.island { island.update(|s, tx| s.reload(tx)) }
     }
 
@@ -433,6 +437,13 @@ pub fn view(s: &Settings, cx: &mut Cx<Settings>) -> El {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn picking_a_theme_updates_the_colour_fields() {
+        let mut s = Settings::new(Store::memory(Config::default()), None, &[]);
+        s.save(|c| c.set_theme("win95"));
+        assert_eq!((s.bg_color.text.as_str(), s.text_color.text.as_str()), ("rgba(195, 195, 195)", "rgba(0, 0, 0)"));
+    }
 
     #[test]
     fn a_dragged_tab_lands_on_the_nearest_row() {
