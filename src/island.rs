@@ -1627,4 +1627,19 @@ mod tests {
         assert_eq!(rt.state.tab, 2);
     }
 
+    #[test]
+    fn the_wheel_scrolls_a_long_task_list() {
+        let mut s = island(Config { tasks: (0..30).map(|i| format!("task {i}")).collect(), ..Config::default() });
+        s.mode = Mode::Large;
+        s.set_tab(6);
+        let [left, top, w, h] = s.rect();
+        let mut rt = rune::Runtime::new(s, view, CANVAS, rune::Env { system_dark: true, scale: 1.0 });
+        for _ in 0..60 { rt.frame(1.0 / 60.0); }
+        let before = rt.find("task-0-task 0").unwrap().1;
+        rt.wheel(left + w / 2.0, top + h / 2.0, -200.0);
+        for _ in 0..30 { rt.frame(1.0 / 60.0); }
+        let after = rt.find("task-0-task 0").unwrap().1;
+        assert!(after < before - 50.0, "task-0 stayed at {before} -> {after}");
+    }
+
 }
