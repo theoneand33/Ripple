@@ -283,6 +283,7 @@ pub fn view(s: &Settings, cx: &mut Cx<Settings>) -> El {
         setting(s, "Notch mode", switch(&k, "Notch mode", cfg.notch_mode, |c| c.notch_mode = !c.notch_mode).a11y_hidden()),
         setting(s, "Theme", choice(s, &k, &mut layer, "theme", "Theme", &[("none", "Default"), ("sleek-black", "Sleek Black"), ("win95", "Windows 95")], &cfg.theme, |c, v| c.set_theme(v))),
     ];
+    if cfg.notch_mode { style.insert(1, setting(s, "Auto size", switch(&k, "Auto size", cfg.notch_auto_size, |c| c.notch_auto_size = !c.notch_auto_size).a11y_hidden())) }
     let position = POSITIONS.iter().chain([("free", "Free placement")].iter())
         .fold(RadioGroup::new().label("Position"), |group, &(value, label)| {
             group.item(RadioItem::new(label, cfg.position_mode == value).on_select(move |s: &mut Settings| s.save(|c| c.position_mode = value.into())))

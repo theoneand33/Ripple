@@ -95,6 +95,8 @@ pub struct Config {
     pub auto_launch: bool,
     pub position_mode: String,
     pub notch_mode: bool,
+    /// Notch Mode: shrink the compact Island to fit its content instead of a fixed width.
+    pub notch_auto_size: bool,
     /// Free placement: the Island's centre, in percent of the display's width.
     pub island_x: f32,
     /// Free placement: points from the display's top.
@@ -146,6 +148,7 @@ impl Default for Config {
             auto_launch: false,
             position_mode: "free".into(),
             notch_mode: false,
+            notch_auto_size: true,
             island_x: 50.0,
             island_y: 20.0,
             display: String::new(),
