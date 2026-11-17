@@ -130,6 +130,36 @@ pub fn unconstrain(ns_view: *mut c_void) {
     }
 }
 
+// --- Desktop drags ---
+
+/// `system::watch_drags`: a drag writes the drag pasteboard as it starts, with a mouse button down.
+pub fn watch_drags(on: impl Fn(bool)) {
+    // SAFETY: NSPasteboard and NSEvent's class queries are safe off the main thread; a nil board ends the watch.
+    let board: Option<Retained<AnyObject>> = objc2::rc::autoreleasepool(|_| unsafe {
+        msg_send![class!(NSPasteboard), pasteboardWithName: ns_string("Apple CFPasteboard drag")]
+    });
+    let Some(board) = board else { return };
+    // SAFETY: as above.
+    let read = || unsafe {
+        let count: isize = msg_send![&*board, changeCount];
+        let buttons: usize = msg_send![class!(NSEvent), pressedMouseButtons];
+        (count, buttons != 0)
+    };
+    // SAFETY: as above; the types array is autoreleased, so it's read inside a pool.
+    let has_files = || objc2::rc::autoreleasepool(|_| unsafe {
+        let types: *mut AnyObject = msg_send![&*board, types];
+        !types.is_null() && { let on: objc2::runtime::Bool = msg_send![types, containsObject: ns_string("public.file-url")]; on.as_bool() }
+    });
+    let (mut last, mut dragging) = (read().0, false);
+    loop {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let (count, held) = read();
+        if !dragging && held && count != last && has_files() { dragging = true; on(true) }
+        else if dragging && !held { dragging = false; on(false) }
+        last = count;
+    }
+}
+
 // --- Focus hand-back ---
 
 /// The frontmost app's process id.

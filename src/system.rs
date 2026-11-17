@@ -238,6 +238,53 @@ end if"#);
     }
 }
 
+// --- Desktop drags ---
+
+/// Calls `on(true)` when a drag and drop starts anywhere on the desktop, and `on(false)` once
+/// its mouse button comes up. Blocks for good; run it on its own thread.
+pub fn watch_drags(on: impl Fn(bool)) {
+    #[cfg(target_os = "linux")]
+    {
+        // shortcut: X11 (and XWayland) drags only; native Wayland has no global drag signal.
+        let _ = x11_drags(&on);
+    }
+    #[cfg(target_os = "macos")]
+    { crate::mac::watch_drags(on) }
+    // shortcut: Windows has no public signal for a drag that starts in another app; add an OLE hook if users ask.
+    #[cfg(windows)]
+    { let _ = on; }
+}
+
+/// A drag source owns `XdndSelection` from its start (XDND); the pointer's buttons say when it ends.
+#[cfg(target_os = "linux")]
+fn x11_drags(on: &impl Fn(bool)) -> Result<(), Box<dyn std::error::Error>> {
+    use x11rb::connection::Connection;
+    use x11rb::protocol::Event;
+    use x11rb::protocol::xfixes::{ConnectionExt as _, SelectionEventMask};
+    use x11rb::protocol::xproto::{AtomEnum, ConnectionExt as _, KeyButMask};
+    let (conn, screen) = x11rb::connect(None)?;
+    let root = conn.setup().roots[screen].root;
+    conn.xfixes_query_version(5, 0)?.reply()?;
+    let dnd = conn.intern_atom(false, b"XdndSelection")?.reply()?.atom;
+    let (types, uris) = (conn.intern_atom(false, b"XdndTypeList")?.reply()?.atom, conn.intern_atom(false, b"text/uri-list")?.reply()?.atom);
+    conn.xfixes_select_selection_input(root, dnd, SelectionEventMask::SET_SELECTION_OWNER)?.check()?;
+    let buttons = KeyButMask::BUTTON1 | KeyButMask::BUTTON2 | KeyButMask::BUTTON3;
+    loop {
+        let Event::XfixesSelectionNotify(e) = conn.wait_for_event()? else { continue };
+        if e.owner == x11rb::NONE { continue }
+        // A source with more than three types lists them here; one without files (text, a tab) is skipped.
+        let listed = conn.get_property(false, e.owner, types, AtomEnum::ATOM, 0, 256)?.reply()?;
+        if listed.type_ != x11rb::NONE && !listed.value32().is_some_and(|mut t| t.any(|a| a == uris)) { continue }
+        on(true);
+        // shortcut: gives up after 30 s, as XWayland may not see the release over a native Wayland window.
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while conn.query_pointer(root)?.reply()?.mask.intersects(buttons) && std::time::Instant::now() < until {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        on(false);
+    }
+}
+
 // --- Bluetooth, camera, microphone ---
 
 pub fn bluetooth_connected() -> bool {

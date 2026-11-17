@@ -20,11 +20,13 @@ use crate::system::{self, MediaCommand, Track};
 use crate::{icons, stremflix, t3, tabs};
 
 /// The Island's window, in points: the largest Island at its hover scale, its tab dock, plus their shadows.
-pub const CANVAS: (f32, f32) = (560.0, 420.0);
+pub const CANVAS: (f32, f32) = (620.0, 460.0);
 /// Room kept around the Island inside the window for its shadow and hover scale.
 const PAD: f32 = 30.0;
 /// The tab dock under the Large Island: its height, the gap above it, one button and the space between.
 const DOCK: (f32, f32, f32, f32) = (44.0, 12.0, 32.0, 6.0);
+/// Room between the Large Island's edge and its tab's content.
+const LARGE_EDGE: f32 = 12.0;
 /// Framer's spring (stiffness 400, damping 40, mass 2.5) as duration and bounce.
 pub const SPRING: Spring = Spring::new(0.5, 0.3);
 
@@ -255,6 +257,8 @@ pub struct Island {
     pub stremflix: StremflixState,
     /// A file drag is over the Island.
     pub dropping: bool,
+    /// A drag started elsewhere on the desktop opened the Shelf; it rests when the drag ends.
+    pub desktop_drag: bool,
     pub t3: T3State,
     pub t3_client: Arc<t3::Client>,
 
@@ -339,6 +343,7 @@ impl Island {
             note_index: 0,
             stremflix: StremflixState::default(),
             dropping: false,
+            desktop_drag: false,
             t3: T3State::default(),
             t3_client,
             me: None,
@@ -443,7 +448,7 @@ impl Island {
         let alerting = self.alert().is_some();
         let track = self.shows_track();
         let mut w = match self.mode {
-            Mode::Large => match self.tab { 1 | 9 | 10 | tabs::SHELF => 480.0, 0 => 405.0, _ => 380.0 },
+            Mode::Large => match self.tab { 1 | 9 | 10 | tabs::SHELF => 520.0, 0 => 445.0, _ => 420.0 },
             _ if alerting => if notch { self.notch_glance_width() } else { 160.0 }, // fits icon + "Microphone"
             _ if track => self.now_playing_width(),
             _ if notch => if self.mode == Mode::Quick || self.cfg.show_info_idle { self.notch_glance_width() } else { 210.0 },
@@ -451,8 +456,8 @@ impl Island {
         };
         if notch && track && !alerting && self.mode != Mode::Large { w = (w + 40.0).max(300.0) }
         let h = match self.mode {
-            Mode::Large => self.notch_inset() + match self.tab { 6 | 8 | 9 | 10 => 250.0, 0 => 120.0, 1 => 210.0, _ => 190.0 },
-            _ => if self.cfg.notch_mode { 34.0 } else { 40.0 },
+            Mode::Large => self.notch_inset() + match self.tab { 6 | 8 | 9 | 10 => 290.0, 0 => 160.0, 1 => 250.0, _ => 230.0 },
+            _ => if notch { 34.0 } else { 40.0 },
         };
         (w, h)
     }
@@ -486,7 +491,9 @@ impl Island {
     }
 
     fn set_mode(&mut self, mode: Mode) {
+        let was = self.mode;
         self.mode = if mode == Mode::Still { self.rest() } else { mode };
+        if self.mode == Mode::Large && was != Mode::Large && self.cfg.open_default_tab { self.tab = self.cfg.first_tab() }
         if self.mode != Mode::Large { self.t3.open = None }
     }
 
@@ -655,7 +662,20 @@ impl Island {
         if over {
             self.mode = Mode::Large;
             self.open_tab(tabs::SHELF);
-        } else if !self.hovered {
+        } else if !self.hovered && !self.desktop_drag {
+            self.set_mode(Mode::Still);
+        }
+    }
+
+    /// A drag starting anywhere on the desktop opens the Shelf, ready for the drop. When it ends
+    /// somewhere else, the Island rests.
+    pub fn desktop_drag(&mut self, active: bool) {
+        if active {
+            if !self.cfg.visible_tabs().contains(&tabs::SHELF) { return }
+            self.desktop_drag = true;
+            self.mode = Mode::Large;
+            self.open_tab(tabs::SHELF);
+        } else if std::mem::take(&mut self.desktop_drag) && !self.hovered && !self.dropping {
             self.set_mode(Mode::Still);
         }
     }
@@ -667,6 +687,7 @@ impl Island {
             c.shelf.splice(0..0, files.iter().cloned());
         });
         self.dropping = false;
+        self.desktop_drag = false;
         self.mode = Mode::Large;
         self.open_tab(tabs::SHELF);
     }
@@ -975,6 +996,8 @@ impl Island {
         let h = me.clone();
         every(3, move || { let m = system::microphone_in_use(); h.update_if(move |s, tx| s.set_capture(None, Some(m), tx)); });
         let h = me.clone();
+        std::thread::spawn(move || system::watch_drags(|active| h.update(move |s, _| s.desktop_drag(active))));
+        let h = me.clone();
         every(5, move || { let b = system::battery(); h.update_if(move |s, tx| s.set_battery(b, tx)); });
 
         // Weather: every 10 minutes, and at once when the location or unit changes.
@@ -1196,7 +1219,8 @@ pub fn view(s: &Island, _: &mut Cx<Island>) -> El {
         .on_drag(Island::drag)
         .on_wheel(Island::wheel);
     // A hidden Shelf takes no drops.
-    if cfg.visible_tabs().contains(&tabs::SHELF) {
+    let shelf = cfg.visible_tabs().contains(&tabs::SHELF);
+    if shelf {
         island = island.on_drop_files(Island::drop_files).on_drop_hover(Island::drop_hover);
     }
     // iOS-style continuous corners when expanded; compact stays a true capsule.
@@ -1215,7 +1239,7 @@ pub fn view(s: &Island, _: &mut Cx<Island>) -> El {
         // Tabs slide the way the swipe went; the old one leaves with this build's direction.
         let push = Transition::push(if s.tab_dir < 0 { Edge::Leading } else { Edge::Trailing });
         island = island.child(
-            el().key("tabs").pin(Some(0.0), Some(inset), Some(0.0), Some(0.0))
+            el().key("tabs").pin(Some(LARGE_EDGE), Some(inset + LARGE_EDGE), Some(LARGE_EDGE), Some(LARGE_EDGE))
                 .transition(Transition::blur_replace())
                 .child_exit(push)
                 .child(
@@ -1234,7 +1258,14 @@ pub fn view(s: &Island, _: &mut Cx<Island>) -> El {
 
     // The border draws over the content, as a CSS border does.
     island = island.child(border(s, radii, hidden));
-    let mut canvas = el().key("canvas").w_full().h_full().child(island);
+    let mut canvas = el().key("canvas").w_full().h_full();
+    // Windows lets the window take a held drag near the Island (platform::DROP_NEAR); this catches it there, behind the Island.
+    if shelf && cfg!(windows) {
+        let near = platform::DROP_NEAR;
+        canvas = canvas.child(el().key("drop-near").absolute(left - near, top - near).size(w + 2.0 * near, h + 2.0 * near)
+            .on_drop_files(Island::drop_files).on_drop_hover(Island::drop_hover));
+    }
+    let mut canvas = canvas.child(island);
     // A select's menu opens outside the Island: the whole overlay takes clicks while one is open.
     if s.t3.open.is_some() { canvas = canvas.hit() }
     if let Some(rect) = s.dock_rect() { canvas = canvas.child(dock(s, rect)) }
@@ -1465,12 +1496,12 @@ mod tests {
         let mut s = island(Config { standby: false, ..Config::default() });
         assert_eq!(s.size(), (140.0, 40.0));
         s.mode = Mode::Large;
-        for (tab, size) in [(0, (405.0, 120.0)), (1, (480.0, 210.0)), (2, (380.0, 190.0)), (6, (380.0, 250.0)), (8, (380.0, 250.0)), (9, (480.0, 250.0))] {
+        for (tab, size) in [(0, (445.0, 160.0)), (1, (520.0, 250.0)), (2, (420.0, 230.0)), (6, (420.0, 290.0)), (8, (420.0, 290.0)), (9, (520.0, 290.0))] {
             s.tab = tab;
             assert_eq!(s.size(), size);
         }
         s.cfg.notch_mode = true;
-        assert_eq!(s.size(), (480.0, 284.0));
+        assert_eq!(s.size(), (520.0, 324.0));
         s.mode = Mode::Still;
         assert_eq!(s.size(), (210.0, 34.0));
         // The compact notch glance fits its wider half on each side of the notch.
@@ -1555,6 +1586,28 @@ mod tests {
     }
 
     #[test]
+    fn a_desktop_drag_opens_the_shelf_until_it_ends_elsewhere() {
+        let mut s = island(Config { standby: false, ..Config::default() });
+        s.desktop_drag(true);
+        assert_eq!((s.mode, s.tab), (Mode::Large, tabs::SHELF));
+        // Passing over the Island and off again keeps it open while the drag goes on.
+        s.drop_hover(true, &mut Tx::default());
+        s.drop_hover(false, &mut Tx::default());
+        assert_eq!(s.mode, Mode::Large);
+        s.desktop_drag(false);
+        assert_eq!(s.mode, Mode::Still);
+        // A drop on the Shelf keeps it open after the drag ends.
+        s.desktop_drag(true);
+        s.drop_files(&["/a".into()], &mut Tx::default());
+        s.desktop_drag(false);
+        assert_eq!(s.mode, Mode::Large);
+        // A hidden Shelf doesn't open.
+        let mut s = island(Config { standby: false, hidden_tabs: vec![tabs::SHELF], ..Config::default() });
+        s.desktop_drag(true);
+        assert_eq!(s.mode, Mode::Still);
+    }
+
+    #[test]
     fn clipboard_history_keeps_the_newest_first_without_repeats() {
         let mut s = island(Config::default());
         assert!(s.push_clipboard("a") && s.push_clipboard("b"));
@@ -1563,6 +1616,19 @@ mod tests {
         assert_eq!(s.clipboard, ["a", "b"]);
         for i in 0..60 { s.push_clipboard(&i.to_string()); }
         assert_eq!(s.clipboard.len(), 50);
+    }
+
+    #[test]
+    fn large_opens_on_the_starred_tab_unless_turned_off() {
+        let mut s = island(Config { default_tab: 0, ..Config::default() });
+        s.tab = 4;
+        s.set_mode(Mode::Large);
+        assert_eq!(s.tab, 0);
+        s.cfg.open_default_tab = false;
+        s.set_mode(Mode::Quick);
+        s.tab = 4;
+        s.set_mode(Mode::Large);
+        assert_eq!(s.tab, 4);
     }
 
     #[test]

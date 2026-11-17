@@ -12,6 +12,9 @@ use rune::{Tx, WindowHandle};
 
 use crate::island::Screen;
 
+/// How far around the Island, in points, a file drag held down elsewhere reaches it (Windows).
+pub const DROP_NEAR: f32 = 40.0;
+
 #[derive(Default)]
 pub struct Passthrough {
     window: Option<WindowHandle>,
@@ -64,9 +67,12 @@ impl Passthrough {
             self.applied = Some(px);
             // The OS's global space is points on macOS and pixels on Windows.
             let unit = if cfg!(target_os = "macos") { 1.0 } else { f64::from(scale) };
-            let left = screen.origin.0 + f64::from(window_at.0 + region[0]) * unit;
-            let top = screen.origin.1 + f64::from(window_at.1 + region[1]) * unit;
-            let (width, height) = (f64::from(region[2]) * unit, f64::from(region[3]) * unit);
+            // A press held from elsewhere (maybe a file drag) takes no click here, so the window
+            // may take the pointer near the Island too; its drop then lands on `drop-near`.
+            let near = if cfg!(windows) && button_held() { DROP_NEAR } else { 0.0 };
+            let left = screen.origin.0 + f64::from(window_at.0 + region[0] - near) * unit;
+            let top = screen.origin.1 + f64::from(window_at.1 + region[1] - near) * unit;
+            let (width, height) = (f64::from(region[2] + 2.0 * near) * unit, f64::from(region[3] + 2.0 * near) * unit);
             if let Some((x, y)) = pointer() {
                 let inside = x >= left && y >= top && x < left + width && y < top + height;
                 if self.through != Some(!inside) && window.set_click_through(!inside).is_ok() { self.through = Some(!inside) }
@@ -121,6 +127,18 @@ fn set_shape(conn: &x11rb::rust_connection::RustConnection, window: u32, [x, y, 
     conn.flush()?;
     Ok(())
 }
+
+/// A mouse button is down; physical buttons, so swapped buttons count too.
+#[cfg(windows)]
+fn button_held() -> bool {
+    #[link(name = "user32")]
+    unsafe extern "system" { fn GetAsyncKeyState(key: i32) -> i16; }
+    // SAFETY: plain virtual-key queries (VK_LBUTTON, VK_RBUTTON).
+    [1, 2].into_iter().any(|key| (unsafe { GetAsyncKeyState(key) }) < 0)
+}
+
+#[cfg(target_os = "macos")]
+fn button_held() -> bool { false }
 
 /// The pointer in the OS's global space, top-left origin.
 #[cfg(windows)]

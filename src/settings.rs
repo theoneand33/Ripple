@@ -245,7 +245,10 @@ pub fn view(s: &Settings, cx: &mut Cx<Settings>) -> El {
     sections.push(section(s, "general", "General", general));
 
     // Tabs
-    let mut tabs = vec![text("Drag to reorder, click the eye to hide").font(font(cfg, 12.0, 400.0)).color(fg.alpha(0.5))];
+    let mut tabs = vec![
+        text("Drag to reorder, click the eye to hide").font(font(cfg, 12.0, 400.0)).color(fg.alpha(0.5)),
+        setting(s, "Always open on the starred tab", switch(&k, "Always open on the starred tab", cfg.open_default_tab, |c| c.open_default_tab = !c.open_default_tab).a11y_hidden()),
+    ];
     let last = cfg.tab_order.len().saturating_sub(1);
     for (i, &id) in cfg.tab_order.iter().enumerate() {
         let Some(def) = TABS.iter().find(|t| t.id == id) else { continue };
