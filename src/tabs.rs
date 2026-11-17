@@ -29,12 +29,13 @@ pub fn view(s: &Island, layer: &mut Vec<El>) -> El {
 
 /// Left and Right switch tabs even while typing, as the Electron app's window-wide key
 /// handler did. The T3 message box keeps them for its caret.
-fn tab_arrows(s: &mut Island, ev: &KeyEvent, _: &mut Tx) -> bool {
+fn tab_arrows(s: &mut Island, ev: &KeyEvent, tx: &mut Tx) -> bool {
     match ev.key {
         Key::Left => s.move_tab(-1),
         Key::Right => s.move_tab(1),
         _ => return false,
     }
+    tx.instant();
     true
 }
 
@@ -44,7 +45,7 @@ fn button(s: &Island, key: &str, label: &str, enabled: bool) -> El {
     el().key(key).role("button").label(label).focusable(enabled).disabled(!enabled)
         .px(16.0).h(34.0).center().radius(if s.cfg.win95() { 0.0 } else { 12.0 })
         .fill(bg.alpha(if enabled { bg.a } else { 0.4 * bg.a }))
-        .hover(fg.alpha(0.1)).press(fg.alpha(0.2))
+        .hover(fg.alpha(0.1)).press(fg.alpha(0.2)).press_scale(0.97)
         .child(text(label).font(s.font(14.0, 600.0)).color(fg).a11y_hidden())
 }
 
@@ -97,7 +98,7 @@ fn workflows(s: &Island) -> El {
         list = list.child(
             row().key(format!("workflow-{i}-{}", workflow.name)).role("button").label(workflow.name.clone()).focusable(true)
                 .w_full().h(40.0).px(14.0).gap(5.0).center_y().radius(radius)
-                .fill(fg).hover(bg.alpha(0.1)).press(bg.alpha(0.2))
+                .fill(fg).hover(bg.alpha(0.1)).press(bg.alpha(0.2)).press_scale(0.97)
                 .shadow(4.0, 15.0, Color::BLACK.alpha(0.1))
                 .transition(Transition::opacity())
                 .child(text(&workflow.name).font(s.font(14.0, 600.0)).color(bg).truncate().a11y_hidden())
@@ -119,7 +120,7 @@ fn workflows(s: &Island) -> El {
         apps = apps.child(
             el().key(format!("quick-app-{i}-{}", app.name)).role("button").label(app.name.clone()).focusable(true)
                 .h(34.0).px(14.0).center().radius(radius)
-                .fill(fg).hover(bg.alpha(0.1)).press(bg.alpha(0.2))
+                .fill(fg).hover(bg.alpha(0.1)).press(bg.alpha(0.2)).press_scale(0.97)
                 .transition(Transition::opacity())
                 .child(text(&app.name).font(s.font(13.0, 600.0)).color(bg).single_line().a11y_hidden())
                 .on_press(move |_: &mut Island| {
@@ -187,7 +188,7 @@ fn overview(s: &Island) -> El {
     let estimate = |t: &str, size: f32| t.chars().count() as f32 * size * 0.58;
     let media = |key: &'static str, glyph: &'static rune::Icon, size: f32, command: MediaCommand, label: &str| {
         el().key(key).role("button").label(label).focusable(true)
-            .padding(4.0).radius(8.0).hover(fg.alpha(0.1 * fg.a)).press(fg.alpha(0.2 * fg.a))
+            .padding(4.0).radius(8.0).hover(fg.alpha(0.1 * fg.a)).press(fg.alpha(0.2 * fg.a)).press_scale(0.97)
             .child(icon(glyph, size).color(fg))
             .on_press(move |_: &mut Island| control(command))
     };
@@ -255,7 +256,8 @@ fn clipboard(s: &Island) -> El {
             .px(8.0).h(24.0).center().radius(6.0)
             .fill(if copied { Color { r: 0.03, g: 0.57, b: 0.1, a: 0.4 } } else { Color::WHITE.alpha(0.15) })
             .hover(fg.alpha(0.1 * fg.a)).press(fg.alpha(0.2 * fg.a))
-            .child(text(if copied { "Copied" } else { "Copy" }).font(s.font(11.0, 500.0)).color(fg).a11y_hidden())
+            .child(text(if copied { "Copied" } else { "Copy" }).key(if copied { "copied" } else { "copy-label" }).font(s.font(11.0, 500.0)).color(fg).a11y_hidden()
+                .transition(Transition::blur_replace()))
             .on_press_tx(move |s: &mut Island, tx| {
                 tx.copy(value.clone());
                 s.copied = Some((i, tx.clock() + 2.0));
@@ -296,8 +298,10 @@ fn tasks(s: &Island) -> El {
     let mut list = col().key("task-list").w_full().gap(6.0);
     if s.cfg.tasks.is_empty() { list = list.child(empty(s, "No tasks yet")) }
     for (i, task) in s.cfg.tasks.iter().enumerate() {
+        // Keyed by text and occurrence, not index, so ticking one off leaves the rows below in place.
+        let n = s.cfg.tasks[..i].iter().filter(|t| *t == task).count();
         list = list.child(
-            row().key(format!("task-{i}-{task}")).w_full().px(12.0).py(8.0).gap(10.0).center_y()
+            row().key(format!("task-{task}-{n}")).w_full().px(12.0).py(8.0).gap(10.0).center_y()
                 .radius(if s.cfg.win95() { 0.0 } else { 12.0 }).fill(fg.alpha(0.05 * fg.a))
                 .transition(Transition::opacity())
                 // Ticking a task off removes it.

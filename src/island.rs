@@ -8,8 +8,8 @@ use std::sync::mpsc::Sender;
 use rune::time::LocalTime;
 use rune::tok::{Family, TextStyle};
 use rune::{
-    AppHandle, Color, Cx, Display, DisplayTarget, Drag, Easing, Edge, GesturePhase, El, Image, ImageCache, Key, KeyEvent, LoopSpec, OverlayHandle, OverlayPlacement,
-    Phase, Shadow, Spring, SurfaceFit, TextEdit, Transition, Tx, Waker, WheelEvent, WindowHandle, el, icon, row, text,
+    AppHandle, Color, Curve, Cx, Display, DisplayTarget, Drag, Easing, Edge, Effect, GesturePhase, El, Image, ImageCache, Key, KeyEvent, LoopSpec, OverlayHandle, OverlayPlacement,
+    Phase, Shadow, Spring, SurfaceFit, TextEdit, Transition, Tx, Vec2, Waker, WheelEvent, WindowHandle, el, icon, row, text,
 };
 use rune_kit::{Kit, PaletteSeed};
 
@@ -729,7 +729,7 @@ impl Island {
         self.open_shelf();
     }
 
-    pub fn key(&mut self, ev: &KeyEvent, _: &mut Tx) -> bool {
+    pub fn key(&mut self, ev: &KeyEvent, tx: &mut Tx) -> bool {
         match ev.key {
             Key::Right => self.move_tab(1),
             Key::Left => self.move_tab(-1),
@@ -740,6 +740,8 @@ impl Island {
             }
             _ => return false,
         }
+        // Keyboard tab changes land at once: they repeat too often to animate.
+        tx.instant();
         true
     }
 
@@ -885,6 +887,12 @@ impl Island {
 
     pub fn set_track(&mut self, track: Option<Track>, tx: &mut Tx) -> bool {
         if track == self.track { return false }
+        // A poll that only moved the position: the bar runs at playback speed until the next one.
+        if let (Some(old), Some(new)) = (&self.track, &track)
+            && (system::Track { progress: new.progress, ..old.clone() }) == *new
+        {
+            tx.motion_curve(Curve::tween(2.0, Easing::LINEAR));
+        }
         let was_paused = self.track.as_ref().is_some_and(|t| t.paused);
         let paused = track.as_ref().is_some_and(|t| t.paused);
         if paused && !was_paused {
@@ -1261,7 +1269,8 @@ pub fn view(s: &Island, _: &mut Cx<Island>) -> El {
         .absolute(left, top).size(w, h)
         .fill(bg).corners(radii).clip_corners(radii)
         .motion(SPRING)
-        .scale(if s.hovered { 1.05 } else { 1.0 })
+        // Large is always under the pointer, so the hover lift only tells the compact Island apart.
+        .scale(if s.hovered && !large { 1.05 } else { 1.0 })
         .on_hover_change(Island::hover)
         .on_drag(Island::drag)
         .on_wheel(Island::wheel);
@@ -1357,14 +1366,17 @@ fn dock(s: &Island, [x, y, w, h]: [f32; 4]) -> El {
             el().key(format!("dock-{id}")).role("button").label(name).checked(on).focusable(true)
                 .size(button, button).center().radius(round(button / 2.0))
                 .fill(if on { fg.alpha(0.18 * fg.a) } else { Color::TRANSPARENT })
-                .hover(fg.alpha(0.1 * fg.a)).press(fg.alpha(0.2 * fg.a))
+                .hover(fg.alpha(0.1 * fg.a)).press(fg.alpha(0.2 * fg.a)).press_scale(0.97)
                 .child(icon(icons::tab(id), 17.0).color(if on { fg } else { fg.alpha(0.55 * fg.a) }).a11y_hidden())
                 .on_press(move |s: &mut Island| s.open_tab(id)),
         );
     }
     // The gap to the Island is part of the dock, so crossing it keeps the Island open.
+    // It grows out of the Island's edge, not its own centre.
+    let enter = Transition::blur_replace();
+    let edge = Effect { anchor: Vec2::new(0.5, if s.placement.top { 0.0 } else { 1.0 }), ..enter.insertion };
     let zone = el().key("dock-zone").hit().absolute(x, y).size(w, h).motion(SPRING)
-        .transition(Transition::blur_replace())
+        .transition(Transition { insertion: edge, removal: Effect { opacity: 0.0, ..edge }, ..enter })
         .on_hover_change(Island::hover_dock);
     if s.placement.top { zone.pt(gap) } else { zone.pb(gap) }.child(pill)
 }
@@ -1481,7 +1493,7 @@ fn now_playing(s: &Island, fg: Color) -> El {
     let line = row().key(format!("playing-{}-{}", track.name, track.artist)).w_full().h_full().px(9.0).gap(6.0).center_y()
         .transition(Transition::blur_replace())
         .opacity(if !track.playing { 0.5 } else if s.cfg.hide_inactive { 0.6 } else { 1.0 })
-        .child(cover(s, 24.0, 4.0, 14.0, 1.25))
+        .child(cover(s, 24.0, 4.0, 14.0, 1.1))
         .child(marquee);
     let line = line.child(if s.hovered {
         el().key("play-pause").role("button").label(if track.playing { "Pause" } else { "Play" })
