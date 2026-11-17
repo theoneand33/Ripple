@@ -418,6 +418,7 @@ impl Island {
     /// Notch Mode's compact width: the notch, plus the wider half of the glance and its padding on
     /// each side, so neither half sits under the notch. Mirrors `glance`.
     fn notch_glance_width(&self) -> f32 {
+        if !self.cfg.notch_auto_size { return 300.0 }
         const NOTCH: f32 = 200.0; // a MacBook notch is about 180-190pt wide; sized for the widest plus slack
         let label = |l: &str| estimate_width(l, 16.0);
         let percent = || self.percent.map_or(0.0, |p| label(&format!("{p}%")));
@@ -1454,6 +1455,8 @@ mod tests {
         assert!(quick > 210.0 && quick < 300.0, "{quick}");
         s.capture = Some((Alert::Microphone, Default::default()));
         assert!(s.size().0 > quick);
+        s.cfg.notch_auto_size = false;
+        assert_eq!(s.size(), (300.0, 34.0));
     }
 
     #[test]
