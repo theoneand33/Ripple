@@ -1402,10 +1402,13 @@ fn glance(s: &Island, fg: Color) -> El {
 /// A privacy dot at the compact Island's right end while the camera or microphone is in use,
 /// once that one's alert has had its turn. Like the border, it shows even when the Island hides.
 fn capture_dot(s: &Island) -> Option<El> {
-    let (color, label, alert) = if s.camera { (status::camera(), "Camera in use", Alert::Camera) }
-        else if s.microphone { (status::mic(), "Microphone in use", Alert::Microphone) }
-        else { return None };
-    if s.alert() == Some(alert) { return None }
+    let (color, label) = match (s.camera, s.microphone) {
+        (true, true) => (status::camera(), "Camera and microphone in use"),
+        (true, false) => (status::camera(), "Camera in use"),
+        (false, true) => (status::mic(), "Microphone in use"),
+        (false, false) => return None,
+    };
+    if matches!(s.alert(), Some(Alert::Camera | Alert::Microphone)) { return None }
     const SIZE: f32 = 6.0;
     Some(el().key("capture-dot").role("img").label(label).inert()
         .pin(None, Some((s.size().1 - SIZE) / 2.0), Some(3.0), None).size(SIZE, SIZE)
