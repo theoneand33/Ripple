@@ -19,8 +19,9 @@ mod testserver;
 
 use rune::{App, AppHandle, AppSpec, MacWindowOptions, RunOptions, Tray, TrayEvent, TrayIcon, TrayItem, TraySpec, WindowHandle, WindowOptions, WindowSpec};
 
-use config::Store;
-use island::{CANVAS, Host, Island, Screen};
+use config::{Store, Tab};
+use island::{CANVAS, Host, Island, Mode};
+use platform::Screen;
 use settings::Settings;
 
 static FONTS: &[&[u8]] = &[
@@ -40,34 +41,33 @@ fn tray_icon() -> Option<TrayIcon> {
     (info.color_type == png::ColorType::Rgba).then(|| TrayIcon::rgba(info.width, info.height, rgba[..info.buffer_size()].to_vec()))
 }
 
+/// (id, title) of the tray menu's items; a separator goes before the last.
+const TRAY_MENU: [(&str, &str); 3] = [("toggle", "Show/Hide Ripple"), ("settings", "Settings"), ("quit", "Quit")];
+
+fn tray_pick(island: &Host, id: &str) {
+    match id {
+        // show, not open: bringing the Island back mustn't take focus from the app in use.
+        "toggle" => if island.is_visible() { island.hide() } else { island.show() },
+        "settings" => island.update(|s, _| if let Some(w) = &s.settings { w.open() }),
+        _ => island.quit(),
+    }
+}
+
 /// The tray lives as long as the app; it is a process-wide singleton.
 fn start_tray(island: Host) {
     #[cfg(target_os = "macos")]
     {
-        mac::tray(include_bytes!("../assets/icons/tray.png"), move |id| match id {
-            "toggle" => if island.is_visible() { island.hide() } else { island.show() },
-            "settings" => island.update(|s, _| if let Some(w) = &s.settings { w.open() }),
-            _ => island.quit(),
-        });
+        mac::tray(include_bytes!("../assets/icons/tray.png"), &TRAY_MENU, move |id| tray_pick(&island, id));
         return;
     }
     #[cfg_attr(target_os = "macos", allow(unreachable_code))]
     let Some(icon) = tray_icon() else { return };
-    let menu = vec![
-        TrayItem::action("toggle", "Show/Hide Ripple"),
-        TrayItem::action("settings", "Settings"),
-        TrayItem::Separator,
-        TrayItem::action("quit", "Quit"),
-    ];
-    let handle = island.clone();
-    // show, not open: bringing the Island back mustn't take focus from the app in use.
-    let toggle = move || if handle.is_visible() { handle.hide() } else { handle.show() };
+    let mut menu: Vec<TrayItem> = TRAY_MENU.iter().map(|(id, title)| TrayItem::action(*id, *title)).collect();
+    menu.insert(TRAY_MENU.len() - 1, TrayItem::Separator);
     let spec = TraySpec::new("Ripple", "Ripple", icon).tooltip("Ripple").icon_name("ripple").menu(menu);
     match Tray::new(spec, move |event| match event {
-        TrayEvent::Activate { .. } => toggle(),
-        TrayEvent::Menu(id) if id == "toggle" => toggle(),
-        TrayEvent::Menu(id) if id == "settings" => island.update(|s, _| if let Some(w) = &s.settings { w.open() }),
-        TrayEvent::Menu(id) if id == "quit" => island.quit(),
+        TrayEvent::Activate { .. } => tray_pick(&island, "toggle"),
+        TrayEvent::Menu(id) => tray_pick(&island, &id),
         _ => {}
     }) {
         Ok(tray) => std::mem::forget(tray),
@@ -84,18 +84,18 @@ fn island_spec() -> AppSpec<Island> {
         poll: Some(Island::poll),
         on_key: Some(Island::key),
         scenes: &[
-            ("quick", |s| { s.cfg.standby = true; s.mode = island::Mode::Quick }),
-            ("charging", |s| { s.cfg.standby = true; s.mode = island::Mode::Quick; (s.percent, s.charging) = (Some(80), true) }),
-            ("large", |s| s.mode = island::Mode::Large),
-            ("search", |s| { s.mode = island::Mode::Large; s.set_tab(0) }),
-            ("workflows", |s| { s.mode = island::Mode::Large; s.set_tab(1) }),
-            ("assistant", |s| { s.mode = island::Mode::Large; s.set_tab(4); s.asked = true; s.answer = Some("**Rust** is a systems language.\n\n```rust\nfn main() {}\n```".into()) }),
-            ("clipboard", |s| { s.mode = island::Mode::Large; s.set_tab(5); s.push_clipboard("Hello from Ripple"); }),
-            ("tasks", |s| { s.mode = island::Mode::Large; s.set_tab(6) }),
-            ("t3", |s| { s.mode = island::Mode::Large; s.set_tab(8) }),
+            ("quick", |s| { s.cfg.standby = true; s.mode = Mode::Quick }),
+            ("charging", |s| { s.cfg.standby = true; s.mode = Mode::Quick; (s.percent, s.charging) = (Some(80), true) }),
+            ("large", |s| s.mode = Mode::Large),
+            ("search", |s| { s.mode = Mode::Large; s.set_tab(Tab::Search) }),
+            ("workflows", |s| { s.mode = Mode::Large; s.set_tab(Tab::Workflows) }),
+            ("assistant", |s| { s.mode = Mode::Large; s.set_tab(Tab::Assistant); s.ai.asked = true; s.ai.answer = Some("**Rust** is a systems language.\n\n```rust\nfn main() {}\n```".into()) }),
+            ("clipboard", |s| { s.mode = Mode::Large; s.set_tab(Tab::Clipboard); s.clipboard.push("Hello from Ripple"); }),
+            ("tasks", |s| { s.mode = Mode::Large; s.set_tab(Tab::Tasks) }),
+            ("t3", |s| { s.mode = Mode::Large; s.set_tab(Tab::T3) }),
             ("notes", |s| {
-                s.mode = island::Mode::Large;
-                s.set_tab(9);
+                s.mode = Mode::Large;
+                s.set_tab(Tab::Notes);
                 s.cfg.notes = vec![
                     "PR review queue\nGitHub\n• PR #482 — notch profile switcher polish\n• PR #491 — Screen Time category colors\n\nLeave blocking comments only; merge green builds.".into(),
                     "Sprint board\nIn progress • MN-214 — Code hosting".into(),
@@ -104,23 +104,23 @@ fn island_spec() -> AppSpec<Island> {
                 s.open_note(0);
             }),
             ("stremflix", |s| {
-                s.mode = island::Mode::Large;
-                s.set_tab(10);
+                s.mode = Mode::Large;
+                s.set_tab(Tab::Stremflix);
                 let entry = |id: &str, title: &str, position| stremflix::Entry { kind: "movie".into(), id: id.into(), title: title.into(), poster: None, position, duration: 100.0 };
                 s.stremflix.entries = Some(Ok(vec![entry("a", "Big Buck Bunny", 40.0), entry("b", "Sintel", 80.0), entry("c", "A Very Long Title That Truncates", 10.0), entry("d", "Tears of Steel", 60.0), entry("e", "Elephants Dream", 5.0)]));
             }),
             ("system", |s| {
-                s.mode = island::Mode::Large;
-                s.set_tab(tabs::SYSTEM);
+                s.mode = Mode::Large;
+                s.set_tab(Tab::System);
                 s.percent = Some(57);
                 const GB: u64 = 1 << 30;
                 s.stats = Some(system::Stats { cpu: 7.0, mem_used: 29 * GB, mem_total: 48 * GB, disk_free: 810 * GB, disk_total: 990 * GB, down: 15_200, up: 3_100 });
             }),
-            ("shelf-drop", |s| { s.mode = island::Mode::Large; s.set_tab(tabs::SHELF); s.dropping = true }),
-            ("shelf", |s| { s.mode = island::Mode::Large; s.set_tab(tabs::SHELF); s.cfg.shelf = vec!["/home/me/Report final.pdf".into(), "/home/me/photo.png".into()] }),
+            ("shelf-drop", |s| { s.mode = Mode::Large; s.set_tab(Tab::Shelf); s.dropping = true }),
+            ("shelf", |s| { s.mode = Mode::Large; s.set_tab(Tab::Shelf); s.cfg.shelf = vec!["/home/me/Report final.pdf".into(), "/home/me/photo.png".into()] }),
             ("t3-device", |s| {
-                s.mode = island::Mode::Large;
-                s.set_tab(8);
+                s.mode = Mode::Large;
+                s.set_tab(Tab::T3);
                 s.cfg.t3_devices = vec![config::T3Device { name: "Laptop".into(), url: "http://127.0.0.1:3773".into(), token: "t".into() }];
                 s.t3.data = Some(t3::Loaded {
                     favorites: vec![t3::Favorite { instance_id: "claude".into(), model: "opus".into(), label: "Claude Opus".into() }],
@@ -131,7 +131,7 @@ fn island_spec() -> AppSpec<Island> {
                 s.t3.status = "Thread started in Ripple".into();
             }),
             ("playing", |s| {
-                s.mode = island::Mode::Quick;
+                s.mode = Mode::Quick;
                 let mut tx = rune::Tx::default();
                 s.set_track(Some(system::Track { name: "A Very Long Song Title That Scrolls".into(), artist: "Artist".into(), playing: true, ..Default::default() }), &mut tx);
             }),
@@ -142,19 +142,19 @@ fn island_spec() -> AppSpec<Island> {
                 s.poll(4.0, &mut tx); // the mic alert ends; its dot stays
             }),
             ("overview-playing", |s| {
-                s.mode = island::Mode::Large;
-                s.set_tab(2);
+                s.mode = Mode::Large;
+                s.set_tab(Tab::Overview);
                 let mut tx = rune::Tx::default();
                 s.set_track(Some(system::Track { name: "Song".into(), artist: "Artist".into(), playing: true, ..Default::default() }), &mut tx);
             }),
             ("camera", |s| { let mut tx = rune::Tx::default(); s.set_capture(Some(true), None, &mut tx); }),
             ("bluetooth-off", |s| { let mut tx = rune::Tx::default(); s.set_bluetooth(true, &mut tx); s.set_bluetooth(false, &mut tx); s.set_bluetooth(false, &mut tx); }),
             ("notch", |s| { s.cfg.notch_mode = true; s.placement = island::Placement::of(&s.cfg, (1920.0, 1080.0)) }),
-            ("notch-large", |s| { s.cfg.notch_mode = true; s.placement = island::Placement::of(&s.cfg, (1920.0, 1080.0)); s.mode = island::Mode::Large }),
+            ("notch-large", |s| { s.cfg.notch_mode = true; s.placement = island::Placement::of(&s.cfg, (1920.0, 1080.0)); s.mode = Mode::Large }),
             ("mini-notch", |s| { s.cfg.notch_mode = true; s.cfg.notch_mini = true; s.placement = island::Placement::of(&s.cfg, (1920.0, 1080.0)) }),
-            ("win95", |s| { s.cfg.set_theme("win95"); s.kit = island::kit(&s.cfg); s.mode = island::Mode::Large }),
-            ("glass", |s| { s.cfg.set_theme("glass"); s.kit = island::kit(&s.cfg); s.cfg.show_info_idle = true }),
-            ("glass-large", |s| { s.cfg.set_theme("glass"); s.kit = island::kit(&s.cfg); s.mode = island::Mode::Large }),
+            ("win95", |s| { s.cfg.set_theme("win95"); s.mode = Mode::Large }),
+            ("glass", |s| { s.cfg.set_theme("glass"); s.cfg.show_info_idle = true }),
+            ("glass-large", |s| { s.cfg.set_theme("glass"); s.mode = Mode::Large }),
         ],
         ..AppSpec::new("Ripple", CANVAS, || unreachable!("state comes from App::init"), island::view)
     }
@@ -165,7 +165,7 @@ fn settings_spec() -> AppSpec<Settings> {
         min_size: Some((420.0, 400.0)),
         fonts: FONTS,
         families: FAMILIES,
-        scenes: &[("panel-ai", |s| s.page = Some(4))],
+        scenes: &[("panel-ai", |s| s.page = Some(Tab::Assistant))],
         ..AppSpec::new("Ripple Settings", (520.0, 720.0), || unreachable!("state comes from WindowSpec::state"), settings::view)
     }
 }
@@ -228,17 +228,13 @@ fn overlay_island(screens: Vec<Screen>, store: Store) -> Vec<rune::AnyWindowSpec
 }
 
 fn main() {
-    // Apps Ripple starts get Wayland back if the Island runs on XWayland.
     #[cfg(target_os = "linux")]
     let wayland = {
-        let wayland = std::env::var_os("WAYLAND_DISPLAY");
-        let _ = system::WAYLAND_DISPLAY.set(wayland.clone());
+        let wayland = std::env::var_os("WAYLAND_DISPLAY").is_some();
         // Headless tools (scenes, snapshots) still drive the Island as a window.
-        let overlay = wayland.is_some() && !rune::is_headless() && has_layer_shell();
-        if !overlay && wayland.is_some() && std::env::var_os("DISPLAY").is_some() {
-            // SAFETY: single-threaded here, before the event loop or any thread starts.
-            unsafe { std::env::remove_var("WAYLAND_DISPLAY") };
-        }
+        let overlay = wayland && !rune::is_headless() && has_layer_shell();
+        // SAFETY: single-threaded here, before the event loop or any thread starts.
+        unsafe { system::note_wayland(!overlay && std::env::var_os("DISPLAY").is_some()) };
         overlay
     };
     rune::set_app_id("ripple");
@@ -262,15 +258,13 @@ fn main() {
         #[cfg(not(windows))]
         let _ = settings_app;
 
-        // The window starts where the settings put the Island.
         let mut state = Island::new(store, screens);
         state.me = Some(island.clone());
         state.settings = Some(settings_window);
         let screen = state.screen();
-        let display = displays.iter().find(|d| d.name.as_deref() == Some(screen.name.as_str())).or_else(|| displays.iter().find(|d| d.primary)).or(displays.first());
-        let position = display.map(|d| {
+        let position = (!state.screens.is_empty()).then(|| {
             let (x, y) = state.placement.window;
-            (d.position.0 + (x * screen.scale).round() as i32, d.position.1 + (y * screen.scale).round() as i32)
+            (screen.position.0 + (x * screen.scale).round() as i32, screen.position.1 + (y * screen.scale).round() as i32)
         });
 
         let handle = island.clone();

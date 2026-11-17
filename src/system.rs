@@ -10,13 +10,29 @@ use crate::command::tokenize_args;
 #[cfg(windows)]
 use crate::config::QuickApp;
 
-/// `WAYLAND_DISPLAY` as Ripple was started with it. `main` unsets it when the Island runs on
-/// XWayland (headless tools); apps Ripple starts get it back.
-pub static WAYLAND_DISPLAY: OnceLock<Option<OsString>> = OnceLock::new();
+/// `WAYLAND_DISPLAY` as Ripple was started with it; set only in a Wayland session.
+static WAYLAND_DISPLAY: OnceLock<OsString> = OnceLock::new();
+
+/// Records the Wayland session, if any. With `xwayland`, Ripple's own windows go on XWayland:
+/// `WAYLAND_DISPLAY` is unset for them, and apps Ripple starts still get it.
+///
+/// # Safety
+/// With `xwayland`, no other thread may be running, as for `std::env::remove_var`.
+#[cfg(target_os = "linux")]
+pub unsafe fn note_wayland(xwayland: bool) {
+    let Some(display) = std::env::var_os("WAYLAND_DISPLAY") else { return };
+    let _ = WAYLAND_DISPLAY.set(display);
+    // SAFETY: the caller guarantees no other thread runs.
+    if xwayland { unsafe { std::env::remove_var("WAYLAND_DISPLAY") } }
+}
+
+/// The session is Wayland: XWayland's active window doesn't follow native Wayland windows.
+#[cfg(target_os = "linux")]
+pub fn wayland_session() -> bool { WAYLAND_DISPLAY.get().is_some() }
 
 fn command(program: &str) -> Command {
     let mut cmd = Command::new(program);
-    if let Some(Some(display)) = WAYLAND_DISPLAY.get() { cmd.env("WAYLAND_DISPLAY", display); }
+    if let Some(display) = WAYLAND_DISPLAY.get() { cmd.env("WAYLAND_DISPLAY", display); }
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -96,7 +112,6 @@ fn start_process(target: &str) {
 pub struct Track {
     pub name: String,
     pub artist: String,
-    pub album: String,
     /// `https:`, `file:` or `data:` URL of the cover, when the player gives one.
     pub artwork_url: Option<String>,
     pub playing: bool,
@@ -142,7 +157,6 @@ pub fn media() -> Option<Track> {
     Some(Track {
         name: p[2].into(),
         artist: p[3].into(),
-        album: p[4].into(),
         artwork_url: p.get(5).filter(|u| !u.is_empty()).map(|u| u.to_string()),
         playing: status == "playing",
         paused: status == "paused",
@@ -153,14 +167,14 @@ pub fn media() -> Option<Track> {
     })
 }
 
+/// AppleScript that sets `spotifyRunning` and `musicRunning`, leaving at most one true while
+/// both run: Music wins only while Spotify is not playing.
 #[cfg(target_os = "macos")]
-pub fn media() -> Option<Track> {
-    const SCRIPT: &str = r#"
+const PICK_PLAYER: &str = r#"
 tell application "System Events"
     set spotifyRunning to (name of every process) contains "Spotify"
     set musicRunning to (name of every process) contains "Music"
 end tell
--- Prefer the app that is playing: Music wins only while Spotify is not.
 if spotifyRunning and musicRunning then
     try
         tell application "Spotify" to set spotifyState to player state as string
@@ -168,6 +182,11 @@ if spotifyRunning and musicRunning then
         if musicState is "playing" and spotifyState is not "playing" then set spotifyRunning to false
     end try
 end if
+"#;
+
+#[cfg(target_os = "macos")]
+pub fn media() -> Option<Track> {
+    const SCRIPT: &str = r#"
 if spotifyRunning then
     try
         tell application "Spotify"
@@ -212,7 +231,7 @@ else if musicRunning then
 else
     return "None"
 end if"#;
-    let out = output("osascript", &["-e", SCRIPT])?;
+    let out = output("osascript", &["-e", &format!("{PICK_PLAYER}{SCRIPT}")])?;
     let parts: Vec<&str> = out.split("||").collect();
     if parts.len() < 4 { return None }
     let playing = parts[1] == "playing";
@@ -220,7 +239,6 @@ end if"#;
     Some(Track {
         name: parts[2].into(),
         artist: parts[3].into(),
-        album: parts.get(4).unwrap_or(&"").to_string(),
         artwork_url: parts.get(5).filter(|u| !u.is_empty()).map(|u| u.to_string()),
         playing,
         paused: !playing,
@@ -242,7 +260,6 @@ pub fn media() -> Option<Track> {
         return Some(Track {
             name: or(field("Title"), "Unknown Title"),
             artist: or(field("Artist"), "Unknown Artist"),
-            album: field("Album"),
             artwork_url: Some(field("Artwork")).filter(|a| !a.is_empty()),
             playing,
             paused: !playing,
@@ -273,18 +290,7 @@ pub fn media_control(cmd: MediaCommand) {
     {
         // A fixed word, never user text: it is spliced into the script.
         let verb = match cmd { MediaCommand::PlayPause => "playpause", MediaCommand::Next => "next track", MediaCommand::Previous => "previous track" };
-        let script = format!(r#"
-tell application "System Events"
-    set spotifyRunning to (name of every process) contains "Spotify"
-    set musicRunning to (name of every process) contains "Music"
-end tell
-if spotifyRunning and musicRunning then
-    try
-        tell application "Spotify" to set spotifyState to player state as string
-        tell application "Music" to set musicState to player state as string
-        if musicState is "playing" and spotifyState is not "playing" then set spotifyRunning to false
-    end try
-end if
+        let script = format!(r#"{PICK_PLAYER}
 if spotifyRunning then
     tell application "Spotify" to {verb}
 else if musicRunning then
@@ -407,12 +413,8 @@ fn capability_in_use(name: &str) -> bool {
 // --- Battery ---
 
 /// (percent, plugged in), or None on a machine without a battery.
-pub fn battery() -> Option<(u8, bool)> {
-    battery_now()
-}
-
 #[cfg(target_os = "linux")]
-fn battery_now() -> Option<(u8, bool)> {
+pub fn battery() -> Option<(u8, bool)> {
     let read = |path: std::path::PathBuf| std::fs::read_to_string(path).ok().map(|s| s.trim().to_string());
     let supplies: Vec<_> = std::fs::read_dir("/sys/class/power_supply").ok()?.flatten().map(|e| e.path()).collect();
     let battery = supplies.iter().find(|p| {
@@ -426,7 +428,7 @@ fn battery_now() -> Option<(u8, bool)> {
 }
 
 #[cfg(target_os = "macos")]
-fn battery_now() -> Option<(u8, bool)> {
+pub fn battery() -> Option<(u8, bool)> {
     parse_pmset(&output("pmset", &["-g", "batt"])?)
 }
 
@@ -439,7 +441,7 @@ fn parse_pmset(out: &str) -> Option<(u8, bool)> {
 }
 
 #[cfg(windows)]
-fn battery_now() -> Option<(u8, bool)> {
+pub fn battery() -> Option<(u8, bool)> {
     #[repr(C)]
     #[derive(Default)]
     struct SystemPowerStatus { ac_line: u8, battery_flag: u8, percent: u8, status_flag: u8, life_time: u32, full_life_time: u32 }
@@ -666,9 +668,7 @@ enum Target { Url, Http, Https, App }
 
 fn classify(app: &str) -> Target {
     let lower = app.to_ascii_lowercase();
-    // Explicit links first, so file:// and https:// aren't caught by the path test below.
     if ["http://", "https://", "file://"].iter().any(|p| lower.starts_with(p)) { return Target::Url }
-    // Paths, .exe names and shell: URIs, before any dot-based guess.
     if app.contains(['\\', '/']) || lower.ends_with(".exe") || app.starts_with("shell:") { return Target::App }
     // An IPv4 address or localhost: dev servers rarely run https.
     let host = app.split(':').next().unwrap_or(app);
@@ -798,7 +798,7 @@ mod tests {
     }
 
     #[test]
-    fn a_hung_tool_is_killed_and_reads_as_failed() {
+    fn a_tool_reads_as_its_output_or_as_failed() {
         assert_eq!(output("sh", &["-c", "echo hi"]).as_deref(), Some("hi"));
         assert_eq!(output("sh", &["-c", "exit 3"]), None);
         assert_eq!(output("ripple-no-such-program", &[]), None);

@@ -41,14 +41,9 @@ pub fn weather(location: &str, unit: &str) -> Option<Weather> {
 
 const SYSTEM_PROMPT: &str = "You are Ripple, a sleek and helpful desktop AI assistant. Your goal is to provide accurate, concise, and beautifully formatted answers that fit well in a compact desktop widget. \n- For general inquiries: Keep it to 2-4 sentences.\n- For complex or code-related questions: Provide detailed answers with Markdown code blocks, but stay as efficient as possible.\n- Use Markdown for bolding, lists, and headers to make information easy to scan.";
 
-/// Streams a chat completion, calling `on_delta` with each piece of the answer. Returns
-/// whether anything was received.
-pub fn ask_ai(provider: &str, model: &str, api_key: &str, question: &str, on_delta: impl FnMut(&str)) -> Result<bool, String> {
-    let base = if provider == "groq" { "https://api.groq.com/openai/v1" } else { "https://openrouter.ai/api/v1" };
-    ask_ai_at(base, provider, model, api_key, question, on_delta)
-}
-
-fn ask_ai_at(base: &str, provider: &str, model: &str, api_key: &str, question: &str, mut on_delta: impl FnMut(&str)) -> Result<bool, String> {
+/// Streams a chat completion from the OpenAI-compatible API at `base`, calling `on_delta` with
+/// each piece of the answer. Returns whether anything was received.
+pub fn ask_ai(base: &str, model: &str, api_key: &str, question: &str, mut on_delta: impl FnMut(&str)) -> Result<bool, String> {
     // A stream runs as long as the answer takes; only connecting and the first byte are timed.
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .timeout_connect(Some(Duration::from_secs(15)))
@@ -56,13 +51,13 @@ fn ask_ai_at(base: &str, provider: &str, model: &str, api_key: &str, question: &
         .http_status_as_error(false)
         .build()
         .into();
-    let mut request = agent
+    // OpenRouter credits the app by these; other services ignore them.
+    let request = agent
         .post(format!("{base}/chat/completions"))
         .header("content-type", "application/json")
-        .header("authorization", format!("Bearer {api_key}"));
-    if provider == "openrouter" {
-        request = request.header("http-referer", "https://github.com/TopMyster/Ripple").header("x-title", "Ripple");
-    }
+        .header("authorization", format!("Bearer {api_key}"))
+        .header("http-referer", "https://github.com/TopMyster/Ripple")
+        .header("x-title", "Ripple");
     let body = json!({
         "model": model,
         "messages": [
@@ -199,9 +194,9 @@ mod tests {
             Response { status: 200, headers: vec![("content-type".into(), "text/event-stream".into())], body: events }
         }, |_| String::new());
         let mut answer = String::new();
-        assert_eq!(ask_ai_at(&format!("{base}/v1"), "groq", "m", "gsk_test", "Hi?", |d| answer.push_str(d)), Ok(true));
+        assert_eq!(ask_ai(&format!("{base}/v1"), "m", "gsk_test", "Hi?", |d| answer.push_str(d)), Ok(true));
         assert_eq!(answer, "Hello **you** [DONE]");
-        let refused = ask_ai_at(&format!("{base}/v1"), "groq", "m", "wrong", "Hi?", |_| {});
+        let refused = ask_ai(&format!("{base}/v1"), "m", "wrong", "Hi?", |_| {});
         assert!(refused.unwrap_err().starts_with("API Error: 401"));
     }
 

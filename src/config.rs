@@ -5,29 +5,101 @@ use std::sync::{Arc, Mutex};
 
 use rune::Color;
 use rune::prefs::Prefs;
-use serde::{Deserialize, Serialize};
+use rune::tok::{Family, TextStyle};
+use rune_kit::{Kit, PaletteSeed};
+use serde::{Deserialize, Deserializer, Serialize};
 
-pub const APP_ID: &str = "Ripple";
+const APP_ID: &str = "Ripple";
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct TabDef {
-    pub id: u8,
-    pub name: &'static str,
+/// Declares `Tab` and `Tab::ALL` from one list, in the default order.
+macro_rules! tabs {
+    ($($tab:ident = $id:literal),* $(,)?) => {
+        /// Large Mode's tabs. The numbers are what `prefs.json` stores: never reuse one (3 was
+        /// Now Playing, 7 was Settings).
+        #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+        #[serde(into = "u8", try_from = "u8")]
+        pub enum Tab { $($tab = $id),* }
+
+        impl Tab {
+            pub const ALL: [Tab; [$($id),*].len()] = [$(Tab::$tab),*];
+        }
+    };
 }
 
-/// Ids are stable: saved tab orders refer to them (3 was Now Playing, 7 was Settings).
-pub const TABS: [TabDef; 11] = [
-    TabDef { id: 0, name: "Browser Search" },
-    TabDef { id: 1, name: "Workflows & QA" },
-    TabDef { id: 2, name: "Overview" },
-    TabDef { id: 4, name: "AI Assistant" },
-    TabDef { id: 5, name: "Clipboard" },
-    TabDef { id: 6, name: "Tasks" },
-    TabDef { id: 8, name: "T3 Code" },
-    TabDef { id: 9, name: "Notes" },
-    TabDef { id: 10, name: "Stremflix" },
-    TabDef { id: 11, name: "Shelf" },
-    TabDef { id: 12, name: "System" },
+tabs! {
+    Search = 0,
+    Workflows = 1,
+    Overview = 2,
+    Assistant = 4,
+    Clipboard = 5,
+    Tasks = 6,
+    T3 = 8,
+    Notes = 9,
+    Stremflix = 10,
+    Shelf = 11,
+    System = 12,
+}
+
+impl Tab {
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Tab::Search => "Browser Search",
+            Tab::Workflows => "Workflows & QA",
+            Tab::Overview => "Overview",
+            Tab::Assistant => "AI Assistant",
+            Tab::Clipboard => "Clipboard",
+            Tab::Tasks => "Tasks",
+            Tab::T3 => "T3 Code",
+            Tab::Notes => "Notes",
+            Tab::Stremflix => "Stremflix",
+            Tab::Shelf => "Shelf",
+            Tab::System => "System",
+        }
+    }
+}
+
+impl From<Tab> for u8 {
+    fn from(tab: Tab) -> u8 { tab as u8 }
+}
+
+impl TryFrom<u8> for Tab {
+    type Error = String;
+    fn try_from(id: u8) -> Result<Tab, String> {
+        Tab::ALL.into_iter().find(|t| *t as u8 == id).ok_or_else(|| format!("no tab {id}"))
+    }
+}
+
+/// A saved list of tab ids, without the ones this version no longer has.
+pub fn known_tabs<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<Tab>, D::Error> {
+    Ok(Vec::<u8>::deserialize(d)?.into_iter().filter_map(|id| Tab::try_from(id).ok()).collect())
+}
+
+fn known_tab<'de, D: Deserializer<'de>>(d: D) -> Result<Tab, D::Error> {
+    Ok(Tab::try_from(u8::deserialize(d)?).unwrap_or(Config::default().default_tab))
+}
+
+/// (value, label, Island colour, text colour). A theme is a preset for the two colours; they
+/// stay editable afterwards.
+pub const THEMES: [(&str, &str, &str, &str); 4] = [
+    ("none", "Default", "#000000", "#FFFFFF"),
+    ("sleek-black", "Sleek Black", "rgba(0, 0, 0, 0.64)", "rgba(255, 255, 255)"),
+    ("win95", "Windows 95", "rgba(195, 195, 195)", "rgba(0, 0, 0)"),
+    ("glass", "Glass", "rgba(10, 10, 10, 0.92)", "rgba(255, 255, 255, 0.85)"),
+];
+
+/// An OpenAI-compatible chat completions service.
+pub struct Provider {
+    pub id: &'static str,
+    pub label: &'static str,
+    pub url: &'static str,
+    pub model: &'static str,
+    pub key_hint: &'static str,
+}
+
+pub const PROVIDERS: [Provider; 2] = [
+    Provider { id: "groq", label: "Groq", url: "https://api.groq.com/openai/v1", model: "llama-3.3-70b-versatile", key_hint: "gsk_..." },
+    Provider { id: "openrouter", label: "OpenRouter", url: "https://openrouter.ai/api/v1", model: "meta-llama/llama-3.3-70b-instruct", key_hint: "sk-or-..." },
 ];
 
 pub const SEARCH_ENGINES: [(&str, &str, &str); 5] = [
@@ -38,13 +110,14 @@ pub const SEARCH_ENGINES: [(&str, &str, &str); 5] = [
     ("startpage", "Startpage", "https://www.startpage.com/do/search?q="),
 ];
 
-pub const POSITIONS: [(&str, &str); 6] = [
+pub const POSITIONS: [(&str, &str); 7] = [
     ("top-left", "Top left"),
     ("top-center", "Top center"),
     ("top-right", "Top right"),
     ("bottom-left", "Bottom left"),
     ("bottom-center", "Bottom center"),
     ("bottom-right", "Bottom right"),
+    ("free", "Free placement"),
 ];
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -76,9 +149,12 @@ impl T3Device {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
-    pub tab_order: Vec<u8>,
-    pub hidden_tabs: Vec<u8>,
-    pub default_tab: u8,
+    #[serde(deserialize_with = "known_tabs")]
+    pub tab_order: Vec<Tab>,
+    #[serde(deserialize_with = "known_tabs")]
+    pub hidden_tabs: Vec<Tab>,
+    #[serde(deserialize_with = "known_tab")]
+    pub default_tab: Tab,
     /// Large Mode opens on the starred tab each time, not the last one used.
     pub open_default_tab: bool,
     /// Seconds Large Mode stays open after the pointer leaves, once its tab was changed.
@@ -135,9 +211,9 @@ impl Default for Config {
     fn default() -> Self {
         let app = |n: &str| QuickApp { name: n.into(), launch: n.into() };
         Config {
-            tab_order: TABS.iter().map(|t| t.id).collect(),
+            tab_order: Tab::ALL.into(),
             hidden_tabs: Vec::new(),
-            default_tab: 2,
+            default_tab: Tab::Overview,
             open_default_tab: true,
             tab_linger: 1.0,
             battery_alerts: true,
@@ -168,7 +244,7 @@ impl Default for Config {
             notes: Vec::new(),
             shelf: Vec::new(),
             ai_provider: "groq".into(),
-            ai_model: default_model("groq").into(),
+            ai_model: PROVIDERS[0].model.into(),
             api_key: String::new(),
             t3_devices: Vec::new(),
             t3_device: 0,
@@ -181,36 +257,31 @@ impl Default for Config {
     }
 }
 
-pub fn default_model(provider: &str) -> &'static str {
-    if provider == "groq" { "llama-3.3-70b-versatile" } else { "meta-llama/llama-3.3-70b-instruct" }
-}
-
 impl Config {
     /// Repairs what a hand-edited or older file can get wrong.
     fn normalized(mut self) -> Self {
-        let known = |id: &u8| TABS.iter().any(|t| t.id == *id);
         let mut seen = Vec::new();
-        self.tab_order.retain(|id| known(id) && !seen.contains(id) && { seen.push(*id); true });
+        self.tab_order.retain(|t| !seen.contains(t) && { seen.push(*t); true });
         // Tabs added after the order was saved go at the end.
-        for t in TABS {
-            if !self.tab_order.contains(&t.id) { self.tab_order.push(t.id) }
+        for t in Tab::ALL {
+            if !self.tab_order.contains(&t) { self.tab_order.push(t) }
         }
-        self.hidden_tabs.retain(known);
-        if self.hidden_tabs.len() >= TABS.len() { self.hidden_tabs.clear() }
+        if self.hidden_tabs.len() >= Tab::ALL.len() { self.hidden_tabs.clear() }
         self.island_x = self.island_x.clamp(0.0, 100.0);
         self.island_y = self.island_y.clamp(0.0, 1000.0);
         self.tab_linger = self.tab_linger.clamp(0.0, 10.0);
         if !SEARCH_ENGINES.iter().any(|e| e.0 == self.search_engine) { self.search_engine = "google".into() }
+        if !PROVIDERS.iter().any(|p| p.id == self.ai_provider) { self.ai_provider = PROVIDERS[0].id.into() }
         self
     }
 
-    pub fn visible_tabs(&self) -> Vec<u8> {
-        self.tab_order.iter().copied().filter(|id| !self.hidden_tabs.contains(id)).collect()
+    pub fn visible_tabs(&self) -> Vec<Tab> {
+        self.tab_order.iter().copied().filter(|t| !self.hidden_tabs.contains(t)).collect()
     }
 
-    pub fn first_tab(&self) -> u8 {
+    pub fn first_tab(&self) -> Tab {
         let visible = self.visible_tabs();
-        if visible.contains(&self.default_tab) { self.default_tab } else { visible.first().copied().unwrap_or(0) }
+        if visible.contains(&self.default_tab) { self.default_tab } else { visible.first().copied().unwrap_or(Tab::Search) }
     }
 
     pub fn move_tab(&mut self, from: usize, to: usize) {
@@ -220,31 +291,47 @@ impl Config {
     }
 
     /// Hiding the last visible tab is refused.
-    pub fn toggle_tab(&mut self, id: u8) {
-        if let Some(i) = self.hidden_tabs.iter().position(|t| *t == id) {
+    pub fn toggle_tab(&mut self, tab: Tab) {
+        if let Some(i) = self.hidden_tabs.iter().position(|t| *t == tab) {
             self.hidden_tabs.remove(i);
-        } else if self.hidden_tabs.len() + 1 < TABS.len() {
-            self.hidden_tabs.push(id);
+        } else if self.hidden_tabs.len() + 1 < Tab::ALL.len() {
+            self.hidden_tabs.push(tab);
         }
     }
 
-    /// A theme is a preset for the two colours; they stay editable afterwards.
     pub fn set_theme(&mut self, theme: &str) {
-        let (bg, text) = match theme {
-            "sleek-black" => ("rgba(0, 0, 0, 0.64)", "rgba(255, 255, 255)"),
-            "win95" => ("rgba(195, 195, 195)", "rgba(0, 0, 0)"),
-            "glass" => ("rgba(10, 10, 10, 0.92)", "rgba(255, 255, 255, 0.85)"),
-            _ => ("#000000", "#FFFFFF"),
-        };
+        let (_, _, bg, text) = THEMES.iter().find(|t| t.0 == theme).unwrap_or(&THEMES[0]);
         self.theme = theme.into();
-        self.bg_color = bg.into();
-        self.text_color = text.into();
+        self.bg_color = (*bg).into();
+        self.text_color = (*text).into();
     }
 
     pub fn win95(&self) -> bool { self.theme == "win95" }
     pub fn glass(&self) -> bool { self.theme == "glass" }
     pub fn bg(&self) -> Color { parse_color(&self.bg_color).unwrap_or(Color::BLACK) }
     pub fn text(&self) -> Color { parse_color(&self.text_color).unwrap_or(Color::WHITE) }
+
+    /// A corner radius in this theme: Windows 95 has none.
+    pub fn radius(&self, r: f32) -> f32 { if self.win95() { 0.0 } else { r } }
+
+    pub fn font(&self, size: f32, weight: f32) -> TextStyle {
+        let style = TextStyle::new(size, weight);
+        if self.win95() { style.family(Family::Named("W95FA")) } else { style }
+    }
+
+    /// rune-kit's components (selects, fields) in the theme's two colours.
+    pub fn kit(&self) -> Kit {
+        let (bg, fg) = (self.bg().alpha(1.0), self.text().alpha(1.0));
+        let mut kit = Kit::from_palette(PaletteSeed { bg, fg, accent: fg });
+        kit.radius.md = 10.0;
+        // The accent is the text colour, so an on switch's knob (and a radio's dot) needs the background to show.
+        kit.c.knob_on = bg;
+        kit
+    }
+
+    pub fn provider(&self) -> &'static Provider {
+        PROVIDERS.iter().find(|p| p.id == self.ai_provider).unwrap_or(&PROVIDERS[0])
+    }
 
     pub fn search_engine(&self) -> (&'static str, &'static str) {
         let e = SEARCH_ENGINES.iter().find(|e| e.0 == self.search_engine).unwrap_or(&SEARCH_ENGINES[0]);
@@ -299,7 +386,7 @@ impl Store {
         // First launch after the Electron app: its settings live in the same folder.
         let imported = saved.is_none().then(|| prefs.path().and_then(|p| p.parent()).and_then(crate::migrate::electron_settings)).flatten();
         let store = Store(Arc::new(Mutex::new(Inner { cfg: saved.or(imported.clone()).unwrap_or_default().normalized(), prefs })));
-        if imported.is_some() { store.update(|_| {}) }
+        if imported.is_some() { store.update(|_| {}); }
         store
     }
 
@@ -312,8 +399,8 @@ impl Store {
         self.0.lock().unwrap().cfg.clone()
     }
 
-    /// Changes the settings and saves them. A failed save keeps the change in memory.
-    pub fn update(&self, f: impl FnOnce(&mut Config)) {
+    /// Changes the settings, saves them and returns them. A failed save keeps the change in memory.
+    pub fn update(&self, f: impl FnOnce(&mut Config)) -> Config {
         let mut inner = self.0.lock().unwrap();
         f(&mut inner.cfg);
         let Inner { cfg, prefs } = &mut *inner;
@@ -324,6 +411,7 @@ impl Store {
             use std::os::unix::fs::PermissionsExt;
             let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
         }
+        inner.cfg.clone()
     }
 
     /// Where Rune keeps this app's files, for the T3 token cache and the app cache.
@@ -350,19 +438,20 @@ mod tests {
 
     #[test]
     fn saved_orders_drop_retired_tabs_and_gain_new_ones() {
-        let cfg = Config { tab_order: vec![7, 2, 3, 0], hidden_tabs: vec![3, 0], ..Config::default() }.normalized();
-        assert_eq!(cfg.tab_order, [2, 0, 1, 4, 5, 6, 8, 9, 10, 11, 12]);
-        assert_eq!(cfg.hidden_tabs, [0]);
-        assert_eq!(cfg.visible_tabs(), [2, 1, 4, 5, 6, 8, 9, 10, 11, 12]);
+        use Tab::*;
+        let cfg = serde_json::from_str::<Config>(r#"{"tab_order": [7, 2, 3, 0], "hidden_tabs": [3, 0], "default_tab": 7}"#).unwrap().normalized();
+        assert_eq!(cfg.tab_order, [Overview, Search, Workflows, Assistant, Clipboard, Tasks, T3, Notes, Stremflix, Shelf, System]);
+        assert_eq!(cfg.hidden_tabs, [Search]);
+        assert_eq!(cfg.first_tab(), Overview);
     }
 
     #[test]
     fn the_last_visible_tab_cannot_be_hidden() {
         let mut cfg = Config::default();
-        for t in TABS { cfg.toggle_tab(t.id) }
-        assert_eq!(cfg.visible_tabs(), [12]);
-        cfg.toggle_tab(0);
-        assert_eq!(cfg.visible_tabs(), [0, 12]);
+        for t in Tab::ALL { cfg.toggle_tab(t) }
+        assert_eq!(cfg.visible_tabs(), [Tab::System]);
+        cfg.toggle_tab(Tab::Search);
+        assert_eq!(cfg.visible_tabs(), [Tab::Search, Tab::System]);
     }
 
     #[cfg(unix)]
@@ -380,6 +469,7 @@ mod tests {
     #[test]
     fn old_files_fill_missing_fields_with_defaults() {
         let cfg: Config = serde_json::from_str(r#"{"standby": false}"#).unwrap();
-        assert!(!cfg.standby && cfg.battery_alerts && cfg.default_tab == 2);
+        assert!(!cfg.standby && cfg.battery_alerts && cfg.default_tab == Tab::Overview);
+        assert!(serde_json::to_string(&Config::default()).unwrap().contains(r#""default_tab":2"#), "tabs save as their numbers");
     }
 }

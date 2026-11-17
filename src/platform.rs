@@ -1,4 +1,4 @@
-//! Click-through around the Island. Its window is a transparent rectangle larger than the
+//! The displays, and click-through around the Island. Its window is a transparent rectangle larger than the
 //! Island; only the Island itself may take the pointer, so clicks beside it reach the
 //! windows underneath.
 //!
@@ -8,9 +8,41 @@
 //! - Windows and macOS: the whole window ignores the mouse while the pointer is outside the
 //!   Island's rect, checked about 30 times a second.
 
-use rune::{Tx, WindowHandle};
+use rune::{Display, DisplayTarget, Tx, WindowHandle};
 
-use crate::island::Screen;
+/// One display as the window factory saw it at startup.
+#[derive(Clone, Debug)]
+pub struct Screen {
+    pub name: String,
+    pub target: DisplayTarget,
+    /// Size in points.
+    pub size: (f32, f32),
+    pub scale: f32,
+    /// Top-left in the OS's global space: points on macOS, pixels elsewhere.
+    #[cfg_attr(target_os = "linux", allow(dead_code))]
+    pub origin: (f64, f64),
+    /// Top-left as the window factory places windows, in pixels.
+    pub position: (i32, i32),
+    pub primary: bool,
+}
+
+impl Screen {
+    pub fn all(displays: &[Display]) -> Vec<Screen> {
+        displays.iter().enumerate().map(|(i, d)| {
+            let scale = d.scale.max(0.1) as f32;
+            let bounds = d.native_bounds();
+            Screen {
+                name: d.name.clone().filter(|n| !n.is_empty()).unwrap_or_else(|| format!("Display {}", i + 1)),
+                target: d.id.clone().map_or(DisplayTarget::Primary, DisplayTarget::Id),
+                size: (d.size.0 as f32 / scale, d.size.1 as f32 / scale),
+                scale,
+                origin: (bounds[0], bounds[1]),
+                position: d.position,
+                primary: d.primary,
+            }
+        }).collect()
+    }
+}
 
 /// How far around the Island, in points, a file drag held down elsewhere reaches it (Windows).
 pub const DROP_NEAR: f32 = 40.0;
@@ -213,7 +245,7 @@ fn x11_active() -> Result<Option<u32>, Box<dyn std::error::Error>> {
     use x11rb::connection::Connection;
     use x11rb::protocol::xproto::{AtomEnum, ConnectionExt};
     // XWayland's active window doesn't follow native Wayland windows.
-    if matches!(crate::system::WAYLAND_DISPLAY.get(), Some(Some(_))) { return Ok(None) }
+    if crate::system::wayland_session() { return Ok(None) }
     let (conn, screen) = x11rb::connect(None)?;
     let root = conn.setup().roots[screen].root;
     let active = conn.intern_atom(false, b"_NET_ACTIVE_WINDOW")?.reply()?.atom;

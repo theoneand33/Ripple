@@ -8,13 +8,13 @@ Ripple is a Dynamic Island-style bar for Windows, Linux, and macOS. It is one Ru
 | --- | --- |
 | `src/main.rs` | App setup, windows, tray, and the headless scenes (`island_spec().scenes`) |
 | `src/island.rs` | Island state, the Still/Quick/Large rules, alerts, and the compact views |
-| `src/tabs.rs` | One Large Mode view per tab |
+| `src/tabs/` | One module per Large Mode tab: its state, its actions, and its view. `mod.rs` maps each tab to its view and size |
 | `src/settings.rs` | The Settings window. Each change saves at once. |
-| `src/config.rs` | Every user setting, stored as one JSON value in `prefs.json` |
+| `src/config.rs` | Every user setting, stored as one JSON value in `prefs.json`; the `Tab` list, themes and AI providers |
 | `src/system.rs` | OS queries: now playing, battery, Bluetooth, camera, mic, launching apps |
 | `src/net.rs` | Weather, the AI assistant stream, and images by URL |
 | `src/t3.rs` | T3 Code client (HTTP, `/ws` RPC, `/mcp` sign-in) |
-| `src/platform.rs` | Click-through around the Island (X11 input shape) |
+| `src/platform.rs` | Displays, click-through around the Island (X11 input shape), and focus hand-back |
 | `src/mac.rs` | macOS status-bar item and the notch window frame |
 | `src/command.rs` | Splits a launch string into argv without a shell |
 | `src/migrate.rs` | One-time import of the old Electron app's settings from LevelDB |
@@ -33,7 +33,8 @@ Ripple is a Dynamic Island-style bar for Windows, Linux, and macOS. It is one Ru
   ```
 
 - Then push and read the CI results.
-- When you add a view or a state that needs a visual check, add a scene to `scenes` in `src/main.rs` and add its name to the "Render every view headlessly" loop in `build.yml`. CI uploads the PNGs as the `smoke-*` artifacts.
+- When you add a view or a state that needs a visual check, add a scene to `scenes` in `src/main.rs`. CI renders every scene `--list-scenes` prints and uploads the PNGs as the `smoke-*` artifacts.
+- To add a tab, add it to `Tab` in `src/config.rs` with a new number, then follow the compiler: every `match` on `Tab` needs an arm.
 - Linux build deps: `libxkbcommon-dev libwayland-dev`. The toolchain must be the Rust version that Rune pins (1.99 or newer).
 - A full debug link uses a lot of RAM. Keep the `[profile.dev]` settings.
 

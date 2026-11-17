@@ -2,6 +2,8 @@
 
 use rune::Icon;
 
+use crate::config::Tab;
+
 macro_rules! stroke {
     ($name:ident, $id:literal, $body:literal) => {
         pub static $name: Icon = Icon {
@@ -80,18 +82,18 @@ pub fn weather(status: &str) -> &'static Icon {
     else { &SUN }
 }
 
-pub fn tab(id: u8) -> &'static Icon {
-    match id {
-        0 => &SEARCH,
-        1 => &ZAP,
-        2 => &SUN,
-        4 => &MIC,
-        5 => &LIST,
-        6 => &CHECK,
-        9 => &STICKY_NOTE,
-        10 => &TV,
-        11 => &INBOX,
-        12 => &ACTIVITY,
-        _ => &TERMINAL,
+pub fn tab(tab: Tab) -> &'static Icon {
+    match tab {
+        Tab::Search => &SEARCH,
+        Tab::Workflows => &ZAP,
+        Tab::Overview => &SUN,
+        Tab::Assistant => &MIC,
+        Tab::Clipboard => &LIST,
+        Tab::Tasks => &CHECK,
+        Tab::T3 => &TERMINAL,
+        Tab::Notes => &STICKY_NOTE,
+        Tab::Stremflix => &TV,
+        Tab::Shelf => &INBOX,
+        Tab::System => &ACTIVITY,
     }
 }

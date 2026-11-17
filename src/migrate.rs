@@ -8,7 +8,7 @@ use std::path::Path;
 
 use serde::de::DeserializeOwned;
 
-use crate::config::{Config, QuickApp};
+use crate::config::{Config, QuickApp, Tab, known_tabs};
 
 /// The Electron app's settings, if its localStorage is in `dir` (the app's data folder).
 pub fn electron_settings(dir: &Path) -> Option<Config> {
@@ -256,12 +256,12 @@ fn from_local_storage(origins: &HashMap<String, HashMap<String, String>>) -> Opt
     text("t3-model", &mut c.t3_model);
     // The Electron app re-applied a preset theme's colours on every launch.
     if ["sleek-black", "win95", "none"].contains(&c.theme.as_str()) { let theme = c.theme.clone(); c.set_theme(&theme) }
-    if let Some(v) = get("default-tab").and_then(|v| v.parse().ok()) { c.default_tab = v }
+    if let Some(v) = get("default-tab").and_then(|v| v.parse().ok()).and_then(|v: u8| Tab::try_from(v).ok()) { c.default_tab = v }
     if let Some(v) = get("island-x").and_then(|v| v.parse().ok()) { c.island_x = v }
     if let Some(v) = get("island-y").and_then(|v| v.parse().ok()) { c.island_y = v }
     if let Some(v) = get("t3-device").and_then(|v| v.parse().ok()) { c.t3_device = v }
-    if let Some(v) = json("tab-order").and_then(parse) { c.tab_order = v }
-    if let Some(v) = json("hidden-tabs").and_then(parse) { c.hidden_tabs = v }
+    if let Some(v) = json("tab-order").and_then(|v| known_tabs(v).ok()) { c.tab_order = v }
+    if let Some(v) = json("hidden-tabs").and_then(|v| known_tabs(v).ok()) { c.hidden_tabs = v }
     if let Some(v) = json("workflows").and_then(parse) { c.workflows = v }
     if let Some(v) = json("tasks").and_then(parse) { c.tasks = v }
     if let Some(v) = json("t3-devices").and_then(parse) { c.t3_devices = v }
@@ -299,7 +299,7 @@ mod tests {
     fn electron_settings_become_a_config() {
         let c = from_local_storage(&fixture()).unwrap();
         assert!(!c.standby && !c.hour12 && !c.new_user);
-        assert_eq!(c.tab_order, [8, 0, 1, 2, 4, 5, 6]);
+        assert_eq!(c.tab_order, [Tab::T3, Tab::Search, Tab::Workflows, Tab::Overview, Tab::Assistant, Tab::Clipboard, Tab::Tasks]);
         assert_eq!(c.api_key, "gsk_new");
         assert_eq!(c.tasks, ["Ship Rïpple ✓"]);
         assert_eq!(c.t3_devices[0].token, "tok");
