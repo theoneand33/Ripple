@@ -16,7 +16,7 @@ pub struct TabDef {
 }
 
 /// Ids are stable: saved tab orders refer to them (3 was Now Playing, 7 was Settings).
-pub const TABS: [TabDef; 9] = [
+pub const TABS: [TabDef; 10] = [
     TabDef { id: 0, name: "Browser Search" },
     TabDef { id: 1, name: "Workflows & QA" },
     TabDef { id: 2, name: "Overview" },
@@ -26,6 +26,7 @@ pub const TABS: [TabDef; 9] = [
     TabDef { id: 8, name: "T3 Code" },
     TabDef { id: 9, name: "Notes" },
     TabDef { id: 10, name: "Stremflix" },
+    TabDef { id: 11, name: "Shelf" },
 ];
 
 pub const SEARCH_ENGINES: [(&str, &str, &str); 5] = [
@@ -105,6 +106,8 @@ pub struct Config {
     pub tasks: Vec<String>,
     /// Each note's first line is its title.
     pub notes: Vec<String>,
+    /// Files dropped on the Island, newest first.
+    pub shelf: Vec<std::path::PathBuf>,
     pub ai_provider: String,
     pub ai_model: String,
     pub api_key: String,
@@ -150,6 +153,7 @@ impl Default for Config {
             workflows: Vec::new(),
             tasks: Vec::new(),
             notes: Vec::new(),
+            shelf: Vec::new(),
             ai_provider: "groq".into(),
             ai_model: default_model("groq").into(),
             api_key: String::new(),
@@ -331,18 +335,18 @@ mod tests {
     #[test]
     fn saved_orders_drop_retired_tabs_and_gain_new_ones() {
         let cfg = Config { tab_order: vec![7, 2, 3, 0], hidden_tabs: vec![3, 0], ..Config::default() }.normalized();
-        assert_eq!(cfg.tab_order, [2, 0, 1, 4, 5, 6, 8, 9, 10]);
+        assert_eq!(cfg.tab_order, [2, 0, 1, 4, 5, 6, 8, 9, 10, 11]);
         assert_eq!(cfg.hidden_tabs, [0]);
-        assert_eq!(cfg.visible_tabs(), [2, 1, 4, 5, 6, 8, 9, 10]);
+        assert_eq!(cfg.visible_tabs(), [2, 1, 4, 5, 6, 8, 9, 10, 11]);
     }
 
     #[test]
     fn the_last_visible_tab_cannot_be_hidden() {
         let mut cfg = Config::default();
         for t in TABS { cfg.toggle_tab(t.id) }
-        assert_eq!(cfg.visible_tabs(), [10]);
+        assert_eq!(cfg.visible_tabs(), [11]);
         cfg.toggle_tab(0);
-        assert_eq!(cfg.visible_tabs(), [0, 10]);
+        assert_eq!(cfg.visible_tabs(), [0, 11]);
     }
 
     #[cfg(unix)]

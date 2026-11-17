@@ -253,6 +253,8 @@ pub struct Island {
     pub note: TextEdit,
     pub note_index: usize,
     pub stremflix: StremflixState,
+    /// A file drag is over the Island.
+    pub dropping: bool,
     pub t3: T3State,
     pub t3_client: Arc<t3::Client>,
 
@@ -332,6 +334,7 @@ impl Island {
             note: TextEdit::new(cfg.notes.first().map_or("", String::as_str)),
             note_index: 0,
             stremflix: StremflixState::default(),
+            dropping: false,
             t3: T3State::default(),
             t3_client,
             me: None,
@@ -411,7 +414,7 @@ impl Island {
         let alerting = self.alert().is_some();
         let track = self.shows_track();
         let mut w = match self.mode {
-            Mode::Large => match self.tab { 1 | 9 | 10 => 480.0, 0 => 405.0, _ => 380.0 },
+            Mode::Large => match self.tab { 1 | 9 | 10 | tabs::SHELF => 480.0, 0 => 405.0, _ => 380.0 },
             _ if alerting => if notch { 260.0 } else { 160.0 }, // fits icon + "Microphone"
             _ if track => self.now_playing_width(),
             Mode::Quick => if notch { 260.0 } else { 140.0 }, // fits "23:59" + weather/"100%"
@@ -600,6 +603,29 @@ impl Island {
     pub fn note_edited(&mut self) {
         let (i, text) = (self.note_index, self.note.text.clone());
         if self.cfg.notes.get(i).is_some_and(|n| *n != text) { self.save(|c| c.notes[i] = text) }
+    }
+
+    // --- Shelf ---
+
+    /// A file drag over the Island opens the Shelf; one that leaves without dropping lets it rest.
+    pub fn drop_hover(&mut self, over: bool, _: &mut Tx) {
+        self.dropping = over;
+        if over {
+            self.mode = Mode::Large;
+            self.open_tab(tabs::SHELF);
+        } else if !self.hovered {
+            self.set_mode(Mode::Still);
+        }
+    }
+
+    /// Dropped files go on top of the Shelf; one already there moves up.
+    pub fn drop_files(&mut self, files: &[std::path::PathBuf], _: &mut Tx) {
+        self.save(|c| {
+            c.shelf.retain(|f| !files.contains(f));
+            c.shelf.splice(0..0, files.iter().cloned());
+        });
+        self.mode = Mode::Large;
+        self.open_tab(tabs::SHELF);
     }
 
     pub fn key(&mut self, ev: &KeyEvent, _: &mut Tx) -> bool {
@@ -1124,6 +1150,10 @@ pub fn view(s: &Island, _: &mut Cx<Island>) -> El {
         .on_hover_change(Island::hover)
         .on_drag(Island::drag)
         .on_wheel(Island::wheel);
+    // A hidden Shelf takes no drops.
+    if cfg.visible_tabs().contains(&tabs::SHELF) {
+        island = island.on_drop_files(Island::drop_files).on_drop_hover(Island::drop_hover);
+    }
     // iOS-style continuous corners when expanded; compact stays a true capsule.
     if large && !cfg.win95() { island = island.continuous_corners() }
     if !hidden {
@@ -1418,6 +1448,28 @@ mod tests {
         assert_eq!((s.note_index, s.note.text.as_str()), (1, "Old"));
         s.delete_note();
         assert_eq!((s.cfg.notes.clone(), s.note.text.clone()), (vec!["Groceries".to_string()], "Groceries".to_string()));
+    }
+
+    #[test]
+    fn a_file_drag_opens_the_shelf_and_a_drop_stashes_it() {
+        let s = island(Config { standby: false, shelf: vec!["/b".into()], ..Config::default() });
+        let [left, top, w, h] = s.rect();
+        let at = Some((left + w / 2.0, top + h / 2.0));
+        let mut rt = rune::Runtime::new(s, view, CANVAS, rune::Env { system_dark: true, scale: 1.0 });
+        rt.frame(0.0);
+        rt.drag_files(vec!["/a".into(), "/b".into()], at);
+        rt.frame(1.0 / 60.0);
+        assert_eq!((rt.state.mode, rt.state.tab, rt.state.dropping), (Mode::Large, tabs::SHELF, true));
+        rt.drop_files(vec!["/a".into(), "/b".into()], at);
+        rt.frame(2.0 / 60.0);
+        assert_eq!((rt.state.mode, rt.state.dropping), (Mode::Large, false));
+        assert_eq!(rt.state.store.get().shelf, [std::path::PathBuf::from("/a"), "/b".into()]);
+        // A drag that leaves without dropping lets the Island rest.
+        rt.drag_files(vec!["/c".into()], at);
+        rt.frame(3.0 / 60.0);
+        rt.drag_files_leave();
+        rt.frame(4.0 / 60.0);
+        assert_eq!(rt.state.mode, Mode::Still);
     }
 
     #[test]
