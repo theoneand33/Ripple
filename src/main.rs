@@ -165,6 +165,7 @@ fn settings_spec() -> AppSpec<Settings> {
         min_size: Some((420.0, 400.0)),
         fonts: FONTS,
         families: FAMILIES,
+        scenes: &[("panel-ai", |s| s.page = Some(4))],
         ..AppSpec::new("Ripple Settings", (520.0, 720.0), || unreachable!("state comes from WindowSpec::state"), settings::view)
     }
 }

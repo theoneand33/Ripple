@@ -50,6 +50,7 @@ stroke!(CLOUD_LIGHTNING, "cloud-lightning", r#"<path d="M6 16.326A7 7 0 1 1 15.7
 stroke!(CLOUD_SUN, "cloud-sun", r#"<path d="M12 2v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="M20 12h2"/><path d="m19.07 4.93-1.41 1.41"/><path d="M15.947 12.65a4 4 0 0 0-5.925-4.128"/><path d="M13 22H7a5 5 0 1 1 4.9-6H13a3 3 0 0 1 0 6Z"/>"#);
 stroke!(TRASH, "trash-2", r#"<path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/>"#);
 stroke!(CHEVRON_UP, "chevron-up", r#"<path d="m18 15-6-6-6 6"/>"#);
+stroke!(CHEVRON_LEFT, "chevron-left", r#"<path d="m15 18-6-6 6-6"/>"#);
 stroke!(CHEVRON_DOWN, "chevron-down", r#"<path d="m6 9 6 6 6-6"/>"#);
 stroke!(INBOX, "inbox", r#"<polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/>"#);
 stroke!(DOWNLOAD, "download", r#"<path d="M12 15V3"/><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/>"#);
