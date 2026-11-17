@@ -15,7 +15,7 @@ use rune_kit::{Kit, PaletteSeed};
 
 use crate::config::{Config, Store};
 use crate::net::Weather;
-use crate::platform::Passthrough;
+use crate::platform::{self, Passthrough};
 use crate::system::{self, MediaCommand, Track};
 use crate::{icons, t3, tabs};
 
@@ -248,6 +248,10 @@ pub struct Island {
     pub screens: Vec<Screen>,
     pub placement: Placement,
     passthrough: Passthrough,
+    /// The Island's window has keyboard focus.
+    focused: bool,
+    /// The window that had focus when the pointer reached the Island; it gets focus back on close.
+    prior: Option<u64>,
     weather_kick: Option<Sender<()>>,
     wheel: f32,
     wheel_reset: f64,
@@ -325,6 +329,8 @@ impl Island {
             placement: Placement::of(&cfg, (1920.0, 1080.0)),
             screens,
             passthrough: Passthrough::default(),
+            focused: false,
+            prior: None,
             weather_kick: None,
             wheel: 0.0,
             wheel_reset: 0.0,
@@ -456,6 +462,7 @@ impl Island {
         if self.hovered && !was {
             // Each show makes a new layer surface, so this is asked again on every entry.
             if let Some(me) = &self.me { me.allow_keys() }
+            if !self.focused && matches!(self.me, Some(Host::Window(_))) { self.prior = platform::focused_window() }
             if self.mode == Mode::Still && self.cfg.show_info_idle && !self.playing() { self.set_mode(Mode::Large) }
             else if self.mode != Mode::Large { self.set_mode(Mode::Quick) }
         } else if !self.hovered {
@@ -472,6 +479,7 @@ impl Island {
         if self.t3.open.is_none() {
             tx.blur();
             self.set_mode(Mode::Still);
+            self.give_focus_back();
         }
         true
     }
@@ -479,11 +487,22 @@ impl Island {
     /// A click on the Island itself: Large opens and closes.
     pub fn toggle(&mut self, tx: &mut Tx) {
         tx.blur();
-        self.set_mode(if self.mode == Mode::Large { Mode::Quick } else { Mode::Large });
+        let closing = self.mode == Mode::Large;
+        self.set_mode(if closing { Mode::Quick } else { Mode::Large });
         self.entered_tab();
+        if closing { self.give_focus_back() }
+    }
+
+    /// Hands keyboard focus back to the window that had it before the Island took it.
+    fn give_focus_back(&mut self) {
+        if !self.focused { return }
+        if let Some(window) = self.prior { platform::focus_window(window) }
+        // Given away; the focus event may lag, and a second close mustn't steal it back.
+        self.focused = false;
     }
 
     pub fn window_focus(&mut self, focused: bool, tx: &mut Tx) {
+        self.focused = focused;
         if focused || self.hovered { return }
         tx.blur();
         self.t3.open = None;

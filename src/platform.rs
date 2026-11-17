@@ -158,6 +158,66 @@ fn pointer() -> Option<(f64, f64)> {
     }
 }
 
+/// The window with keyboard focus now, as an id `focus_window` takes. macOS gives the
+/// frontmost app's pid, as apps, not windows, take focus there.
+pub fn focused_window() -> Option<u64> {
+    #[cfg(target_os = "linux")]
+    { x11_active().ok().flatten().map(u64::from) }
+    #[cfg(windows)]
+    {
+        #[link(name = "user32")]
+        unsafe extern "system" { fn GetForegroundWindow() -> isize; }
+        // SAFETY: no arguments; returns 0 when no window has focus.
+        let hwnd = unsafe { GetForegroundWindow() };
+        (hwnd != 0).then_some(hwnd as u64)
+    }
+    #[cfg(target_os = "macos")]
+    { crate::mac::frontmost_pid().map(|pid| pid as u64) }
+}
+
+/// Gives keyboard focus to a window `focused_window` returned.
+pub fn focus_window(window: u64) {
+    #[cfg(target_os = "linux")]
+    if let Err(e) = x11_activate(window as u32) { eprintln!("Ripple: could not give focus back: {e}") }
+    #[cfg(windows)]
+    {
+        #[link(name = "user32")]
+        unsafe extern "system" { fn SetForegroundWindow(hwnd: isize) -> i32; }
+        // SAFETY: a stale handle only makes the call fail. Ripple is foreground, so Windows allows it.
+        unsafe { SetForegroundWindow(window as isize) };
+    }
+    #[cfg(target_os = "macos")]
+    crate::mac::activate_pid(window as i32);
+}
+
+#[cfg(target_os = "linux")]
+fn x11_active() -> Result<Option<u32>, Box<dyn std::error::Error>> {
+    use x11rb::connection::Connection;
+    use x11rb::protocol::xproto::{AtomEnum, ConnectionExt};
+    // XWayland's active window doesn't follow native Wayland windows.
+    if matches!(crate::system::WAYLAND_DISPLAY.get(), Some(Some(_))) { return Ok(None) }
+    let (conn, screen) = x11rb::connect(None)?;
+    let root = conn.setup().roots[screen].root;
+    let active = conn.intern_atom(false, b"_NET_ACTIVE_WINDOW")?.reply()?.atom;
+    let reply = conn.get_property(false, root, active, AtomEnum::WINDOW, 0, 1)?.reply()?;
+    Ok(reply.value32().and_then(|mut v| v.next()).filter(|w| *w != x11rb::NONE))
+}
+
+/// _NET_ACTIVE_WINDOW as a pager asks it (source 2), which window managers honour without
+/// focus-stealing checks.
+#[cfg(target_os = "linux")]
+fn x11_activate(window: u32) -> Result<(), Box<dyn std::error::Error>> {
+    use x11rb::connection::Connection;
+    use x11rb::protocol::xproto::{ClientMessageEvent, ConnectionExt, EventMask};
+    let (conn, screen) = x11rb::connect(None)?;
+    let root = conn.setup().roots[screen].root;
+    let active = conn.intern_atom(false, b"_NET_ACTIVE_WINDOW")?.reply()?.atom;
+    let event = ClientMessageEvent::new(32, window, active, [2, x11rb::CURRENT_TIME, 0, 0, 0]);
+    conn.send_event(false, root, EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY, event)?;
+    conn.flush()?;
+    Ok(())
+}
+
 /// Keeps the Island's window off the taskbar and on every desktop.
 pub fn adopt(window: &WindowHandle) {
     #[cfg(target_os = "linux")]
