@@ -150,8 +150,22 @@ fn settings_window<S: 'static>(app: &mut App<S>, state: Settings) -> (AppHandle<
     )
 }
 
+/// Whether the Wayland compositor offers `zwlr_layer_shell_v1` (KDE, wlroots; not GNOME).
+#[cfg(target_os = "linux")]
+fn has_layer_shell() -> bool {
+    use wayland_client::{Connection, Dispatch, QueueHandle, globals::{GlobalListContents, registry_queue_init}, protocol::wl_registry::WlRegistry};
+    struct Probe;
+    impl Dispatch<WlRegistry, GlobalListContents> for Probe {
+        fn event(_: &mut Self, _: &WlRegistry, _: <WlRegistry as wayland_client::Proxy>::Event, _: &GlobalListContents, _: &Connection, _: &QueueHandle<Self>) {}
+    }
+    let Ok(conn) = Connection::connect_to_env() else { return false };
+    let Ok((globals, _)) = registry_queue_init::<Probe>(&conn) else { return false };
+    globals.contents().with_list(|list| list.iter().any(|g| g.interface == "zwlr_layer_shell_v1"))
+}
+
 /// Wayland lets no ordinary window place or raise itself, so there the Island is a layer-shell
-/// overlay on a windowless app. Without layer-shell (GNOME) Rune shows it on XWayland instead.
+/// overlay on a windowless app. Without layer-shell (GNOME) it stays an XWayland window: Rune's
+/// XWayland fallback refuses overlays that take keys.
 #[cfg(target_os = "linux")]
 fn overlay_island(screens: Vec<Screen>, store: Store) -> Vec<rune::AnyWindowSpec> {
     use rune::{Align, KeyPolicy, OverlayInput, OverlayOptions, OverlayPlacement, OverlaySpec, ScreenEdge};
@@ -191,7 +205,7 @@ fn main() {
         let wayland = std::env::var_os("WAYLAND_DISPLAY");
         let _ = system::WAYLAND_DISPLAY.set(wayland.clone());
         // Headless tools (scenes, snapshots) still drive the Island as a window.
-        let overlay = wayland.is_some() && !rune::is_headless();
+        let overlay = wayland.is_some() && !rune::is_headless() && has_layer_shell();
         if !overlay && wayland.is_some() && std::env::var_os("DISPLAY").is_some() {
             // SAFETY: single-threaded here, before the event loop or any thread starts.
             unsafe { std::env::remove_var("WAYLAND_DISPLAY") };
@@ -249,6 +263,6 @@ fn main() {
         };
         // CanJoinAllSpaces | Stationary | IgnoresCycle | FullScreenAuxiliary, at the pop-up menu level.
         let options = options.macos(MacWindowOptions::default().shadow(false).level(101).collection_behavior(1 | 16 | 64 | 256));
-        vec![WindowSpec::from_app("island", app).configured_options(options).into()]
+        vec![rune::AnyWindowSpec::from(WindowSpec::from_app("island", app).configured_options(options))]
     });
 }
