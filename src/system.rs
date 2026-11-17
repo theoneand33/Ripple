@@ -1,5 +1,5 @@
 //! What Ripple asks the OS: now playing, battery, Bluetooth, camera and microphone use,
-//! launching apps and links. Everything here blocks, so callers run it off the UI thread.
+//! CPU, memory, disk and network load, launching apps and links. Everything here blocks, so callers run it off the UI thread.
 
 use std::ffi::OsString;
 use std::process::{Command, Stdio};
@@ -451,6 +451,67 @@ fn battery_now() -> Option<(u8, bool)> {
     // Flag 128: no system battery. 255: unknown.
     if status.battery_flag & 128 != 0 || status.percent > 100 { return None }
     Some((status.percent, status.ac_line == 1))
+}
+
+// --- System monitor ---
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Stats {
+    /// Percent of all cores.
+    pub cpu: f32,
+    pub mem_used: u64,
+    pub mem_total: u64,
+    /// The disk that holds the home folder.
+    pub disk_free: u64,
+    pub disk_total: u64,
+    /// Bytes per second on the busiest interface.
+    pub down: u64,
+    pub up: u64,
+}
+
+/// Keeps the previous sample: CPU load and network rates are deltas between two.
+pub struct Monitor {
+    sys: sysinfo::System,
+    disks: sysinfo::Disks,
+    nets: sysinfo::Networks,
+    at: std::time::Instant,
+}
+
+impl Monitor {
+    pub fn new() -> Monitor {
+        let mut sys = sysinfo::System::new();
+        sys.refresh_cpu_usage();
+        Monitor { sys, disks: sysinfo::Disks::new_with_refreshed_list(), nets: sysinfo::Networks::new_with_refreshed_list(), at: std::time::Instant::now() }
+    }
+
+    pub fn sample(&mut self) -> Stats {
+        self.sys.refresh_cpu_usage();
+        self.sys.refresh_memory();
+        // Re-list, so a mounted or unmounted disk is noticed.
+        self.disks.refresh(true);
+        self.nets.refresh(true);
+        let secs = std::mem::replace(&mut self.at, std::time::Instant::now()).elapsed().as_secs_f64().max(0.001);
+        let home = rune::dirs::home().unwrap_or_else(|| "/".into());
+        // macOS firmlinks /Users from the Data volume; "/" is the small read-only system volume.
+        #[cfg(target_os = "macos")]
+        let home = std::path::Path::new("/System/Volumes/Data").join(home.strip_prefix("/").unwrap_or(&home));
+        let disks = self.disks.list();
+        let disk = disks.iter().filter(|d| home.starts_with(d.mount_point())).max_by_key(|d| d.mount_point().as_os_str().len())
+            .or_else(|| disks.iter().max_by_key(|d| d.total_space()));
+        // VPN, container and Hyper-V layers repeat the physical NIC's bytes, so a sum counts them twice.
+        // shortcut: two NICs busy at once (Wi-Fi and Ethernet) show only the busier; sum physical NICs if that matters.
+        let nets = self.nets.list().iter().filter(|(name, _)| !(*name == "lo" || *name == "lo0" || name.contains("Loopback"))).map(|(_, n)| n);
+        let (down, up) = nets.fold((0, 0), |(d, u), n| (d.max(n.received()), u.max(n.transmitted())));
+        Stats {
+            cpu: self.sys.global_cpu_usage(),
+            mem_used: self.sys.used_memory(),
+            mem_total: self.sys.total_memory(),
+            disk_free: disk.map_or(0, |d| d.available_space()),
+            disk_total: disk.map_or(0, |d| d.total_space()),
+            down: (down as f64 / secs) as u64,
+            up: (up as f64 / secs) as u64,
+        }
+    }
 }
 
 // --- Launch at login ---
