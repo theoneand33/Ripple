@@ -418,7 +418,7 @@ impl Island {
     /// Notch Mode's compact width: the notch, plus the wider half of the glance and its padding on
     /// each side, so neither half sits under the notch. Mirrors `glance`.
     fn notch_glance_width(&self) -> f32 {
-        const NOTCH: f32 = 180.0; // a MacBook notch is about 180-190pt wide
+        const NOTCH: f32 = 200.0; // a MacBook notch is about 180-190pt wide; sized for the widest plus slack
         let label = |l: &str| estimate_width(l, 16.0);
         let percent = || self.percent.map_or(0.0, |p| label(&format!("{p}%")));
         let (left, right) = match self.alert() {
