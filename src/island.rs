@@ -25,6 +25,8 @@ pub const CANVAS: (f32, f32) = (620.0, 460.0);
 const PAD: f32 = 30.0;
 /// The tab dock under the Large Island: its height, the gap above it, one button and the space between.
 const DOCK: (f32, f32, f32, f32) = (44.0, 12.0, 32.0, 6.0);
+/// Seconds the Large Island stays open after the pointer leaves, once its tab was changed.
+const TAB_LINGER: f64 = 3.0;
 /// Room between the Large Island's edge and its tab's content.
 const LARGE_EDGE: f32 = 12.0;
 /// Framer's spring (stiffness 400, damping 40, mass 2.5) as duration and bounce.
@@ -286,6 +288,10 @@ pub struct Island {
     /// The way the last tab change went: 1 to the next tab, -1 to the previous.
     pub tab_dir: i32,
     swipe_lock_until: f64,
+    /// The tab changed in this Large session: leaving waits `TAB_LINGER` before closing.
+    tab_changed: bool,
+    /// When a lingering Island closes, unless the pointer comes back first.
+    close_at: Option<f64>,
     next_second: f64,
     next_clipboard: f64,
     intro_at: Option<f64>,
@@ -367,6 +373,8 @@ impl Island {
             wheel_phased: false,
             tab_dir: 1,
             swipe_lock_until: 0.0,
+            tab_changed: false,
+            close_at: None,
             next_second: 0.0,
             next_clipboard: 0.0,
             intro_at: None,
@@ -504,7 +512,7 @@ impl Island {
         let was = self.mode;
         self.mode = if mode == Mode::Still { self.rest() } else { mode };
         if self.mode == Mode::Large && was != Mode::Large && self.cfg.open_default_tab { self.tab = self.cfg.first_tab() }
-        if self.mode != Mode::Large { self.t3.open = None }
+        if self.mode != Mode::Large { self.t3.open = None; self.tab_changed = false; self.close_at = None }
     }
 
     pub fn hover(&mut self, hovered: bool, tx: &mut Tx) { self.set_over(0, hovered, tx) }
@@ -518,6 +526,7 @@ impl Island {
         self.over[part] = inside;
         self.hovered = self.over[0] || self.over[1];
         if self.hovered && !was {
+            self.close_at = None;
             // Each show makes a new layer surface, so this is asked again on every entry.
             if let Some(me) = &self.me { me.allow_keys() }
             if !self.focused && matches!(self.me, Some(Host::Window(_))) { self.prior = platform::focused_window() }
@@ -532,7 +541,18 @@ impl Island {
 
     /// The pointer stayed off the Island and its dock.
     fn leave(&mut self, tx: &mut Tx) -> bool {
-        if !std::mem::take(&mut self.left) || self.hovered { return false }
+        // Large ended some way that skips set_mode (reload, alerts): the session's state ends too.
+        if self.mode != Mode::Large { self.tab_changed = false; self.close_at = None }
+        if self.hovered { return false }
+        let now = tx.clock();
+        let left = std::mem::take(&mut self.left);
+        if left && self.tab_changed && self.mode == Mode::Large {
+            self.close_at = Some(now + TAB_LINGER);
+            tx.wake_at(now + TAB_LINGER);
+            return false;
+        }
+        if !left && !self.close_at.is_some_and(|t| now >= t) { return false }
+        self.close_at = None;
         // An open select's menu hangs outside the Island; leaving for it isn't leaving (poll closes both).
         if self.t3.open.is_none() {
             tx.blur();
@@ -576,6 +596,7 @@ impl Island {
         {
             self.tab_dir = if to > from { 1 } else { -1 };
         }
+        if self.tab != tab { self.tab_changed = true }
         self.tab = tab;
     }
 
@@ -666,12 +687,21 @@ impl Island {
 
     // --- Shelf ---
 
+    /// Opens the Shelf in Large without the pointer; a pending close no longer applies.
+    fn open_shelf(&mut self) {
+        self.close_at = None;
+        self.mode = Mode::Large;
+        // Not the user's tab change: it must not earn the linger.
+        let changed = self.tab_changed;
+        self.open_tab(tabs::SHELF);
+        self.tab_changed = changed;
+    }
+
     /// A file drag over the Island opens the Shelf; one that leaves without dropping lets it rest.
     pub fn drop_hover(&mut self, over: bool, _: &mut Tx) {
         self.dropping = over;
         if over {
-            self.mode = Mode::Large;
-            self.open_tab(tabs::SHELF);
+            self.open_shelf();
         } else if !self.hovered && !self.desktop_drag {
             self.set_mode(Mode::Still);
         }
@@ -683,8 +713,7 @@ impl Island {
         if active {
             if !self.cfg.visible_tabs().contains(&tabs::SHELF) { return }
             self.desktop_drag = true;
-            self.mode = Mode::Large;
-            self.open_tab(tabs::SHELF);
+            self.open_shelf();
         } else if std::mem::take(&mut self.desktop_drag) && !self.hovered && !self.dropping {
             self.set_mode(Mode::Still);
         }
@@ -698,8 +727,7 @@ impl Island {
         });
         self.dropping = false;
         self.desktop_drag = false;
-        self.mode = Mode::Large;
-        self.open_tab(tabs::SHELF);
+        self.open_shelf();
     }
 
     pub fn key(&mut self, ev: &KeyEvent, _: &mut Tx) -> bool {
@@ -899,7 +927,7 @@ impl Island {
 
     /// Asks for a poll at the next deadline any timer holds.
     fn schedule(&self, tx: &mut Tx) {
-        let deadlines = [self.battery_alert_until, self.charging_alert_until, self.bluetooth_alert_until, self.capture.map(|c| c.1), self.paused_until, self.copied.map(|c| c.1), self.intro_at];
+        let deadlines = [self.battery_alert_until, self.charging_alert_until, self.bluetooth_alert_until, self.capture.map(|c| c.1), self.paused_until, self.copied.map(|c| c.1), self.intro_at, self.close_at];
         if let Some(due) = deadlines.into_iter().flatten().reduce(f64::min) { tx.wake_at(due) }
     }
 
