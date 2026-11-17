@@ -1259,19 +1259,15 @@ pub fn cover(s: &Island, size: f32, radius: f32, glyph: f32, hover_scale: f32) -
     }
 }
 
-/// Media keys run a subprocess; never on the UI thread. Play/pause flips the shown state at once,
-/// then a fresh poll after the command settles it to what the player reports.
+/// Media keys run a subprocess; never on the UI thread. Play/pause flips the shown state at once;
+/// the regular poll settles it to what the player reports (an immediate re-poll can read the old state).
 pub fn control(s: &mut Island, command: MediaCommand) {
-    let me = s.me.clone();
-    if command == MediaCommand::PlayPause && let (Some(me), Some(track)) = (&me, &s.track) {
+    if command == MediaCommand::PlayPause && let (Some(me), Some(track)) = (&s.me, &s.track) {
         let playing = !track.playing;
         let track = Track { playing, paused: !playing, ..track.clone() };
         me.update_if(move |s, tx| s.set_track(Some(track), tx));
     }
-    std::thread::spawn(move || {
-        system::media_control(command);
-        if let Some(me) = me { let t = system::media(); me.update_if(move |s, tx| s.set_track(t, tx)); }
-    });
+    std::thread::spawn(move || system::media_control(command));
 }
 
 #[cfg(test)]
