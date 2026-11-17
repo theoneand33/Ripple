@@ -371,6 +371,8 @@ fn notes(s: &Island) -> El {
                 el().key(format!("note-card-{}", s.note_index)).grow(1.0).min_w(0.0).h_full().px(14.0).py(10.0)
                     .radius(round(18.0)).fill(fg.alpha(0.08 * fg.a)).border(1.0, fg.alpha(0.06 * fg.a))
                     .transition(Transition::opacity())
+                    // The editor is only as tall as its text: a press on the rest of the card types into it too.
+                    .on_press(|s: &mut Island| s.note.focused = true)
                     .scroll(ScrollSpec { stick_bottom: false }).scroll_edge_fade(10.0).child(editor),
             ),
     )
