@@ -257,6 +257,8 @@ pub struct Island {
     pub stremflix: StremflixState,
     /// A file drag is over the Island.
     pub dropping: bool,
+    /// A drag started elsewhere on the desktop opened the Shelf; it rests when the drag ends.
+    pub desktop_drag: bool,
     pub t3: T3State,
     pub t3_client: Arc<t3::Client>,
 
@@ -341,6 +343,7 @@ impl Island {
             note_index: 0,
             stremflix: StremflixState::default(),
             dropping: false,
+            desktop_drag: false,
             t3: T3State::default(),
             t3_client,
             me: None,
@@ -656,7 +659,20 @@ impl Island {
         if over {
             self.mode = Mode::Large;
             self.open_tab(tabs::SHELF);
-        } else if !self.hovered {
+        } else if !self.hovered && !self.desktop_drag {
+            self.set_mode(Mode::Still);
+        }
+    }
+
+    /// A drag starting anywhere on the desktop opens the Shelf, ready for the drop. When it ends
+    /// somewhere else, the Island rests.
+    pub fn desktop_drag(&mut self, active: bool) {
+        if active {
+            if !self.cfg.visible_tabs().contains(&tabs::SHELF) { return }
+            self.desktop_drag = true;
+            self.mode = Mode::Large;
+            self.open_tab(tabs::SHELF);
+        } else if std::mem::take(&mut self.desktop_drag) && !self.hovered && !self.dropping {
             self.set_mode(Mode::Still);
         }
     }
@@ -668,6 +684,7 @@ impl Island {
             c.shelf.splice(0..0, files.iter().cloned());
         });
         self.dropping = false;
+        self.desktop_drag = false;
         self.mode = Mode::Large;
         self.open_tab(tabs::SHELF);
     }
@@ -976,6 +993,8 @@ impl Island {
         let h = me.clone();
         every(3, move || { let m = system::microphone_in_use(); h.update_if(move |s, tx| s.set_capture(None, Some(m), tx)); });
         let h = me.clone();
+        std::thread::spawn(move || system::watch_drags(|active| h.update(move |s, _| s.desktop_drag(active))));
+        let h = me.clone();
         every(5, move || { let b = system::battery(); h.update_if(move |s, tx| s.set_battery(b, tx)); });
 
         // Weather: every 10 minutes, and at once when the location or unit changes.
@@ -1197,7 +1216,8 @@ pub fn view(s: &Island, _: &mut Cx<Island>) -> El {
         .on_drag(Island::drag)
         .on_wheel(Island::wheel);
     // A hidden Shelf takes no drops.
-    if cfg.visible_tabs().contains(&tabs::SHELF) {
+    let shelf = cfg.visible_tabs().contains(&tabs::SHELF);
+    if shelf {
         island = island.on_drop_files(Island::drop_files).on_drop_hover(Island::drop_hover);
     }
     // iOS-style continuous corners when expanded; compact stays a true capsule.
@@ -1235,7 +1255,14 @@ pub fn view(s: &Island, _: &mut Cx<Island>) -> El {
 
     // The border draws over the content, as a CSS border does.
     island = island.child(border(s, radii, hidden));
-    let mut canvas = el().key("canvas").w_full().h_full().child(island);
+    let mut canvas = el().key("canvas").w_full().h_full();
+    // Windows lets the window take a held drag near the Island (platform::DROP_NEAR); this catches it there, behind the Island.
+    if shelf && cfg!(windows) {
+        let near = platform::DROP_NEAR;
+        canvas = canvas.child(el().key("drop-near").absolute(left - near, top - near).size(w + 2.0 * near, h + 2.0 * near)
+            .on_drop_files(Island::drop_files).on_drop_hover(Island::drop_hover));
+    }
+    let mut canvas = canvas.child(island);
     // A select's menu opens outside the Island: the whole overlay takes clicks while one is open.
     if s.t3.open.is_some() { canvas = canvas.hit() }
     if let Some(rect) = s.dock_rect() { canvas = canvas.child(dock(s, rect)) }
@@ -1547,6 +1574,28 @@ mod tests {
         rt.drag_files_leave();
         rt.frame(4.0 / 60.0);
         assert_eq!(rt.state.mode, Mode::Still);
+    }
+
+    #[test]
+    fn a_desktop_drag_opens_the_shelf_until_it_ends_elsewhere() {
+        let mut s = island(Config { standby: false, ..Config::default() });
+        s.desktop_drag(true);
+        assert_eq!((s.mode, s.tab), (Mode::Large, tabs::SHELF));
+        // Passing over the Island and off again keeps it open while the drag goes on.
+        s.drop_hover(true, &mut Tx::default());
+        s.drop_hover(false, &mut Tx::default());
+        assert_eq!(s.mode, Mode::Large);
+        s.desktop_drag(false);
+        assert_eq!(s.mode, Mode::Still);
+        // A drop on the Shelf keeps it open after the drag ends.
+        s.desktop_drag(true);
+        s.drop_files(&["/a".into()], &mut Tx::default());
+        s.desktop_drag(false);
+        assert_eq!(s.mode, Mode::Large);
+        // A hidden Shelf doesn't open.
+        let mut s = island(Config { standby: false, hidden_tabs: vec![tabs::SHELF], ..Config::default() });
+        s.desktop_drag(true);
+        assert_eq!(s.mode, Mode::Still);
     }
 
     #[test]
