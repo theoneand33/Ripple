@@ -2,7 +2,7 @@
 //! and the compact views. The Large mode's tabs are in `tabs/`.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::Sender;
 
 use rune::time::LocalTime;
@@ -916,7 +916,12 @@ impl Island {
             });
         }
         let h = me.clone();
-        every(2, move || { let t = system::media(); h.update_if(move |s, tx| s.set_track(t, tx)); });
+        every(2, move || {
+            let started = MEDIA_COMMANDS.load(Ordering::SeqCst);
+            let t = system::media();
+            // A poll that overlapped a media command may hold the state from before it.
+            h.update_if(move |s, tx| MEDIA_COMMANDS.load(Ordering::SeqCst) == started && s.set_track(t, tx));
+        });
         let h = me.clone();
         every(10, move || { let b = system::bluetooth_connected(); h.update_if(move |s, tx| s.set_bluetooth(b, tx)); });
         let h = me.clone();
@@ -1259,15 +1264,19 @@ pub fn cover(s: &Island, size: f32, radius: f32, glyph: f32, hover_scale: f32) -
     }
 }
 
+/// Bumped when a media command starts and ends, so polls that overlap one are dropped.
+static MEDIA_COMMANDS: AtomicU64 = AtomicU64::new(0);
+
 /// Media keys run a subprocess; never on the UI thread. Play/pause flips the shown state at once;
-/// the regular poll settles it to what the player reports (an immediate re-poll can read the old state).
+/// the next poll that starts after the command finishes settles it to what the player reports.
 pub fn control(s: &mut Island, command: MediaCommand) {
+    MEDIA_COMMANDS.fetch_add(1, Ordering::SeqCst);
     if command == MediaCommand::PlayPause && let (Some(me), Some(track)) = (&s.me, &s.track) {
         let playing = !track.playing;
         let track = Track { playing, paused: !playing, ..track.clone() };
         me.update_if(move |s, tx| s.set_track(Some(track), tx));
     }
-    std::thread::spawn(move || system::media_control(command));
+    std::thread::spawn(move || { system::media_control(command); MEDIA_COMMANDS.fetch_add(1, Ordering::SeqCst); });
 }
 
 #[cfg(test)]
