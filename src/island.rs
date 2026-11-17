@@ -691,7 +691,10 @@ impl Island {
     fn open_shelf(&mut self) {
         self.close_at = None;
         self.mode = Mode::Large;
+        // Not the user's tab change: it must not earn the linger.
+        let changed = self.tab_changed;
         self.open_tab(tabs::SHELF);
+        self.tab_changed = changed;
     }
 
     /// A file drag over the Island opens the Shelf; one that leaves without dropping lets it rest.
