@@ -1278,7 +1278,12 @@ pub fn control(s: &mut Island, command: MediaCommand) {
         let track = Track { playing, paused: !playing, ..track.clone() };
         me.update_if(move |s, tx| s.set_track(Some(track), tx));
     }
-    std::thread::spawn(move || { system::media_control(command); MEDIA_FINISHED.fetch_add(1, Ordering::SeqCst); });
+    std::thread::spawn(move || {
+        system::media_control(command);
+        // Players report the new status a moment after the command returns; polls wait it out.
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        MEDIA_FINISHED.fetch_add(1, Ordering::SeqCst);
+    });
 }
 
 #[cfg(test)]
