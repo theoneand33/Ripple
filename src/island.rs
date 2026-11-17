@@ -421,7 +421,7 @@ impl Island {
 
     fn now_playing_width(&self) -> f32 {
         let (name, artist) = self.now_playing_text();
-        (estimate_width(&name, 13.0) + estimate_width(&artist, 13.0) + 24.0 + 6.0 + 20.0).ceil().clamp(122.0, 300.0)
+        (estimate_width(&name, 13.0) + estimate_width(&artist, 13.0) + 24.0 + 6.0 + 20.0 + 31.0).ceil().clamp(122.0, 300.0)
     }
 
     pub fn notch_inset(&self) -> f32 { if self.cfg.notch_mode { 34.0 } else { 0.0 } }
@@ -1416,12 +1416,12 @@ fn capture_dot(s: &Island) -> Option<El> {
 }
 
 /// The compact view while music plays: cover, a title that scrolls when it doesn't fit, and
-/// play/pause under the pointer.
+/// a visualizer that turns into play/pause under the pointer.
 fn now_playing(s: &Island, fg: Color) -> El {
     let Some(track) = &s.track else { return el() };
     let (name, artist) = s.now_playing_text();
     let width = estimate_width(&name, 13.0) + estimate_width(&artist, 13.0);
-    let viewport = s.size().0 - 18.0 - 24.0 - 6.0 - if s.hovered { 31.0 } else { 0.0 };
+    let viewport = s.size().0 - 18.0 - 24.0 - 6.0 - 31.0;
     let title = |key: &str| row().key(key).pr(30.0)
         .child(text(&name).font(s.font(13.0, 600.0)).color(fg).single_line())
         .child(text(&artist).font(s.font(13.0, 400.0)).color(fg.alpha(0.7 * fg.a)).single_line());
@@ -1435,19 +1435,19 @@ fn now_playing(s: &Island, fg: Color) -> El {
     let mut marquee = el().key("marquee").grow(1.0).min_w(0.0).h(18.0).clip_soft(0.0).child(strip.absolute(0.0, 0.0));
     if scrolls { marquee = marquee.clip_fade(0.0, 0.0, 15.0, 15.0) }
 
-    let mut line = row().key(format!("playing-{}-{}", track.name, track.artist)).w_full().h_full().px(9.0).gap(6.0).center_y()
+    let line = row().key(format!("playing-{}-{}", track.name, track.artist)).w_full().h_full().px(9.0).gap(6.0).center_y()
         .transition(Transition::blur_replace())
         .opacity(if !track.playing { 0.5 } else if s.cfg.hide_inactive { 0.6 } else { 1.0 })
         .child(cover(s, 24.0, 4.0, 14.0, 1.25))
         .child(marquee);
-    if s.hovered {
-        line = line.child(
-            el().key("play-pause").role("button").label(if track.playing { "Pause" } else { "Play" })
-                .size(25.0, 24.0).center().transition(Transition::opacity())
-                .child(icon(if track.playing { &icons::PAUSE } else { &icons::PLAY }, 15.0).color(Color::WHITE))
-                .on_press(|_: &mut Island| control(MediaCommand::PlayPause)),
-        );
-    }
+    let line = line.child(if s.hovered {
+        el().key("play-pause").role("button").label(if track.playing { "Pause" } else { "Play" })
+            .size(25.0, 24.0).center().transition(Transition::opacity())
+            .child(icon(if track.playing { &icons::PAUSE } else { &icons::PLAY }, 15.0).color(Color::WHITE))
+            .on_press(|_: &mut Island| control(MediaCommand::PlayPause))
+    } else {
+        visualizer(track.playing, fg)
+    });
     let wrap = el().key("now-playing").w_full().h_full().child(line);
     let Some((position, length)) = track.progress else { return wrap };
     // A hairline along the bottom, inset past the capsule's curve; it glides between the 2 s polls.
@@ -1460,6 +1460,23 @@ fn now_playing(s: &Island, fg: Color) -> El {
             .pin(Some(inset), None, Some(inset), Some(3.0)).h(2.0).radius(1.0).fill(fg.alpha(0.15 * fg.a))
             .child(el().key("progress-done").h_full().w(done).radius(1.0).fill(fg.alpha(0.7 * fg.a)).motion(Spring::new(2.0, 0.0))),
     )
+}
+
+/// Four bars that jump up and fall back while music plays, and rest low while it is paused.
+/// shortcut: a canned motion, not the real audio level; tap the OS audio output to drive it.
+fn visualizer(playing: bool, fg: Color) -> El {
+    // (period, share hidden while paused) per bar; uneven periods keep the bars out of step.
+    const BARS: [(f64, f32); 4] = [(0.62, 0.55), (0.81, 0.3), (0.53, 0.45), (0.94, 0.6)];
+    let mut bars = row().key("visualizer").a11y_hidden().size(25.0, 24.0).gap(2.0).center()
+        .transition(Transition::opacity());
+    for (i, (period, rest)) in BARS.into_iter().enumerate() {
+        let mut pill = el().key("pill").size(3.0, 14.0).radius(1.5).fill(fg);
+        // Each period the bar snaps full and falls 70% down its clip, the way a level meter decays.
+        pill = if playing { pill.looping(LoopSpec::slide(period, [0.0, 0.0], [0.0, 0.7]).easing(Easing::EASE_OUT)) }
+            else { pill.absolute(0.0, 14.0 * rest) };
+        bars = bars.child(el().key(format!("bar-{i}")).size(3.0, 14.0).clip_soft(0.0).child(pill));
+    }
+    bars
 }
 
 /// The track's cover, or a note when it has none. A press opens the player.
