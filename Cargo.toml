@@ -7,8 +7,8 @@ license = "MIT"
 
 [dependencies]
 # Rune is pre-release: pin one `dev` rev here and in every [patch] below.
-rune = { git = "https://github.com/theoneand33/rune", rev = "bd1497bde877fac7b6de0d2786f9cc5c3a507824" }
-rune-kit = { git = "https://github.com/theoneand33/rune", rev = "bd1497bde877fac7b6de0d2786f9cc5c3a507824", features = ["markdown"] }
+rune = { git = "https://github.com/theoneand33/rune", rev = "e900e204d54387e3a0b9e2e632683c48fcc9d728" }
+rune-kit = { git = "https://github.com/theoneand33/rune", rev = "e900e204d54387e3a0b9e2e632683c48fcc9d728", features = ["markdown"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # Weather, the AI assistant's stream and T3's HTTP API; T3's /ws RPC.
@@ -35,11 +35,11 @@ wayland-client = "0.31"
 
 # Cargo doesn't inherit a dependency's patches; these mirror Rune's own [patch.crates-io].
 [patch.crates-io]
-winit = { git = "https://github.com/theoneand33/rune", rev = "bd1497bde877fac7b6de0d2786f9cc5c3a507824" }
-parley_engine = { git = "https://github.com/theoneand33/rune", rev = "bd1497bde877fac7b6de0d2786f9cc5c3a507824" }
-wgpu-hal = { git = "https://github.com/theoneand33/rune", rev = "bd1497bde877fac7b6de0d2786f9cc5c3a507824" }
-accesskit_windows = { git = "https://github.com/theoneand33/rune", rev = "bd1497bde877fac7b6de0d2786f9cc5c3a507824" }
-accesskit_macos = { git = "https://github.com/theoneand33/rune", rev = "bd1497bde877fac7b6de0d2786f9cc5c3a507824" }
+winit = { git = "https://github.com/theoneand33/rune", rev = "e900e204d54387e3a0b9e2e632683c48fcc9d728" }
+parley_engine = { git = "https://github.com/theoneand33/rune", rev = "e900e204d54387e3a0b9e2e632683c48fcc9d728" }
+wgpu-hal = { git = "https://github.com/theoneand33/rune", rev = "e900e204d54387e3a0b9e2e632683c48fcc9d728" }
+accesskit_windows = { git = "https://github.com/theoneand33/rune", rev = "e900e204d54387e3a0b9e2e632683c48fcc9d728" }
+accesskit_macos = { git = "https://github.com/theoneand33/rune", rev = "e900e204d54387e3a0b9e2e632683c48fcc9d728" }
 
 # Rune's debug info alone can take many GB of RAM to link; line tables keep panics readable.
 [profile.dev]
