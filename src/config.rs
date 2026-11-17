@@ -78,6 +78,8 @@ pub struct Config {
     pub tab_order: Vec<u8>,
     pub hidden_tabs: Vec<u8>,
     pub default_tab: u8,
+    /// Large Mode opens on the starred tab each time, not the last one used.
+    pub open_default_tab: bool,
     pub battery_alerts: bool,
     pub island_border: bool,
     pub standby: bool,
@@ -131,6 +133,7 @@ impl Default for Config {
             tab_order: TABS.iter().map(|t| t.id).collect(),
             hidden_tabs: Vec::new(),
             default_tab: 2,
+            open_default_tab: true,
             battery_alerts: true,
             island_border: false,
             standby: true,
