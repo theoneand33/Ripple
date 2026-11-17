@@ -887,10 +887,14 @@ impl Island {
 
     pub fn set_track(&mut self, track: Option<Track>, tx: &mut Tx) -> bool {
         if track == self.track { return false }
-        // A poll that only moved the position: the bar runs at playback speed until the next one.
+        // A poll that only played on a few seconds: the bar runs at playback speed until the next one.
+        // Polls land at once (no input caused them), so this one asks for motion; seeks still jump.
         if let (Some(old), Some(new)) = (&self.track, &track)
+            && let (Some((from, _)), Some((to, _))) = (old.progress, new.progress)
+            && (1..=4).contains(&to.saturating_sub(from))
             && (system::Track { progress: new.progress, ..old.clone() }) == *new
         {
+            tx.animated();
             tx.motion_curve(Curve::tween(2.0, Easing::LINEAR));
         }
         let was_paused = self.track.as_ref().is_some_and(|t| t.paused);
