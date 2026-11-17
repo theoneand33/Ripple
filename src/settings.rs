@@ -429,7 +429,7 @@ pub fn view(s: &Settings, cx: &mut Cx<Settings>) -> El {
     let content = sections.into_iter().fold(col().key("settings-content").w_full().px(24.0).pt(20.0).pb(36.0).gap(28.0), El::child);
     // An opaque base, so a translucent Island colour stays readable in a normal window.
     let base = col().key("settings").w_full().h_full().min_h(0.0).fill(Color::BLACK)
-        .child(el().key("settings-scroll").w_full().grow(1.0).min_h(0.0).fill(cfg.bg()).scroll(ScrollSpec { stick_bottom: false }).child(content));
+        .child(col().key("settings-scroll").w_full().grow(1.0).min_h(0.0).fill(cfg.bg()).scroll(ScrollSpec { stick_bottom: false }).child(content));
     let _ = cx;
     rune_kit::root(base, layer)
 }
@@ -443,6 +443,18 @@ mod tests {
         let mut s = Settings::new(Store::memory(Config::default()), None, &[]);
         s.save(|c| c.set_theme("win95"));
         assert_eq!((s.bg_color.text.as_str(), s.text_color.text.as_str()), ("rgba(195, 195, 195)", "rgba(0, 0, 0)"));
+    }
+
+    #[test]
+    fn the_wheel_scrolls_the_page() {
+        let s = Settings::new(Store::memory(Config::default()), None, &[]);
+        let mut rt = rune::Runtime::new(s, view, (520.0, 720.0), rune::Env { system_dark: true, scale: 1.0 });
+        rt.frame(0.0);
+        let before = rt.find("tab-0").unwrap().1;
+        rt.wheel(260.0, 360.0, -200.0);
+        for _ in 0..30 { rt.frame(1.0 / 60.0); }
+        let after = rt.find("tab-0").unwrap().1;
+        assert!(after < before - 50.0, "tab-0 stayed at {before} -> {after}");
     }
 
     #[test]
