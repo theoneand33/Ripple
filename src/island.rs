@@ -1043,6 +1043,8 @@ pub fn kit(cfg: &Config) -> Kit {
     let (bg, fg) = (cfg.bg().alpha(1.0), cfg.text().alpha(1.0));
     let mut kit = Kit::from_palette(PaletteSeed { bg, fg, accent: fg });
     kit.radius.md = 10.0;
+    // The accent is the text colour, so an on switch's knob (and a radio's dot) needs the background to show.
+    kit.c.knob_on = bg;
     kit
 }
 
