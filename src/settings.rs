@@ -377,6 +377,7 @@ fn home(s: &Settings, k: &Kit, layer: &mut Vec<El>) -> Vec<El> {
     let mut tabs = vec![
         text("Drag to reorder, click the eye to hide").font(font(cfg, 12.0, 400.0)).color(fg.alpha(0.5)),
         setting(s, "Always open on the starred tab", switch(k, "Always open on the starred tab", cfg.open_default_tab, |c| c.open_default_tab = !c.open_default_tab).a11y_hidden()),
+        setting(s, &format!("Stay open after a tab change ({:.1}s)", cfg.tab_linger), slider(s, "tab-linger", "Stay open after a tab change", (0.0, 10.0, 0.5), |c| c.tab_linger, |c, v| c.tab_linger = v)),
     ];
     let last = cfg.tab_order.len().saturating_sub(1);
     for (i, &id) in cfg.tab_order.iter().enumerate() {
