@@ -100,6 +100,8 @@ pub struct Config {
     pub notch_mode: bool,
     /// Notch Mode: shrink the compact Island to fit its content instead of a fixed width.
     pub notch_auto_size: bool,
+    /// Notch Mode without a physical notch: the notch look, sized like the floating Island.
+    pub notch_mini: bool,
     /// Free placement: the Island's centre, in percent of the display's width.
     pub island_x: f32,
     /// Free placement: points from the display's top.
@@ -153,6 +155,7 @@ impl Default for Config {
             position_mode: "free".into(),
             notch_mode: false,
             notch_auto_size: true,
+            notch_mini: false,
             island_x: 50.0,
             island_y: 20.0,
             display: String::new(),

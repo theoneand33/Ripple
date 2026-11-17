@@ -151,6 +151,7 @@ fn island_spec() -> AppSpec<Island> {
             ("bluetooth-off", |s| { let mut tx = rune::Tx::default(); s.set_bluetooth(true, &mut tx); s.set_bluetooth(false, &mut tx); s.set_bluetooth(false, &mut tx); }),
             ("notch", |s| { s.cfg.notch_mode = true; s.placement = island::Placement::of(&s.cfg, (1920.0, 1080.0)) }),
             ("notch-large", |s| { s.cfg.notch_mode = true; s.placement = island::Placement::of(&s.cfg, (1920.0, 1080.0)); s.mode = island::Mode::Large }),
+            ("mini-notch", |s| { s.cfg.notch_mode = true; s.cfg.notch_mini = true; s.placement = island::Placement::of(&s.cfg, (1920.0, 1080.0)) }),
             ("win95", |s| { s.cfg.set_theme("win95"); s.kit = island::kit(&s.cfg); s.mode = island::Mode::Large }),
             ("glass", |s| { s.cfg.set_theme("glass"); s.kit = island::kit(&s.cfg); s.cfg.show_info_idle = true }),
             ("glass-large", |s| { s.cfg.set_theme("glass"); s.kit = island::kit(&s.cfg); s.mode = island::Mode::Large }),
