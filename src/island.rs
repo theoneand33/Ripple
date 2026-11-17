@@ -463,7 +463,7 @@ impl Island {
         };
         if notch && track && !alerting && self.mode != Mode::Large { w = (w + 40.0).max(300.0) }
         let h = match self.mode {
-            Mode::Large => match self.tab { 6 | 8 | 9 | 10 => 290.0, 0 => 160.0, 1 => 250.0, _ => 230.0 },
+            Mode::Large => (self.notch_inset() - LARGE_EDGE).max(0.0) + match self.tab { 6 | 8 | 9 | 10 => 290.0, 0 => 160.0, 1 => 250.0, _ => 230.0 },
             _ => if notch { 34.0 } else { 40.0 },
         };
         (w, h)
@@ -1584,7 +1584,7 @@ mod tests {
             assert_eq!(s.size(), size);
         }
         s.cfg.notch_mode = true;
-        assert_eq!(s.size(), (520.0, 290.0));
+        assert_eq!(s.size(), (520.0, 312.0));
         s.mode = Mode::Still;
         assert_eq!(s.size(), (210.0, 34.0));
         // The compact notch glance fits its wider half on each side of the notch.
