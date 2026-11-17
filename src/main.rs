@@ -16,10 +16,10 @@ mod tabs;
 #[cfg(test)]
 mod testserver;
 
-use rune::{App, AppHandle, AppSpec, MacWindowOptions, RunOptions, Tray, TrayEvent, TrayIcon, TrayItem, TraySpec, WindowOptions, WindowSpec};
+use rune::{App, AppHandle, AppSpec, MacWindowOptions, RunOptions, Tray, TrayEvent, TrayIcon, TrayItem, TraySpec, WindowHandle, WindowOptions, WindowSpec};
 
 use config::Store;
-use island::{CANVAS, Island, Screen};
+use island::{CANVAS, Host, Island, Screen};
 use settings::Settings;
 
 static FONTS: &[&[u8]] = &[
@@ -40,7 +40,7 @@ fn tray_icon() -> Option<TrayIcon> {
 }
 
 /// The tray lives as long as the app; it is a process-wide singleton.
-fn start_tray(island: AppHandle<Island>) {
+fn start_tray(island: Host) {
     #[cfg(target_os = "macos")]
     {
         mac::tray(include_bytes!("../assets/icons/tray.png"), move |id| match id {
@@ -141,33 +141,76 @@ fn settings_spec() -> AppSpec<Settings> {
     }
 }
 
+/// The hidden Settings window, on whichever app hosts the Island.
+fn settings_window<S: 'static>(app: &mut App<S>, state: Settings) -> (AppHandle<Settings>, WindowHandle) {
+    app.window(
+        WindowSpec::new("settings", settings_spec())
+            .state(state)
+            .options(WindowOptions { visible: false, min_size: Some((420.0, 400.0)), ..Default::default() }),
+    )
+}
+
+/// Wayland lets no ordinary window place or raise itself, so there the Island is a layer-shell
+/// overlay on a windowless app. Without layer-shell (GNOME) Rune shows it on XWayland instead.
+#[cfg(target_os = "linux")]
+fn overlay_island(screens: Vec<Screen>, store: Store) -> Vec<rune::AnyWindowSpec> {
+    use rune::{Align, KeyPolicy, OverlayInput, OverlayOptions, OverlayPlacement, OverlaySpec, ScreenEdge};
+    use std::sync::{Arc, atomic::AtomicBool};
+    let spec = AppSpec { fonts: FONTS, families: FAMILIES, ..AppSpec::new("Ripple", (1.0, 1.0), || (), |_, _| rune::el()) };
+    let mut host = App::new(spec).windowless();
+    let state = Island::new(store.clone(), screens.clone());
+    let screen = state.screen();
+    let (x, y) = state.placement.window;
+    let options = OverlayOptions {
+        placement: Some(OverlayPlacement::Rect { x, y, width: CANVAS.0, height: CANVAS.1 }),
+        display: screen.target,
+        // Only the Island, its dock and an open select's menu (`.hit()`) take the pointer.
+        input: OverlayInput::Regions,
+        keys: KeyPolicy::OnDemand,
+        xwayland_input: true,
+        ..Default::default()
+    };
+    let spec = OverlaySpec { name: "ripple", size: CANVAS, edge: ScreenEdge::Top, margin: 0.0, align: Align::Start, inset: 0.0, interactive: true, view: island::view };
+    let overlay = host.overlay(
+        spec.options(options).setup(Island::start).poll(Island::poll).on_key(Island::key).on_focus(Island::window_focus),
+        state,
+    );
+    let me = Host::Overlay(overlay.clone(), host.handle(), Arc::new(AtomicBool::new(false)));
+    let (_, settings) = settings_window(&mut host, Settings::new(store, Some(me.clone()), &screens));
+    let island = me.clone();
+    overlay.update(move |s, _| { s.me = Some(island); s.settings = Some(settings); s.begin() });
+    me.show();
+    start_tray(me);
+    vec![WindowSpec::from_app("host", host).into()]
+}
+
 fn main() {
-    // The Island needs to place and raise its own window, which Wayland doesn't allow: run on
-    // XWayland, as Electron did. Apps Ripple starts get Wayland back.
+    // Apps Ripple starts get Wayland back if the Island runs on XWayland.
     #[cfg(target_os = "linux")]
-    {
+    let wayland = {
         let wayland = std::env::var_os("WAYLAND_DISPLAY");
         let _ = system::WAYLAND_DISPLAY.set(wayland.clone());
-        if wayland.is_some() && std::env::var_os("DISPLAY").is_some() {
+        // Headless tools (scenes, snapshots) still drive the Island as a window.
+        let overlay = wayland.is_some() && !rune::is_headless();
+        if !overlay && wayland.is_some() && std::env::var_os("DISPLAY").is_some() {
             // SAFETY: single-threaded here, before the event loop or any thread starts.
             unsafe { std::env::remove_var("WAYLAND_DISPLAY") };
         }
-    }
+        overlay
+    };
     rune::set_app_id("ripple");
 
-    rune::run_windows_with(RunOptions { accessory: true }, |displays| {
+    rune::run_windows_with(RunOptions { accessory: true }, move |displays| {
         let screens = Screen::all(displays);
         let store = Store::open();
+        #[cfg(target_os = "linux")]
+        if wayland { return overlay_island(screens, store) }
         // The Island only takes focus when clicked, never on launch (macOS and Windows).
         let mut app = App::new(island_spec()).keep_running().open_inactive().on_focus(Island::window_focus);
-        let island = app.handle();
+        let island = Host::Window(app.handle());
 
         let settings_state = Settings::new(store.clone(), Some(island.clone()), &screens);
-        let (settings_app, settings_window) = app.window(
-            WindowSpec::new("settings", settings_spec())
-                .state(settings_state)
-                .options(WindowOptions { visible: false, min_size: Some((420.0, 400.0)), ..Default::default() }),
-        );
+        let (settings_app, settings_window) = settings_window(&mut app, settings_state);
         #[cfg(windows)]
         std::thread::spawn(move || {
             let apps = system::discover_apps();
@@ -206,6 +249,6 @@ fn main() {
         };
         // CanJoinAllSpaces | Stationary | IgnoresCycle | FullScreenAuxiliary, at the pop-up menu level.
         let options = options.macos(MacWindowOptions::default().shadow(false).level(101).collection_behavior(1 | 16 | 64 | 256));
-        vec![WindowSpec::from_app("island", app).configured_options(options)]
+        vec![WindowSpec::from_app("island", app).configured_options(options).into()]
     });
 }
