@@ -26,8 +26,8 @@ png = "0.18"
 objc2 = "0.6"
 
 [target.'cfg(target_os = "linux")'.dependencies]
-# The Island's input shape: clicks outside it reach the windows underneath.
-x11rb = { version = "0.13", features = ["shape"] }
+# The Island's input shape (clicks outside it reach the windows underneath) and desktop drag starts.
+x11rb = { version = "0.13", features = ["shape", "xfixes"] }
 # Whether the compositor has layer-shell, which the Island needs to run natively on Wayland.
 wayland-client = "0.31"
 
