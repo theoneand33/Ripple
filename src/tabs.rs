@@ -151,15 +151,18 @@ fn overview(s: &Island) -> El {
     let weather = row().key("weather").absolute(24.0, 20.0).gap(4.0).center_y()
         .child(icon(icons::weather(&s.weather.status), 16.0).color(fg))
         .child(text(s.weather.temp.map_or("??º".to_string(), |t| format!("{t}º"))).font(s.font(15.0, 500.0)).color(fg));
-    let mut battery = row().key("battery").pin(None, Some(20.0), Some(24.0), None).px(8.0).h(24.0).gap(2.0).center_y()
-        .radius(if s.cfg.win95() { 0.0 } else { 8.0 }).fill(fg);
-    if s.charging { battery = battery.child(icon(&icons::ZAP, 14.0).color(bg)) }
-    battery = battery.child(text(format!("{}%", s.percent)).font(s.font(13.0, 500.0).features("'tnum' 1")).color(bg));
+    let mut root = el().key("overview").w_full().h_full().child(weather);
+    // A desktop without a battery shows no battery pill.
+    if let Some(percent) = s.percent {
+        let mut battery = row().key("battery").pin(None, Some(20.0), Some(24.0), None).px(8.0).h(24.0).gap(2.0).center_y()
+            .radius(if s.cfg.win95() { 0.0 } else { 8.0 }).fill(fg);
+        if s.charging { battery = battery.child(icon(&icons::ZAP, 14.0).color(bg)) }
+        root = root.child(battery.child(text(format!("{percent}%")).font(s.font(13.0, 500.0).features("'tnum' 1")).color(bg)));
+    }
     let gear = el().key("open-settings").role("button").label("Open settings").focusable(true)
         .size(28.0, 28.0).center().radius(8.0).hover(fg.alpha(0.1 * fg.a)).press(fg.alpha(0.2 * fg.a))
         .child(icon(&icons::SETTINGS, 16.0).color(muted))
         .on_press(|s: &mut Island| if let Some(settings) = &s.settings { settings.open() });
-    let root = el().key("overview").w_full().h_full().child(weather).child(battery);
 
     let Some(track) = &s.track else {
         return root

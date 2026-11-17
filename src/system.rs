@@ -298,9 +298,9 @@ fn capability_in_use(name: &str) -> bool {
 
 // --- Battery ---
 
-/// (percent, plugged in). A machine without a battery reads as full and not charging.
-pub fn battery() -> (u8, bool) {
-    battery_now().unwrap_or((100, false))
+/// (percent, plugged in), or None on a machine without a battery.
+pub fn battery() -> Option<(u8, bool)> {
+    battery_now()
 }
 
 #[cfg(target_os = "linux")]
@@ -632,11 +632,11 @@ mod tests {
     #[ignore = "asks the real OS"]
     fn probes_answer_on_this_machine() {
         let started = std::time::Instant::now();
-        let (percent, charging) = battery();
-        assert!(percent <= 100);
+        let battery = battery();
+        assert!(battery.is_none_or(|(percent, _)| percent <= 100));
         let track = media();
         let (bluetooth, camera, microphone) = (bluetooth_connected(), camera_in_use(), microphone_in_use());
-        println!("battery {percent}% charging={charging} media={track:?} bluetooth={bluetooth} camera={camera} microphone={microphone}");
+        println!("battery={battery:?} media={track:?} bluetooth={bluetooth} camera={camera} microphone={microphone}");
         assert!(started.elapsed() < TIMEOUT * 5, "a hung tool must time out");
     }
 
