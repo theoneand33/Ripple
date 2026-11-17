@@ -430,7 +430,7 @@ pub struct Stats {
     /// The disk that holds the home folder.
     pub disk_free: u64,
     pub disk_total: u64,
-    /// Bytes per second, every interface but loopback.
+    /// Bytes per second on the busiest interface.
     pub down: u64,
     pub up: u64,
 }
@@ -461,8 +461,10 @@ impl Monitor {
         let disks = self.disks.list();
         let disk = disks.iter().filter(|d| home.starts_with(d.mount_point())).max_by_key(|d| d.mount_point().as_os_str().len())
             .or_else(|| disks.iter().max_by_key(|d| d.total_space()));
+        // VPN, container and Hyper-V layers repeat the physical NIC's bytes, so a sum counts them twice.
+        // shortcut: two NICs busy at once (Wi-Fi and Ethernet) show only the busier; sum physical NICs if that matters.
         let nets = self.nets.list().iter().filter(|(name, _)| !(*name == "lo" || *name == "lo0" || name.contains("Loopback"))).map(|(_, n)| n);
-        let (down, up) = nets.fold((0, 0), |(d, u), n| (d + n.received(), u + n.transmitted()));
+        let (down, up) = nets.fold((0, 0), |(d, u), n| (d.max(n.received()), u.max(n.transmitted())));
         Stats {
             cpu: self.sys.global_cpu_usage(),
             mem_used: self.sys.used_memory(),
