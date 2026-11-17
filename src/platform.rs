@@ -3,7 +3,8 @@
 //! windows underneath.
 //!
 //! - Linux (X11): the window's input shape is set to the Island's rect. The X server then
-//!   routes the pointer itself; nothing polls.
+//!   routes the pointer itself; nothing polls. Without a compositing manager X can't draw a
+//!   transparent window (it shows black), so the window's bounding shape is cut to the rect too.
 //! - Windows and macOS: the whole window ignores the mouse while the pointer is outside the
 //!   Island's rect, checked about 30 times a second.
 
@@ -17,7 +18,8 @@ pub struct Passthrough {
     /// The region last applied, in device pixels inside the window.
     applied: Option<[i32; 4]>,
     #[cfg(target_os = "linux")]
-    x11: Option<x11rb::rust_connection::RustConnection>,
+    /// The X connection and its default screen's number.
+    x11: Option<(x11rb::rust_connection::RustConnection, usize)>,
     #[cfg(not(target_os = "linux"))]
     through: Option<bool>,
 }
@@ -47,10 +49,10 @@ impl Passthrough {
         {
             let _ = (window_at, tx);
             if self.applied == Some(px) { return }
-            if self.x11.is_none() { self.x11 = x11rb::connect(None).ok().map(|(conn, _)| conn) }
-            let Some(conn) = &self.x11 else { return };
+            if self.x11.is_none() { self.x11 = x11rb::connect(None).ok() }
+            let Some((conn, screen)) = &self.x11 else { return };
             let Ok(Some(id)) = window.with_raw_handle(x11_window) else { return };
-            if set_input_shape(conn, id, px).is_ok() { self.applied = Some(px) }
+            if set_shape(conn, *screen, id, px).is_ok() { self.applied = Some(px) }
         }
         #[cfg(not(target_os = "linux"))]
         {
@@ -79,15 +81,25 @@ fn x11_window(handle: rune::raw_window_handle::WindowHandle<'_>) -> Option<u32> 
     }
 }
 
-/// Only ShapeInput: the window keeps its full transparent bounds, so nothing redraws.
+/// ShapeInput always. Under a compositor the window keeps its full transparent bounds, so
+/// nothing redraws; without one, ShapeBounding cuts away what would show black.
 #[cfg(target_os = "linux")]
-fn set_input_shape(conn: &x11rb::rust_connection::RustConnection, window: u32, [x, y, w, h]: [i32; 4]) -> Result<(), Box<dyn std::error::Error>> {
+fn set_shape(conn: &x11rb::rust_connection::RustConnection, screen: usize, window: u32, [x, y, w, h]: [i32; 4]) -> Result<(), Box<dyn std::error::Error>> {
     use x11rb::connection::Connection;
-    use x11rb::protocol::shape::{ConnectionExt, SK, SO};
-    use x11rb::protocol::xproto::{ClipOrdering, Rectangle};
+    use x11rb::protocol::shape::{ConnectionExt as _, SK, SO};
+    use x11rb::protocol::xproto::{ClipOrdering, ConnectionExt as _, Rectangle};
+    use x11rb::NONE;
     let clamp = |v: i32| v.clamp(0, i32::from(u16::MAX)) as u16;
     let rect = Rectangle { x: x.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16, y: y.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16, width: clamp(w), height: clamp(h) };
     conn.shape_rectangles(SO::SET, SK::INPUT, ClipOrdering::UNSORTED, window, 0, 0, &[rect])?.check()?;
+    // A compositing manager owns this selection (EWMH); checked per change, as one can start or stop.
+    let cm = conn.intern_atom(false, format!("_NET_WM_CM_S{screen}").as_bytes())?.reply()?.atom;
+    if conn.get_selection_owner(cm)?.reply()?.owner == NONE {
+        // shortcut: a rectangle, so its corners and hover margin still show black; use a pixmap mask if that shows.
+        conn.shape_rectangles(SO::SET, SK::BOUNDING, ClipOrdering::UNSORTED, window, 0, 0, &[rect])?.check()?;
+    } else {
+        conn.shape_mask(SO::SET, SK::BOUNDING, window, 0, 0, NONE)?.check()?;
+    }
     conn.flush()?;
     Ok(())
 }
