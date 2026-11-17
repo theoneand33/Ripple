@@ -231,6 +231,8 @@ pub struct Island {
     pub menu_hovered: bool,
     pub background: Option<Image>,
     bluetooth: bool,
+    /// The last Bluetooth poll found nothing connected; a disconnect needs two in a row.
+    bluetooth_missed: bool,
     pub camera: bool,
     pub microphone: bool,
 
@@ -255,6 +257,8 @@ pub struct Island {
     pub note: TextEdit,
     pub note_index: usize,
     pub stremflix: StremflixState,
+    /// The System tab's figures; None until the first sample.
+    pub stats: Option<system::Stats>,
     /// A file drag is over the Island.
     pub dropping: bool,
     /// A drag started elsewhere on the desktop opened the Shelf; it rests when the drag ends.
@@ -322,6 +326,7 @@ impl Island {
             menu_hovered: false,
             background: None,
             bluetooth: false,
+            bluetooth_missed: false,
             camera: false,
             microphone: false,
             battery_alert_until: None,
@@ -342,6 +347,7 @@ impl Island {
             note: TextEdit::new(cfg.notes.first().map_or("", String::as_str)),
             note_index: 0,
             stremflix: StremflixState::default(),
+            stats: None,
             dropping: false,
             desktop_drag: false,
             t3: T3State::default(),
@@ -408,6 +414,9 @@ impl Island {
         else { self.capture.map(|c| c.0) }
     }
 
+    /// The Bluetooth alert's label: it shows on connect and on disconnect.
+    fn bluetooth_label(&self) -> &'static str { if self.bluetooth { "Connected" } else { "Disconnected" } }
+
     fn now_playing_text(&self) -> (String, String) {
         let Some(t) = &self.track else { return Default::default() };
         (t.name.clone(), if t.artist.is_empty() { String::new() } else { format!(" • {}", t.artist) })
@@ -415,7 +424,7 @@ impl Island {
 
     fn now_playing_width(&self) -> f32 {
         let (name, artist) = self.now_playing_text();
-        (estimate_width(&name, 13.0) + estimate_width(&artist, 13.0) + 24.0 + 6.0 + 20.0).ceil().clamp(122.0, 300.0)
+        (estimate_width(&name, 13.0) + estimate_width(&artist, 13.0) + 24.0 + 6.0 + 20.0 + 31.0).ceil().clamp(122.0, 300.0)
     }
 
     /// True when the Island must clear a physical notch (Notch Mode, not Mini).
@@ -434,9 +443,10 @@ impl Island {
             Some(Alert::Charging | Alert::Battery) => (20.0, percent()),
             Some(Alert::Camera) => (20.0, label("Camera")),
             Some(Alert::Microphone) => (20.0, label("Microphone")),
-            Some(Alert::Bluetooth) => (20.0, label("Connected")),
+            Some(Alert::Bluetooth) => (20.0, label(self.bluetooth_label())),
             None => (label(&self.time), match self.weather.temp {
                 Some(temp) if !(self.cfg.standby && self.percent.is_some()) => 16.0 + label(&format!("{temp}º")),
+                _ if self.charging && self.percent.is_some() => 16.0 + percent(),
                 _ => percent(),
             }),
         };
@@ -448,8 +458,8 @@ impl Island {
         let alerting = self.alert().is_some();
         let track = self.shows_track();
         let mut w = match self.mode {
-            Mode::Large => match self.tab { 1 | 9 | 10 | tabs::SHELF => 520.0, 0 => 445.0, _ => 420.0 },
-            _ if alerting => if notch { self.notch_glance_width() } else { 160.0 }, // fits icon + "Microphone"
+            Mode::Large => match self.tab { 1 | 9 | 10 | tabs::SHELF | tabs::SYSTEM => 520.0, 0 => 445.0, _ => 420.0 },
+            _ if alerting => if notch { self.notch_glance_width() } else { 176.0 }, // fits icon + "Disconnected"
             _ if track => self.now_playing_width(),
             _ if notch => if self.mode == Mode::Quick || self.cfg.show_info_idle { self.notch_glance_width() } else { 210.0 },
             Mode::Quick | Mode::Still => 140.0, // fits "23:59" + weather/"100%"
@@ -815,14 +825,14 @@ impl Island {
     }
 
     pub fn set_bluetooth(&mut self, connected: bool, tx: &mut Tx) -> bool {
-        if connected == self.bluetooth { return false }
+        // A failed query reads as "nothing connected": one miss alone is not a disconnect.
+        let missed = std::mem::replace(&mut self.bluetooth_missed, !connected);
+        if connected == self.bluetooth || (!connected && !missed) { return false }
         self.bluetooth = connected;
-        if connected {
-            self.mode = Mode::Quick;
-            self.bluetooth_alert_until = Some(tx.clock() + 3.0);
-            self.schedule(tx);
-        }
-        connected
+        self.mode = Mode::Quick;
+        self.bluetooth_alert_until = Some(tx.clock() + 3.0);
+        self.schedule(tx);
+        true
     }
 
     /// Camera and microphone alerts take turns, three seconds each.
@@ -999,6 +1009,16 @@ impl Island {
         std::thread::spawn(move || system::watch_drags(|active| h.update(move |s, _| s.desktop_drag(active))));
         let h = me.clone();
         every(5, move || { let b = system::battery(); h.update_if(move |s, tx| s.set_battery(b, tx)); });
+        let h = me.clone();
+        std::thread::spawn(move || {
+            let mut monitor = system::Monitor::new();
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(2));
+                let stats = Some(monitor.sample());
+                // Redraw only while the System tab shows; otherwise just keep the latest figures.
+                h.update_if(move |s, _| { let changed = s.stats != stats; s.stats = stats; changed && s.mode == Mode::Large && s.tab == tabs::SYSTEM });
+            }
+        });
 
         // Weather: every 10 minutes, and at once when the location or unit changes.
         let (kick, kicked) = std::sync::mpsc::channel();
@@ -1256,6 +1276,8 @@ pub fn view(s: &Island, _: &mut Cx<Island>) -> El {
         island = island.child(if s.shows_track() && s.alert().is_none() { now_playing(s, fg) } else { glance(s, fg) });
     }
 
+    if !large && let Some(dot) = capture_dot(s) { island = island.child(dot) }
+
     // The border draws over the content, as a CSS border does.
     island = island.child(border(s, radii, hidden));
     let mut canvas = el().key("canvas").w_full().h_full();
@@ -1350,7 +1372,8 @@ fn glance(s: &Island, fg: Color) -> El {
         Some(Alert::Battery) => status::low(),
         Some(Alert::Camera) => status::camera(),
         Some(Alert::Microphone) => status::mic(),
-        _ => fg,
+        Some(Alert::Bluetooth) => status::bluetooth(),
+        None => fg,
     };
     let style = s.font(16.0, 600.0).lh(16.0);
     let left = match alert {
@@ -1362,17 +1385,20 @@ fn glance(s: &Island, fg: Color) -> El {
     };
     let percent = || text(s.percent.map_or(String::new(), |p| format!("{p}%"))).key("percent").font(style).color(color);
     let label = |l: &str| text(l).key("label").font(style).color(color);
+    let battery = || if s.charging {
+        row().key("battery").gap(2.0).center_y().child(icon(&icons::ZAP, 14.0).color(color)).child(percent())
+    } else { percent() };
     let right = match alert {
         Some(Alert::Charging | Alert::Battery) => percent(),
         Some(Alert::Camera) => label("Camera"),
         Some(Alert::Microphone) => label("Microphone"),
-        Some(Alert::Bluetooth) => label("Connected"),
-        None if cfg.standby && s.percent.is_some() => percent(),
+        Some(Alert::Bluetooth) => label(s.bluetooth_label()),
+        None if cfg.standby && s.percent.is_some() => battery(),
         None => match s.weather.temp {
             Some(temp) => row().key("weather").gap(2.0).center_y()
                 .child(icon(icons::weather(&s.weather.status), 14.0).color(color))
                 .child(text(format!("{temp}º")).font(style).color(color)),
-            None => percent(),
+            None => battery(),
         },
     };
     let pad = if cfg.notch_mode { 12.0 } else { 16.0 };
@@ -1389,13 +1415,29 @@ fn glance(s: &Island, fg: Color) -> El {
         .child(left).child(right)
 }
 
+/// A privacy dot at the compact Island's right end while the camera or microphone is in use,
+/// once that one's alert has had its turn. Like the border, it shows even when the Island hides.
+fn capture_dot(s: &Island) -> Option<El> {
+    let (color, label) = match (s.camera, s.microphone) {
+        (true, true) => (status::camera(), "Camera and microphone in use"),
+        (true, false) => (status::camera(), "Camera in use"),
+        (false, true) => (status::mic(), "Microphone in use"),
+        (false, false) => return None,
+    };
+    if matches!(s.alert(), Some(Alert::Camera | Alert::Microphone)) { return None }
+    const SIZE: f32 = 6.0;
+    Some(el().key("capture-dot").role("img").label(label).inert()
+        .pin(None, Some((s.size().1 - SIZE) / 2.0), Some(3.0), None).size(SIZE, SIZE)
+        .radius(SIZE / 2.0).fill(color).transition(Transition::opacity()))
+}
+
 /// The compact view while music plays: cover, a title that scrolls when it doesn't fit, and
-/// play/pause under the pointer.
+/// a visualizer that turns into play/pause under the pointer.
 fn now_playing(s: &Island, fg: Color) -> El {
     let Some(track) = &s.track else { return el() };
     let (name, artist) = s.now_playing_text();
     let width = estimate_width(&name, 13.0) + estimate_width(&artist, 13.0);
-    let viewport = s.size().0 - 18.0 - 24.0 - 6.0 - if s.hovered { 31.0 } else { 0.0 };
+    let viewport = s.size().0 - 18.0 - 24.0 - 6.0 - 31.0;
     let title = |key: &str| row().key(key).pr(30.0)
         .child(text(&name).font(s.font(13.0, 600.0)).color(fg).single_line())
         .child(text(&artist).font(s.font(13.0, 400.0)).color(fg.alpha(0.7 * fg.a)).single_line());
@@ -1409,20 +1451,48 @@ fn now_playing(s: &Island, fg: Color) -> El {
     let mut marquee = el().key("marquee").grow(1.0).min_w(0.0).h(18.0).clip_soft(0.0).child(strip.absolute(0.0, 0.0));
     if scrolls { marquee = marquee.clip_fade(0.0, 0.0, 15.0, 15.0) }
 
-    let mut line = row().key(format!("playing-{}-{}", track.name, track.artist)).w_full().h_full().px(9.0).gap(6.0).center_y()
+    let line = row().key(format!("playing-{}-{}", track.name, track.artist)).w_full().h_full().px(9.0).gap(6.0).center_y()
         .transition(Transition::blur_replace())
         .opacity(if !track.playing { 0.5 } else if s.cfg.hide_inactive { 0.6 } else { 1.0 })
         .child(cover(s, 24.0, 4.0, 14.0, 1.25))
         .child(marquee);
-    if s.hovered {
-        line = line.child(
-            el().key("play-pause").role("button").label(if track.playing { "Pause" } else { "Play" })
-                .size(25.0, 24.0).center().transition(Transition::opacity())
-                .child(icon(if track.playing { &icons::PAUSE } else { &icons::PLAY }, 15.0).color(Color::WHITE))
-                .on_press(|_: &mut Island| control(MediaCommand::PlayPause)),
-        );
+    let line = line.child(if s.hovered {
+        el().key("play-pause").role("button").label(if track.playing { "Pause" } else { "Play" })
+            .size(25.0, 24.0).center().transition(Transition::opacity())
+            .child(icon(if track.playing { &icons::PAUSE } else { &icons::PLAY }, 15.0).color(Color::WHITE))
+            .on_press(|_: &mut Island| control(MediaCommand::PlayPause))
+    } else {
+        visualizer(track.playing, fg)
+    });
+    let wrap = el().key("now-playing").w_full().h_full().child(line);
+    let Some((position, length)) = track.progress else { return wrap };
+    // A hairline along the bottom, inset past the capsule's curve; it glides between the 2 s polls.
+    // Keyed by track, so a new track starts its own bar instead of sweeping back.
+    let inset = s.size().1 / 2.0;
+    let width = s.size().0 - 2.0 * inset;
+    let done = width * position as f32 / length as f32;
+    wrap.child(
+        el().key(format!("progress-{}-{}", track.name, track.artist)).inert().a11y_hidden()
+            .pin(Some(inset), None, Some(inset), Some(3.0)).h(2.0).radius(1.0).fill(fg.alpha(0.15 * fg.a))
+            .child(el().key("progress-done").h_full().w(done).radius(1.0).fill(fg.alpha(0.7 * fg.a)).motion(Spring::new(2.0, 0.0))),
+    )
+}
+
+/// Four bars that jump up and fall back while music plays, and rest low while it is paused.
+/// shortcut: a canned motion, not the real audio level; tap the OS audio output to drive it.
+fn visualizer(playing: bool, fg: Color) -> El {
+    // (period, share hidden while paused) per bar; uneven periods keep the bars out of step.
+    const BARS: [(f64, f32); 4] = [(0.62, 0.55), (0.81, 0.3), (0.53, 0.45), (0.94, 0.6)];
+    let mut bars = row().key("visualizer").a11y_hidden().size(25.0, 24.0).gap(2.0).center()
+        .transition(Transition::opacity());
+    for (i, (period, rest)) in BARS.into_iter().enumerate() {
+        let mut pill = el().key("pill").size(3.0, 14.0).radius(1.5).fill(fg);
+        // Each period the bar snaps full and falls 70% down its clip, the way a level meter decays.
+        pill = if playing { pill.looping(LoopSpec::slide(period, [0.0, 0.0], [0.0, 0.7]).easing(Easing::EASE_OUT)) }
+            else { pill.absolute(0.0, 14.0 * rest) };
+        bars = bars.child(el().key(format!("bar-{i}")).size(3.0, 14.0).clip_soft(0.0).child(pill));
     }
-    line
+    bars
 }
 
 /// The track's cover, or a note when it has none. A press opens the player.
@@ -1489,6 +1559,22 @@ mod tests {
         assert_eq!(island(Config::default()).mode, Mode::Quick);
         assert_eq!(island(Config { standby: false, ..Config::default() }).mode, Mode::Still);
         assert_eq!(island(Config { standby: false, large_standby: true, ..Config::default() }).mode, Mode::Large);
+    }
+
+    #[test]
+    fn bluetooth_alerts_on_connect_and_on_a_disconnect_seen_twice() {
+        let mut s = island(Config::default());
+        let mut tx = Tx::default();
+        assert!(s.set_bluetooth(true, &mut tx));
+        assert_eq!((s.alert(), s.bluetooth_label()), (Some(Alert::Bluetooth), "Connected"));
+        s.bluetooth_alert_until = None;
+        // One failed poll, then the device again: no alert.
+        assert!(!s.set_bluetooth(false, &mut tx));
+        assert!(!s.set_bluetooth(true, &mut tx));
+        assert_eq!(s.alert(), None);
+        assert!(!s.set_bluetooth(false, &mut tx));
+        assert!(s.set_bluetooth(false, &mut tx));
+        assert_eq!((s.alert(), s.bluetooth_label()), (Some(Alert::Bluetooth), "Disconnected"));
     }
 
     #[test]
@@ -1700,6 +1786,21 @@ mod tests {
             rt.frame(1.0 / 60.0);
         }
         assert_eq!(rt.state.tab, 2);
+    }
+
+    #[test]
+    fn the_wheel_scrolls_a_long_task_list() {
+        let mut s = island(Config { tasks: (0..30).map(|i| format!("task {i}")).collect(), ..Config::default() });
+        s.mode = Mode::Large;
+        s.set_tab(6);
+        let [left, top, w, h] = s.rect();
+        let mut rt = rune::Runtime::new(s, view, CANVAS, rune::Env { system_dark: true, scale: 1.0 });
+        for _ in 0..60 { rt.frame(1.0 / 60.0); }
+        let before = rt.find("task-0-task 0").unwrap().1;
+        rt.wheel(left + w / 2.0, top + h / 2.0, -200.0);
+        for _ in 0..30 { rt.frame(1.0 / 60.0); }
+        let after = rt.find("task-0-task 0").unwrap().1;
+        assert!(after < before - 50.0, "task-0 stayed at {before} -> {after}");
     }
 
 }

@@ -9,6 +9,7 @@ use crate::system::{self, MediaCommand};
 
 /// The Shelf's tab id: a file drag over the Island opens it.
 pub const SHELF: u8 = 11;
+pub const SYSTEM: u8 = 12;
 
 pub fn view(s: &Island, layer: &mut Vec<El>) -> El {
     match s.tab {
@@ -21,6 +22,7 @@ pub fn view(s: &Island, layer: &mut Vec<El>) -> El {
         9 => notes(s),
         10 => stremflix(s),
         SHELF => shelf(s),
+        SYSTEM => monitor(s),
         _ => t3(s, layer),
     }
 }
@@ -127,7 +129,7 @@ fn workflows(s: &Island) -> El {
         );
     }
     col().key("workflows").w_full().h_full()
-        .child(el().key("workflow-scroll").w_full().grow(1.0).min_h(0.0).scroll(ScrollSpec { stick_bottom: false }).child(list))
+        .child(col().key("workflow-scroll").w_full().grow(1.0).min_h(0.0).scroll(ScrollSpec { stick_bottom: false }).child(list))
         .child(
             el().key("quick-app-strip").w_full().py(12.0)
                 .fill(fg.alpha(0.02 * fg.a)).border_sides([1.0, 0.0, 0.0, 0.0], fg.alpha(0.1 * fg.a))
@@ -215,14 +217,14 @@ fn overview(s: &Island) -> El {
 fn assistant(s: &Island) -> El {
     let (bg, fg) = (s.cfg.bg().alpha(1.0), s.cfg.text());
     if !s.asked {
-        let input = text_input(&s.ask, s.font(20.0, 400.0).lh(26.0)).key("userinput").label("Ask").w_full().grow(1.0).min_h(0.0)
+        let input = text_input(&s.ask, s.font(20.0, 400.0).lh(26.0)).key("userinput").label("Ask").w_full().grow(1.0)
             .color(fg).placeholder("Ask", fg.alpha(0.7 * fg.a))
             .on_edit(|s: &mut Island| &mut s.ask)
             .on_submit(|s: &mut Island, _| s.ask_ai())
             .on_input_key(tab_arrows);
         return col().key("ask").w_full().h_full().pt(16.0).px(24.0).pb(20.0).gap(8.0)
             .transition(Transition::blur_replace())
-            .child(el().w_full().grow(1.0).min_h(0.0).padding(8.0).scroll(ScrollSpec { stick_bottom: false }).child(input))
+            .child(col().w_full().grow(1.0).min_h(0.0).padding(8.0).scroll(ScrollSpec { stick_bottom: false }).child(input))
             .child(row().w_full().justify_end().child(button(s, "chatsubmit", "Ask", true).on_press(|s: &mut Island| s.ask_ai())));
     }
     let answer = match &s.answer {
@@ -232,7 +234,7 @@ fn assistant(s: &Island) -> El {
     el().key("result").w_full().h_full()
         .transition(Transition::blur_replace())
         .child(
-            el().key("answer-scroll").w_full().h_full().scroll(ScrollSpec { stick_bottom: false }).scroll_edge_fade(16.0)
+            col().key("answer-scroll").w_full().h_full().scroll(ScrollSpec { stick_bottom: false }).scroll_edge_fade(16.0)
                 .child(col().w_full().px(24.0).pt(28.0).pb(56.0).child(answer)),
         )
         .child(button(s, "ask-another", "Ask another", true).pin(None, None, Some(16.0), Some(15.0))
@@ -267,7 +269,7 @@ fn clipboard(s: &Island) -> El {
                 .child(copy),
         );
     }
-    el().key("clipboard").w_full().h_full().scroll(ScrollSpec { stick_bottom: false }).scroll_edge_fade(12.0).child(list)
+    col().key("clipboard").w_full().h_full().scroll(ScrollSpec { stick_bottom: false }).scroll_edge_fade(12.0).child(list)
 }
 
 // --- Tasks ---
@@ -304,7 +306,7 @@ fn tasks(s: &Island) -> El {
         );
     }
     col().key("tasks").w_full().h_full().px(16.0).pt(18.0).pb(14.0).gap(10.0)
-        .child(el().key("task-scroll").w_full().grow(1.0).min_h(0.0).scroll(ScrollSpec { stick_bottom: false }).child(list))
+        .child(col().key("task-scroll").w_full().grow(1.0).min_h(0.0).scroll(ScrollSpec { stick_bottom: false }).child(list))
         .child(
             row().key("task-input").w_full().gap(8.0).center_y()
                 .child(field(s, "new-task", &s.task, "New task...", |s: &mut Island| &mut s.task, add_task))
@@ -367,9 +369,9 @@ fn notes(s: &Island) -> El {
         .on_input_change(|s: &mut Island, _| s.note_edited());
     root.child(
         row().key("notes-body").w_full().grow(1.0).min_h(0.0).gap(12.0)
-            .child(el().key("note-scroll").w(160.0).h_full().scroll(ScrollSpec { stick_bottom: false }).scroll_edge_fade(8.0).child(list))
+            .child(col().key("note-scroll").w(160.0).h_full().scroll(ScrollSpec { stick_bottom: false }).scroll_edge_fade(8.0).child(list))
             .child(
-                el().key(format!("note-card-{}", s.note_index)).grow(1.0).min_w(0.0).h_full().px(14.0).py(10.0)
+                col().key(format!("note-card-{}", s.note_index)).grow(1.0).min_w(0.0).h_full().px(14.0).py(10.0)
                     .radius(round(18.0)).fill(fg.alpha(0.08 * fg.a)).border(1.0, fg.alpha(0.06 * fg.a))
                     .transition(Transition::opacity())
                     // The editor is only as tall as its text: a press on the rest of the card types into it too.
@@ -416,6 +418,104 @@ fn stremflix(s: &Island) -> El {
         );
     }
     root.child(el().key("stremflix-scroll").w_full().grow(1.0).min_h(0.0).scroll_x().scroll_edge_fade(10.0).child(cards))
+}
+
+// --- System ---
+
+fn monitor(s: &Island) -> El {
+    let fg = s.cfg.text();
+    let muted = fg.alpha(0.55 * fg.a);
+    let round = |r: f32| if s.cfg.win95() { 0.0 } else { r };
+    let st = s.stats.unwrap_or_default();
+    let ready = s.stats.is_some();
+    let pct = |used: u64, total: u64| if total == 0 { 0.0 } else { used as f32 / total as f32 * 100.0 };
+    // (key, title, icon, ring percent or None, value, detail, high is good)
+    let mut cards: Vec<(&str, &str, &'static rune::Icon, Option<f32>, String, String, bool)> = vec![
+        ("cpu", "CPU", &icons::CPU, Some(st.cpu), format!("{:.0}%", st.cpu), "Usage".into(), false),
+        ("memory", "Memory", &icons::MEMORY, Some(pct(st.mem_used, st.mem_total)), format!("{:.0}%", pct(st.mem_used, st.mem_total)), of_total(st.mem_used, st.mem_total), false),
+        ("storage", "Storage", &icons::HARD_DRIVE, Some(pct(st.disk_total.saturating_sub(st.disk_free), st.disk_total)), format!("{:.0}%", pct(st.disk_total.saturating_sub(st.disk_free), st.disk_total)), format!("{} free", bytes(st.disk_free)), false),
+        ("network", "Network", &icons::GLOBE, None, format!("{}/s", bytes(st.down)), format!("↑ {}/s", bytes(st.up)), false),
+    ];
+    if let Some(p) = s.percent {
+        cards.push(("battery", "Battery", &icons::BATTERY, Some(p as f32), format!("{p}%"), if s.charging { "Charging".into() } else { "On battery".into() }, true));
+    }
+    let mut tiles = Vec::new();
+    for (key, title, glyph, ring, value, detail, high_good) in cards {
+        let (value, detail) = if ready || key == "battery" { (value, detail) } else { ("—".into(), String::new()) };
+        let mut body = row().gap(10.0).center_y();
+        if let Some(p) = ring.filter(|_| ready || key == "battery") { body = body.child(gauge(s, p, high_good)) }
+        tiles.push(
+            col().key(format!("monitor-{key}")).role("group").label(format!("{title}: {value} {detail}")).w(0.0).grow(1.0).min_w(0.0).h(92.0).padding(10.0).gap(8.0)
+                .radius(round(14.0)).fill(fg.alpha(0.06 * fg.a))
+                .child(row().gap(6.0).center_y()
+                    .child(icon(glyph, 14.0).color(muted).a11y_hidden())
+                    .child(text(title).font(s.font(13.0, 600.0)).color(fg).a11y_hidden()))
+                .child(body.child(col().min_w(0.0).grow(1.0).gap(2.0)
+                    .child(text(value).font(s.font(17.0, 600.0).features("'tnum' 1")).color(fg).single_line().a11y_hidden())
+                    .child(text(detail).font(s.font(11.0, 400.0).features("'tnum' 1")).color(muted).truncate().a11y_hidden()))),
+        );
+    }
+    let mut root = col().key("monitor").w_full().h_full().px(16.0).pt(14.0).pb(14.0).gap(10.0);
+    let mut tiles = tiles.into_iter().peekable();
+    while tiles.peek().is_some() {
+        // Three to a row; a short last row keeps the same tile width.
+        let mut line = row().w_full().gap(10.0);
+        for i in 0..3 { line = line.child(tiles.next().unwrap_or_else(|| el().key(format!("monitor-gap-{i}")).w(0.0).grow(1.0).padding(10.0))) }
+        root = root.child(line);
+    }
+    root
+}
+
+/// A ring of dashes, lit clockwise from the top up to `percent`.
+fn gauge(s: &Island, percent: f32, high_good: bool) -> El {
+    const SIZE: f32 = 44.0;
+    const DASHES: usize = 24;
+    let fg = s.cfg.text();
+    let p = percent.clamp(0.0, 100.0);
+    let load = if high_good { 100.0 - p } else { p };
+    let lit = if load < 60.0 { rune::oklch(0.75, 0.17, 150.0) } else if load < 85.0 { rune::oklch(0.80, 0.15, 70.0) } else { rune::oklch(0.66, 0.20, 25.0) };
+    let on = (p / 100.0 * DASHES as f32).round() as usize;
+    let (c, r) = (SIZE / 2.0, SIZE / 2.0 - 3.0);
+    let step = std::f32::consts::TAU / DASHES as f32;
+    let mut shape = rune::Shape::new();
+    for i in 0..DASHES {
+        let a = -std::f32::consts::FRAC_PI_2 + i as f32 * step;
+        let arc: Vec<[f32; 2]> = [-0.25, 0.0, 0.25].iter().map(|t| { let b = a + t * step; [c + r * b.cos(), c + r * b.sin()] }).collect();
+        shape = shape.stroke(arc, 3.0, if i < on { lit } else { fg.alpha(0.15 * fg.a) });
+    }
+    el().size(SIZE, SIZE).center().a11y_hidden()
+        .child(rune::canvas(shape).size(SIZE, SIZE).absolute(0.0, 0.0))
+        .child(text(format!("{p:.0}%")).font(s.font(10.0, 600.0).features("'tnum' 1")).color(fg))
+}
+
+/// "29 / 48 GB", the unit said once when both share it.
+fn of_total(used: u64, total: u64) -> String {
+    let (u, t) = (bytes(used), bytes(total));
+    match (u.split_once(' '), t.split_once(' ')) {
+        (Some((n, a)), Some((_, b))) if a == b => format!("{n} / {t}"),
+        _ => format!("{u} / {t}"),
+    }
+}
+
+/// 1024-based, a decimal only under 10: "4.2 GB", "29 GB".
+fn bytes(n: u64) -> String {
+    let mut v = n as f64;
+    for unit in ["B", "KB", "MB", "GB"] {
+        if v < 1024.0 { return if unit == "B" || v >= 10.0 { format!("{v:.0} {unit}") } else { format!("{v:.1} {unit}") } }
+        v /= 1024.0;
+    }
+    format!("{v:.1} TB")
+}
+
+#[cfg(test)]
+mod monitor_tests {
+    #[test]
+    fn sizes_read_short() {
+        assert_eq!(super::bytes(512), "512 B");
+        assert_eq!(super::bytes(4_500_000_000), "4.2 GB");
+        assert_eq!(super::of_total(29 << 30, 48 << 30), "29 / 48 GB");
+        assert_eq!(super::of_total(900 << 20, 2 << 30), "900 MB / 2.0 GB");
+    }
 }
 
 // --- Shelf ---
@@ -571,7 +671,7 @@ fn t3(s: &Island, layer: &mut Vec<El>) -> El {
     root.child(selects)
         .child(model_row)
         .child(
-            el().key("t3-message-box").w_full().grow(1.0).min_h(0.0).px(12.0).py(8.0)
+            col().key("t3-message-box").w_full().grow(1.0).min_h(0.0).px(12.0).py(8.0)
                 .radius(if s.cfg.win95() { 0.0 } else { 10.0 })
                 .fill(fg.alpha(0.05 * fg.a)).border(1.0, fg.alpha(0.1 * fg.a))
                 .scroll(ScrollSpec { stick_bottom: false }).child(message),

@@ -85,6 +85,7 @@ fn island_spec() -> AppSpec<Island> {
         on_key: Some(Island::key),
         scenes: &[
             ("quick", |s| { s.cfg.standby = true; s.mode = island::Mode::Quick }),
+            ("charging", |s| { s.cfg.standby = true; s.mode = island::Mode::Quick; (s.percent, s.charging) = (Some(80), true) }),
             ("large", |s| s.mode = island::Mode::Large),
             ("search", |s| { s.mode = island::Mode::Large; s.set_tab(0) }),
             ("workflows", |s| { s.mode = island::Mode::Large; s.set_tab(1) }),
@@ -108,6 +109,13 @@ fn island_spec() -> AppSpec<Island> {
                 let entry = |id: &str, title: &str, position| stremflix::Entry { kind: "movie".into(), id: id.into(), title: title.into(), poster: None, position, duration: 100.0 };
                 s.stremflix.entries = Some(Ok(vec![entry("a", "Big Buck Bunny", 40.0), entry("b", "Sintel", 80.0), entry("c", "A Very Long Title That Truncates", 10.0), entry("d", "Tears of Steel", 60.0), entry("e", "Elephants Dream", 5.0)]));
             }),
+            ("system", |s| {
+                s.mode = island::Mode::Large;
+                s.set_tab(tabs::SYSTEM);
+                s.percent = Some(57);
+                const GB: u64 = 1 << 30;
+                s.stats = Some(system::Stats { cpu: 7.0, mem_used: 29 * GB, mem_total: 48 * GB, disk_free: 810 * GB, disk_total: 990 * GB, down: 15_200, up: 3_100 });
+            }),
             ("shelf-drop", |s| { s.mode = island::Mode::Large; s.set_tab(tabs::SHELF); s.dropping = true }),
             ("shelf", |s| { s.mode = island::Mode::Large; s.set_tab(tabs::SHELF); s.cfg.shelf = vec!["/home/me/Report final.pdf".into(), "/home/me/photo.png".into()] }),
             ("t3-device", |s| {
@@ -127,6 +135,12 @@ fn island_spec() -> AppSpec<Island> {
                 let mut tx = rune::Tx::default();
                 s.set_track(Some(system::Track { name: "A Very Long Song Title That Scrolls".into(), artist: "Artist".into(), playing: true, ..Default::default() }), &mut tx);
             }),
+            ("playing-progress", |s| {
+                let mut tx = rune::Tx::default();
+                s.set_track(Some(system::Track { name: "Song".into(), artist: "Artist".into(), playing: true, progress: Some((80, 200)), ..Default::default() }), &mut tx);
+                s.set_capture(None, Some(true), &mut tx);
+                s.poll(4.0, &mut tx); // the mic alert ends; its dot stays
+            }),
             ("overview-playing", |s| {
                 s.mode = island::Mode::Large;
                 s.set_tab(2);
@@ -134,6 +148,7 @@ fn island_spec() -> AppSpec<Island> {
                 s.set_track(Some(system::Track { name: "Song".into(), artist: "Artist".into(), playing: true, ..Default::default() }), &mut tx);
             }),
             ("camera", |s| { let mut tx = rune::Tx::default(); s.set_capture(Some(true), None, &mut tx); }),
+            ("bluetooth-off", |s| { let mut tx = rune::Tx::default(); s.set_bluetooth(true, &mut tx); s.set_bluetooth(false, &mut tx); s.set_bluetooth(false, &mut tx); }),
             ("notch", |s| { s.cfg.notch_mode = true; s.placement = island::Placement::of(&s.cfg, (1920.0, 1080.0)) }),
             ("mini-notch", |s| { s.cfg.notch_mode = true; s.cfg.notch_mini = true; s.placement = island::Placement::of(&s.cfg, (1920.0, 1080.0)) }),
             ("win95", |s| { s.cfg.set_theme("win95"); s.kit = island::kit(&s.cfg); s.mode = island::Mode::Large }),
