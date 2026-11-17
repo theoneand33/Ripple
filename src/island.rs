@@ -20,11 +20,13 @@ use crate::system::{self, MediaCommand, Track};
 use crate::{icons, stremflix, t3, tabs};
 
 /// The Island's window, in points: the largest Island at its hover scale, its tab dock, plus their shadows.
-pub const CANVAS: (f32, f32) = (560.0, 420.0);
+pub const CANVAS: (f32, f32) = (620.0, 460.0);
 /// Room kept around the Island inside the window for its shadow and hover scale.
 const PAD: f32 = 30.0;
 /// The tab dock under the Large Island: its height, the gap above it, one button and the space between.
 const DOCK: (f32, f32, f32, f32) = (44.0, 12.0, 32.0, 6.0);
+/// Room between the Large Island's edge and its tab's content.
+const LARGE_EDGE: f32 = 12.0;
 /// Framer's spring (stiffness 400, damping 40, mass 2.5) as duration and bounce.
 pub const SPRING: Spring = Spring::new(0.5, 0.3);
 
@@ -440,7 +442,7 @@ impl Island {
         let alerting = self.alert().is_some();
         let track = self.shows_track();
         let mut w = match self.mode {
-            Mode::Large => match self.tab { 1 | 9 | 10 | tabs::SHELF => 480.0, 0 => 405.0, _ => 380.0 },
+            Mode::Large => match self.tab { 1 | 9 | 10 | tabs::SHELF => 520.0, 0 => 445.0, _ => 420.0 },
             _ if alerting => if notch { self.notch_glance_width() } else { 160.0 }, // fits icon + "Microphone"
             _ if track => self.now_playing_width(),
             _ if notch => if self.mode == Mode::Quick || self.cfg.show_info_idle { self.notch_glance_width() } else { 210.0 },
@@ -448,7 +450,7 @@ impl Island {
         };
         if notch && track && !alerting && self.mode != Mode::Large { w = (w + 40.0).max(300.0) }
         let h = match self.mode {
-            Mode::Large => self.notch_inset() + match self.tab { 6 | 8 | 9 | 10 => 250.0, 0 => 120.0, 1 => 210.0, _ => 190.0 },
+            Mode::Large => self.notch_inset() + match self.tab { 6 | 8 | 9 | 10 => 290.0, 0 => 160.0, 1 => 250.0, _ => 230.0 },
             _ => if notch { 34.0 } else { 40.0 },
         };
         (w, h)
@@ -1212,7 +1214,7 @@ pub fn view(s: &Island, _: &mut Cx<Island>) -> El {
         // Tabs slide the way the swipe went; the old one leaves with this build's direction.
         let push = Transition::push(if s.tab_dir < 0 { Edge::Leading } else { Edge::Trailing });
         island = island.child(
-            el().key("tabs").pin(Some(0.0), Some(inset), Some(0.0), Some(0.0))
+            el().key("tabs").pin(Some(LARGE_EDGE), Some(inset + LARGE_EDGE), Some(LARGE_EDGE), Some(LARGE_EDGE))
                 .transition(Transition::blur_replace())
                 .child_exit(push)
                 .child(
@@ -1462,12 +1464,12 @@ mod tests {
         let mut s = island(Config { standby: false, ..Config::default() });
         assert_eq!(s.size(), (140.0, 40.0));
         s.mode = Mode::Large;
-        for (tab, size) in [(0, (405.0, 120.0)), (1, (480.0, 210.0)), (2, (380.0, 190.0)), (6, (380.0, 250.0)), (8, (380.0, 250.0)), (9, (480.0, 250.0))] {
+        for (tab, size) in [(0, (445.0, 160.0)), (1, (520.0, 250.0)), (2, (420.0, 230.0)), (6, (420.0, 290.0)), (8, (420.0, 290.0)), (9, (520.0, 290.0))] {
             s.tab = tab;
             assert_eq!(s.size(), size);
         }
         s.cfg.notch_mode = true;
-        assert_eq!(s.size(), (480.0, 284.0));
+        assert_eq!(s.size(), (520.0, 324.0));
         s.mode = Mode::Still;
         assert_eq!(s.size(), (210.0, 34.0));
         // The compact notch glance fits its wider half on each side of the notch.
