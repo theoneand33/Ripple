@@ -18,8 +18,11 @@ pub struct Passthrough {
     /// The region last applied, in device pixels inside the window.
     applied: Option<[i32; 4]>,
     #[cfg(target_os = "linux")]
-    /// The X connection and its default screen's number.
-    x11: Option<(x11rb::rust_connection::RustConnection, usize)>,
+    /// The X connection and its screen's `_NET_WM_CM_Sn` atom, owned while a compositor runs.
+    x11: Option<(x11rb::rust_connection::RustConnection, u32)>,
+    #[cfg(target_os = "linux")]
+    /// Whether a compositor ran when `applied` was set.
+    composited: bool,
     #[cfg(not(target_os = "linux"))]
     through: Option<bool>,
 }
@@ -48,11 +51,13 @@ impl Passthrough {
         #[cfg(target_os = "linux")]
         {
             let _ = (window_at, tx);
-            if self.applied == Some(px) { return }
-            if self.x11.is_none() { self.x11 = x11rb::connect(None).ok() }
-            let Some((conn, screen)) = &self.x11 else { return };
+            if self.x11.is_none() { self.x11 = connect() }
+            let Some((conn, cm)) = &self.x11 else { return };
+            // Checked every frame, not only on a rect change, as a compositor can start or stop while idle.
+            let Ok(composited) = composited(conn, *cm) else { return };
+            if self.applied == Some(px) && self.composited == composited { return }
             let Ok(Some(id)) = window.with_raw_handle(x11_window) else { return };
-            if set_shape(conn, *screen, id, px).is_ok() { self.applied = Some(px) }
+            if set_shape(conn, id, px, composited).is_ok() { (self.applied, self.composited) = (Some(px), composited) }
         }
         #[cfg(not(target_os = "linux"))]
         {
@@ -81,20 +86,33 @@ fn x11_window(handle: rune::raw_window_handle::WindowHandle<'_>) -> Option<u32> 
     }
 }
 
+#[cfg(target_os = "linux")]
+fn connect() -> Option<(x11rb::rust_connection::RustConnection, u32)> {
+    use x11rb::protocol::xproto::ConnectionExt as _;
+    let (conn, screen) = x11rb::connect(None).ok()?;
+    let cm = conn.intern_atom(false, format!("_NET_WM_CM_S{screen}").as_bytes()).ok()?.reply().ok()?.atom;
+    Some((conn, cm))
+}
+
+/// A compositing manager owns this selection (EWMH).
+#[cfg(target_os = "linux")]
+fn composited(conn: &x11rb::rust_connection::RustConnection, cm: u32) -> Result<bool, Box<dyn std::error::Error>> {
+    use x11rb::protocol::xproto::ConnectionExt as _;
+    Ok(conn.get_selection_owner(cm)?.reply()?.owner != x11rb::NONE)
+}
+
 /// ShapeInput always. Under a compositor the window keeps its full transparent bounds, so
 /// nothing redraws; without one, ShapeBounding cuts away what would show black.
 #[cfg(target_os = "linux")]
-fn set_shape(conn: &x11rb::rust_connection::RustConnection, screen: usize, window: u32, [x, y, w, h]: [i32; 4]) -> Result<(), Box<dyn std::error::Error>> {
+fn set_shape(conn: &x11rb::rust_connection::RustConnection, window: u32, [x, y, w, h]: [i32; 4], composited: bool) -> Result<(), Box<dyn std::error::Error>> {
     use x11rb::connection::Connection;
     use x11rb::protocol::shape::{ConnectionExt as _, SK, SO};
-    use x11rb::protocol::xproto::{ClipOrdering, ConnectionExt as _, Rectangle};
+    use x11rb::protocol::xproto::{ClipOrdering, Rectangle};
     use x11rb::NONE;
     let clamp = |v: i32| v.clamp(0, i32::from(u16::MAX)) as u16;
     let rect = Rectangle { x: x.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16, y: y.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16, width: clamp(w), height: clamp(h) };
     conn.shape_rectangles(SO::SET, SK::INPUT, ClipOrdering::UNSORTED, window, 0, 0, &[rect])?.check()?;
-    // A compositing manager owns this selection (EWMH); checked per change, as one can start or stop.
-    let cm = conn.intern_atom(false, format!("_NET_WM_CM_S{screen}").as_bytes())?.reply()?.atom;
-    if conn.get_selection_owner(cm)?.reply()?.owner == NONE {
+    if !composited {
         // shortcut: a rectangle, so its corners and hover margin still show black; use a pixmap mask if that shows.
         conn.shape_rectangles(SO::SET, SK::BOUNDING, ClipOrdering::UNSORTED, window, 0, 0, &[rect])?.check()?;
     } else {
