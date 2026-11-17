@@ -91,6 +91,7 @@ jobs:
             target/debug/ripple --window island --scene "$scene" --snap "out/smoke-scene-$scene.png"
           done
           target/debug/ripple --window settings --size 520x2600 --snap out/smoke-scene-settings.png
+          target/debug/ripple --window settings --scene panel-ai --size 520x900 --snap out/smoke-scene-panel-ai.png
 
       - name: Build
         run: cargo build --release --locked --target ${{ matrix.target }}

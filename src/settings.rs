@@ -16,6 +16,8 @@ pub struct Settings {
     open: Option<&'static str>,
     /// The tab row being dragged, and how far it has moved.
     dragging: Option<(usize, f32)>,
+    /// The tab whose settings page is showing.
+    pub page: Option<u8>,
     bg_color: TextEdit,
     text_color: TextEdit,
     bg_image: TextEdit,
@@ -58,6 +60,7 @@ impl Settings {
             screens: screens.iter().map(|s| s.name.clone()).collect(),
             open: None,
             dragging: None,
+            page: None,
             island,
             store,
             cfg,
@@ -219,17 +222,143 @@ fn drag_tab(s: &mut Settings, from: usize, d: &mut Drag, tx: &mut Tx) {
     }
 }
 
-pub fn view(s: &Settings, cx: &mut Cx<Settings>) -> El {
-    let k = kit(&s.cfg);
-    let mut layer = Vec::new();
+/// Tabs with their own settings page.
+const PANELS: [u8; 5] = [0, 1, 2, 4, 8];
+
+/// The settings for one tab's panel, as sections.
+fn panel(s: &Settings, k: &Kit, layer: &mut Vec<El>, id: u8) -> Vec<El> {
+    let cfg = &s.cfg;
+    let fg = cfg.text().alpha(1.0);
+    let mut sections = Vec::new();
+    if id == 0 {
+        // Browser search
+        let engines: Vec<(&str, &str)> = SEARCH_ENGINES.iter().map(|e| (e.0, e.1)).collect();
+        sections.push(section(s, "search", "Browser Search", vec![
+            setting(s, "Search engine", choice(s, k, layer, "engine", "Search engine", &engines, &cfg.search_engine, |c, v| c.search_engine = v.into())),
+        ]));
+    }
+    if id == 2 {
+        // Weather
+        sections.push(section(s, "weather", "Weather", vec![
+            setting(s, "Location", TextInput::new(&s.location).label("Location").placeholder("City, ST, Country").width(Some(200.0))
+                .on_edit(|s: &mut Settings| &mut s.location).on_change(|s: &mut Settings, _| { let v = s.location.text.clone(); s.save(|c| c.location = v) }).build(k)),
+            setting(s, "Unit", choice(s, k, layer, "unit", "Unit", &[("f", "Fahrenheit (°F)"), ("c", "Celsius (°C)")], &cfg.weather_unit, |c, v| c.weather_unit = v.into())),
+        ]));
+    }
+    if id == 1 {
+        // Quick apps
+        let mut apps = vec![
+            row().key("add-app").w_full().gap(8.0).center_y()
+                .child(TextInput::new(&s.new_app).label("Add app").placeholder("Add app, like Apple Music")
+                    .on_edit(|s: &mut Settings| &mut s.new_app)
+                    .on_change(|s: &mut Settings, _| s.picked_app = None)
+                    .on_submit(|s: &mut Settings, _| s.add_quick_app())
+                    .build(k).grow(1.0))
+                .child(IconButton::new(&icons::PLUS).label("Add app").on_press(Settings::add_quick_app).build(k)),
+        ];
+        let suggestions = s.suggestions();
+        if !suggestions.is_empty() {
+            let list = suggestions.into_iter().enumerate().fold(col().key("suggestions").w_full().padding(4.0).radius(12.0).fill(fg.alpha(0.05)).border(1.0, fg.alpha(0.13)), |list, (i, app)| {
+                list.child(
+                    col().key(format!("suggestion-{i}")).role("button").label(app.name.clone()).focusable(true).w_full().px(12.0).py(6.0).radius(8.0).hover(fg.alpha(0.07))
+                        .child(text(&app.name).font(font(cfg, 13.0, 600.0)).color(fg))
+                        .child(text(&app.launch).font(font(cfg, 11.0, 400.0)).color(fg.alpha(0.4)).truncate())
+                        .on_press(move |s: &mut Settings| { s.new_app.replace_text(&app.name); s.picked_app = Some(app.clone()) }),
+                )
+            });
+            apps.push(list);
+        }
+        for (i, edit) in s.app_names.iter().enumerate() {
+            apps.push(
+                row().key(format!("app-{i}")).w_full().gap(8.0).center_y()
+                    .child(TextInput::new(edit).label(format!("Quick app {}", i + 1)).plain()
+                        .on_edit(app_name_at(i))
+                        .on_change(move |s: &mut Settings, _| {
+                            let name = s.app_names[i].text.clone();
+                            s.save(|c| if let Some(a) = c.quick_apps.get_mut(i) { *a = QuickApp { launch: name.clone(), name } });
+                        })
+                        .build(k).grow(1.0))
+                    .child(IconButton::new(&icons::TRASH).label(format!("Remove quick app {}", i + 1))
+                        .on_press(move |s: &mut Settings| { s.save(|c| { if i < c.quick_apps.len() { c.quick_apps.remove(i); } }); s.reset_app_names() }).build(k)),
+            );
+        }
+        sections.push(section(s, "quick-apps", "Quick apps", apps));
+    }
+    if id == 4 {
+        // Integrations
+        let providers = [("groq", "Groq"), ("openrouter", "OpenRouter")];
+        sections.push(section(s, "integrations", "Integrations", vec![
+            setting(s, "AI provider", {
+                let labels: Vec<&str> = providers.iter().map(|p| p.1).collect();
+                Select::new("provider", &labels).label("AI provider").width(190.0)
+                    .current(providers.iter().find(|p| p.0 == cfg.ai_provider).map(|p| p.1))
+                    .open(s.open == Some("provider")).on_toggle(toggle_open("provider")).on_close(close)
+                    .on_choose(move |s: &mut Settings, label: &str, _: &mut Tx| {
+                        s.open = None;
+                        let Some(&(provider, _)) = providers.iter().find(|p| p.1 == label) else { return };
+                        s.save(|c| { c.ai_provider = provider.into(); c.ai_model = default_model(provider).into() });
+                        s.ai_model.replace_text(default_model(provider));
+                    })
+                    .build(k, layer)
+            }),
+            col().w_full().gap(6.0)
+                .child(text("AI model").font(font(cfg, 14.0, 500.0)).color(fg.alpha(0.85)))
+                .child(TextInput::new(&s.ai_model).label("AI model").placeholder(default_model(&cfg.ai_provider))
+                    .on_edit(|s: &mut Settings| &mut s.ai_model).on_change(|s: &mut Settings, _| { let v = s.ai_model.text.clone(); s.save(|c| c.ai_model = v) }).build(k)),
+            col().w_full().gap(6.0)
+                .child(text("API key").font(font(cfg, 14.0, 500.0)).color(fg.alpha(0.85)))
+                .child(TextInput::new(&s.api_key).label("API key").secure().placeholder(if cfg.ai_provider == "groq" { "gsk_..." } else { "sk-or-..." })
+                    .on_edit(|s: &mut Settings| &mut s.api_key).on_change(|s: &mut Settings, _| { let v = s.api_key.text.clone(); s.save(|c| c.api_key = v) }).build(k)),
+        ]));
+    }
+    if id == 8 {
+        // T3 Code devices
+        let mut t3 = vec![text("Token: run `t3 auth session issue --token-only` on that device.").font(font(cfg, 12.0, 400.0)).color(fg.alpha(0.6))];
+        for (i, d) in cfg.t3_devices.iter().enumerate() {
+            t3.push(setting(s, d.label(), IconButton::new(&icons::TRASH).label(format!("Remove {}", d.label()))
+                .on_press(move |s: &mut Settings| s.save(|c| { if i < c.t3_devices.len() { c.t3_devices.remove(i); } })).build(k)));
+        }
+        t3.push(TextInput::new(&s.t3_name).label("Device name").placeholder("Name (e.g. Laptop)").on_edit(|s: &mut Settings| &mut s.t3_name).build(k));
+        t3.push(TextInput::new(&s.t3_url).label("Device URL").placeholder("http://127.0.0.1:3773").on_edit(|s: &mut Settings| &mut s.t3_url).build(k));
+        t3.push(TextInput::new(&s.t3_token).label("Bearer token").secure().placeholder("Bearer token").on_edit(|s: &mut Settings| &mut s.t3_token).on_submit(|s: &mut Settings, _| s.add_t3_device()).build(k));
+        t3.push(row().child(Button::new("Add device").variant(ButtonVariant::Contrast).disabled(!s.t3_addable()).on_press(Settings::add_t3_device).build(k)));
+        sections.push(section(s, "t3", "T3 Code devices", t3));
+    }
+    if id == 1 {
+        // Workflows
+        let mut workflows = vec![
+            text("Workflow name").font(font(cfg, 14.0, 500.0)).color(fg.alpha(0.8)),
+            TextInput::new(&s.workflow_name).label("Workflow name").placeholder("e.g. Work Tools").on_edit(|s: &mut Settings| &mut s.workflow_name).build(k),
+            text("Apps or URLs, comma separated").font(font(cfg, 14.0, 500.0)).color(fg.alpha(0.8)).mt(10.0),
+            TextArea::new(&s.workflow_urls).label("Apps or URLs").placeholder("e.g. Spotify, docs.google.com").rows(2).on_edit(|s: &mut Settings| &mut s.workflow_urls).build(k),
+            row().child(Button::new("Save workflow").variant(ButtonVariant::Contrast).on_press(Settings::add_workflow).build(k)),
+        ];
+        for (i, wf) in cfg.workflows.iter().enumerate() {
+            workflows.push(
+                row().key(format!("workflow-{i}-{}", wf.name)).w_full().py(8.0).gap(10.0).center_y().justify_between()
+                    .border_sides([0.0, 0.0, 1.0, 0.0], fg.alpha(0.05))
+                    .child(col().shrink().min_w(0.0)
+                        .child(text(&wf.name).font(font(cfg, 14.0, 600.0)).color(fg).truncate())
+                        .child(text(format!("{} items", wf.urls.len())).font(font(cfg, 11.0, 400.0)).color(fg.alpha(0.6))))
+                    .child(Button::new("Remove").variant(ButtonVariant::Ghost).icon(&icons::TRASH)
+                        .on_press(move |s: &mut Settings| s.save(|c| { if i < c.workflows.len() { c.workflows.remove(i); } })).build(k)),
+            );
+        }
+        sections.push(section(s, "workflows", "Workflows", workflows));
+    }
+    sections
+}
+
+/// The main settings page.
+fn home(s: &Settings, k: &Kit, layer: &mut Vec<El>) -> Vec<El> {
     let cfg = &s.cfg;
     let fg = cfg.text().alpha(1.0);
     let mut sections = Vec::new();
 
     // General
-    let mut general = vec![setting(s, "Clock format", choice(s, &k, &mut layer, "clock", "Clock format", &[("12", "12-hour"), ("24", "24-hour")], if cfg.hour12 { "12" } else { "24" }, |c, v| c.hour12 = v == "12"))];
+    let mut general = vec![setting(s, "Clock format", choice(s, k, layer, "clock", "Clock format", &[("12", "12-hour"), ("24", "24-hour")], if cfg.hour12 { "12" } else { "24" }, |c, v| c.hour12 = v == "12"))];
     if !cfg!(target_os = "macos") {
-        general.push(setting(s, "Launch at login", switch(&k, "Launch at login", cfg.auto_launch, |c| {
+        general.push(setting(s, "Launch at login", switch(k, "Launch at login", cfg.auto_launch, |c| {
             c.auto_launch = !c.auto_launch;
             let on = c.auto_launch;
             std::thread::spawn(move || crate::system::set_auto_launch(on));
@@ -240,14 +369,14 @@ pub fn view(s: &Settings, cx: &mut Cx<Settings>) -> El {
         general.push(setting(s, "Display", Select::new("display", &s.screens).label("Display").width(190.0).current(Some(&current))
             .open(s.open == Some("display")).on_toggle(toggle_open("display")).on_close(close)
             .on_choose(|s: &mut Settings, name: &str, _: &mut Tx| { s.open = None; let name = name.to_string(); s.save(|c| c.display = name) })
-            .build(&k, &mut layer)));
+            .build(k, layer)));
     }
     sections.push(section(s, "general", "General", general));
 
     // Tabs
     let mut tabs = vec![
         text("Drag to reorder, click the eye to hide").font(font(cfg, 12.0, 400.0)).color(fg.alpha(0.5)),
-        setting(s, "Always open on the starred tab", switch(&k, "Always open on the starred tab", cfg.open_default_tab, |c| c.open_default_tab = !c.open_default_tab).a11y_hidden()),
+        setting(s, "Always open on the starred tab", switch(k, "Always open on the starred tab", cfg.open_default_tab, |c| c.open_default_tab = !c.open_default_tab).a11y_hidden()),
     ];
     let last = cfg.tab_order.len().saturating_sub(1);
     for (i, &id) in cfg.tab_order.iter().enumerate() {
@@ -269,175 +398,87 @@ pub fn view(s: &Settings, cx: &mut Cx<Settings>) -> El {
                 .child(icon(&icons::GRIP, 16.0).color(fg.alpha(0.3)))
                 .child(icon(icons::tab(id), 16.0).color(fg))
                 .child(text(def.name).font(font(cfg, 14.0, 500.0)).color(fg).grow(1.0))
+                .child(if PANELS.contains(&id) {
+                    IconButton::new(&icons::SETTINGS).label(format!("{} settings", def.name))
+                        .on_press(move |s: &mut Settings| { s.open = None; s.page = Some(id) }).build(k)
+                } else { el().size(32.0, 32.0).a11y_hidden() })
                 .child(IconButton::new(if is_default { &icons::STAR_FILLED } else { &icons::STAR }).label(format!("Make {} the default tab", def.name))
-                    .on_press(move |s: &mut Settings| s.save(|c| c.default_tab = id)).build(&k).opacity(if is_default { 1.0 } else { 0.4 }))
+                    .on_press(move |s: &mut Settings| s.save(|c| c.default_tab = id)).build(k).opacity(if is_default { 1.0 } else { 0.4 }))
                 .child(IconButton::new(if hidden { &icons::EYE_OFF } else { &icons::EYE }).label(format!("{} {}", if hidden { "Show" } else { "Hide" }, def.name))
-                    .on_press(move |s: &mut Settings| s.save(|c| c.toggle_tab(id))).build(&k))
+                    .on_press(move |s: &mut Settings| s.save(|c| c.toggle_tab(id))).build(k))
                 .child(IconButton::new(&icons::CHEVRON_UP).label(format!("Move {} up", def.name)).disabled(i == 0)
-                    .on_press(move |s: &mut Settings| s.save(|c| c.move_tab(i, i.saturating_sub(1)))).build(&k))
+                    .on_press(move |s: &mut Settings| s.save(|c| c.move_tab(i, i.saturating_sub(1)))).build(k))
                 .child(IconButton::new(&icons::CHEVRON_DOWN).label(format!("Move {} down", def.name)).disabled(i == last)
-                    .on_press(move |s: &mut Settings| s.save(|c| c.move_tab(i, i + 1))).build(&k)),
+                    .on_press(move |s: &mut Settings| s.save(|c| c.move_tab(i, i + 1))).build(k)),
         );
     }
     sections.push(section(s, "tabs", "Tabs", tabs));
 
     // Island style
     let mut style = vec![
-        setting(s, "Notch mode", switch(&k, "Notch mode", cfg.notch_mode, |c| c.notch_mode = !c.notch_mode).a11y_hidden()),
-        setting(s, "Theme", choice(s, &k, &mut layer, "theme", "Theme", &[("none", "Default"), ("sleek-black", "Sleek Black"), ("win95", "Windows 95"), ("glass", "Glass")], &cfg.theme, |c, v| c.set_theme(v))),
+        setting(s, "Notch mode", switch(k, "Notch mode", cfg.notch_mode, |c| c.notch_mode = !c.notch_mode).a11y_hidden()),
+        setting(s, "Theme", choice(s, k, layer, "theme", "Theme", &[("none", "Default"), ("sleek-black", "Sleek Black"), ("win95", "Windows 95"), ("glass", "Glass")], &cfg.theme, |c, v| c.set_theme(v))),
     ];
     if cfg.notch_mode {
-        style.insert(1, setting(s, "Mini notch", switch(&k, "Mini notch", cfg.notch_mini, |c| c.notch_mini = !c.notch_mini).a11y_hidden()));
+        style.insert(1, setting(s, "Mini notch", switch(k, "Mini notch", cfg.notch_mini, |c| c.notch_mini = !c.notch_mini).a11y_hidden()));
         // Auto size only sizes around a physical notch.
-        if !cfg.notch_mini { style.insert(2, setting(s, "Auto size", switch(&k, "Auto size", cfg.notch_auto_size, |c| c.notch_auto_size = !c.notch_auto_size).a11y_hidden())) }
+        if !cfg.notch_mini { style.insert(2, setting(s, "Auto size", switch(k, "Auto size", cfg.notch_auto_size, |c| c.notch_auto_size = !c.notch_auto_size).a11y_hidden())) }
     }
     let position = POSITIONS.iter().chain([("free", "Free placement")].iter())
         .fold(RadioGroup::new().label("Position"), |group, &(value, label)| {
             group.item(RadioItem::new(label, cfg.position_mode == value).on_select(move |s: &mut Settings| s.save(|c| c.position_mode = value.into())))
         });
-    style.push(col().key("position").w_full().gap(8.0).padding(14.0).radius(16.0).fill(fg.alpha(0.03)).border(1.0, fg.alpha(0.08)).child(position.build(&k)));
+    style.push(col().key("position").w_full().gap(8.0).padding(14.0).radius(16.0).fill(fg.alpha(0.03)).border(1.0, fg.alpha(0.08)).child(position.build(k)));
     if cfg.position_mode == "free" {
         style.push(setting(s, &format!("Position X ({:.1}%)", cfg.island_x), slider(s, "island-x", "Position X", (0.0, 100.0, 0.1), |c| c.island_x, |c, v| c.island_x = v)));
         style.push(setting(s, &format!("Position Y ({}px)", cfg.island_y.round()), slider(s, "island-y", "Position Y", (0.0, 500.0, 1.0), |c| c.island_y, |c, v| c.island_y = v)));
     }
-    style.push(setting(s, "Island border", switch(&k, "Island border", cfg.island_border, |c| c.island_border = !c.island_border).a11y_hidden()));
-    style.push(setting(s, "Hide when inactive", switch(&k, "Hide when inactive", cfg.hide_inactive, |c| c.hide_inactive = !c.hide_inactive).a11y_hidden()));
+    style.push(setting(s, "Island border", switch(k, "Island border", cfg.island_border, |c| c.island_border = !c.island_border).a11y_hidden()));
+    style.push(setting(s, "Hide when inactive", switch(k, "Hide when inactive", cfg.hide_inactive, |c| c.hide_inactive = !c.hide_inactive).a11y_hidden()));
     sections.push(section(s, "style", "Island style", style));
 
     // Colours
     sections.push(section(s, "colors", "Colors and background", vec![
         setting(s, "Island color", TextInput::new(&s.bg_color).label("Island color").placeholder("#000000").width(Some(160.0))
-            .on_edit(|s: &mut Settings| &mut s.bg_color).on_change(|s: &mut Settings, _| { let v = s.bg_color.text.clone(); s.save(|c| c.bg_color = v) }).build(&k)),
+            .on_edit(|s: &mut Settings| &mut s.bg_color).on_change(|s: &mut Settings, _| { let v = s.bg_color.text.clone(); s.save(|c| c.bg_color = v) }).build(k)),
         setting(s, "Text color", TextInput::new(&s.text_color).label("Text color").placeholder("#FAFAFA").width(Some(160.0))
-            .on_edit(|s: &mut Settings| &mut s.text_color).on_change(|s: &mut Settings, _| { let v = s.text_color.text.clone(); s.save(|c| c.text_color = v) }).build(&k)),
+            .on_edit(|s: &mut Settings| &mut s.text_color).on_change(|s: &mut Settings, _| { let v = s.text_color.text.clone(); s.save(|c| c.text_color = v) }).build(k)),
         col().w_full().gap(6.0)
             .child(text("Background image URL").font(font(cfg, 14.0, 500.0)).color(fg.alpha(0.85)))
             .child(TextInput::new(&s.bg_image).label("Background image URL").placeholder("https://...")
-                .on_edit(|s: &mut Settings| &mut s.bg_image).on_change(|s: &mut Settings, _| { let v = s.bg_image.text.clone(); s.save(|c| c.bg_image = v) }).build(&k)),
+                .on_edit(|s: &mut Settings| &mut s.bg_image).on_change(|s: &mut Settings, _| { let v = s.bg_image.text.clone(); s.save(|c| c.bg_image = v) }).build(k)),
     ]));
 
     // Features
     sections.push(section(s, "features", "Features", vec![
-        setting(s, "Low battery alerts", switch(&k, "Low battery alerts", cfg.battery_alerts, |c| c.battery_alerts = !c.battery_alerts).a11y_hidden()),
-        setting(s, "Standby mode", switch(&k, "Standby mode", cfg.standby, |c| c.standby = !c.standby).a11y_hidden()),
-        setting(s, "Large standby mode", switch(&k, "Large standby mode", cfg.large_standby, |c| c.large_standby = !c.large_standby).a11y_hidden()),
-        setting(s, "Show info when idle", switch(&k, "Show info when idle", cfg.show_info_idle, |c| c.show_info_idle = !c.show_info_idle).a11y_hidden()),
+        setting(s, "Low battery alerts", switch(k, "Low battery alerts", cfg.battery_alerts, |c| c.battery_alerts = !c.battery_alerts).a11y_hidden()),
+        setting(s, "Standby mode", switch(k, "Standby mode", cfg.standby, |c| c.standby = !c.standby).a11y_hidden()),
+        setting(s, "Large standby mode", switch(k, "Large standby mode", cfg.large_standby, |c| c.large_standby = !c.large_standby).a11y_hidden()),
+        setting(s, "Show info when idle", switch(k, "Show info when idle", cfg.show_info_idle, |c| c.show_info_idle = !c.show_info_idle).a11y_hidden()),
     ]));
+    sections
+}
 
-    // Browser search
-    let engines: Vec<(&str, &str)> = SEARCH_ENGINES.iter().map(|e| (e.0, e.1)).collect();
-    sections.push(section(s, "search", "Browser Search", vec![
-        setting(s, "Search engine", choice(s, &k, &mut layer, "engine", "Search engine", &engines, &cfg.search_engine, |c, v| c.search_engine = v.into())),
-    ]));
-
-    // Weather
-    sections.push(section(s, "weather", "Weather", vec![
-        setting(s, "Location", TextInput::new(&s.location).label("Location").placeholder("City, ST, Country").width(Some(200.0))
-            .on_edit(|s: &mut Settings| &mut s.location).on_change(|s: &mut Settings, _| { let v = s.location.text.clone(); s.save(|c| c.location = v) }).build(&k)),
-        setting(s, "Unit", choice(s, &k, &mut layer, "unit", "Unit", &[("f", "Fahrenheit (°F)"), ("c", "Celsius (°C)")], &cfg.weather_unit, |c, v| c.weather_unit = v.into())),
-    ]));
-
-    // Quick apps
-    let mut apps = vec![
-        row().key("add-app").w_full().gap(8.0).center_y()
-            .child(TextInput::new(&s.new_app).label("Add app").placeholder("Add app, like Apple Music")
-                .on_edit(|s: &mut Settings| &mut s.new_app)
-                .on_change(|s: &mut Settings, _| s.picked_app = None)
-                .on_submit(|s: &mut Settings, _| s.add_quick_app())
-                .build(&k).grow(1.0))
-            .child(IconButton::new(&icons::PLUS).label("Add app").on_press(Settings::add_quick_app).build(&k)),
-    ];
-    let suggestions = s.suggestions();
-    if !suggestions.is_empty() {
-        let list = suggestions.into_iter().enumerate().fold(col().key("suggestions").w_full().padding(4.0).radius(12.0).fill(fg.alpha(0.05)).border(1.0, fg.alpha(0.13)), |list, (i, app)| {
-            list.child(
-                col().key(format!("suggestion-{i}")).role("button").label(app.name.clone()).focusable(true).w_full().px(12.0).py(6.0).radius(8.0).hover(fg.alpha(0.07))
-                    .child(text(&app.name).font(font(cfg, 13.0, 600.0)).color(fg))
-                    .child(text(&app.launch).font(font(cfg, 11.0, 400.0)).color(fg.alpha(0.4)).truncate())
-                    .on_press(move |s: &mut Settings| { s.new_app.replace_text(&app.name); s.picked_app = Some(app.clone()) }),
-            )
-        });
-        apps.push(list);
-    }
-    for (i, edit) in s.app_names.iter().enumerate() {
-        apps.push(
-            row().key(format!("app-{i}")).w_full().gap(8.0).center_y()
-                .child(TextInput::new(edit).label(format!("Quick app {}", i + 1)).plain()
-                    .on_edit(app_name_at(i))
-                    .on_change(move |s: &mut Settings, _| {
-                        let name = s.app_names[i].text.clone();
-                        s.save(|c| if let Some(a) = c.quick_apps.get_mut(i) { *a = QuickApp { launch: name.clone(), name } });
-                    })
-                    .build(&k).grow(1.0))
-                .child(IconButton::new(&icons::TRASH).label(format!("Remove quick app {}", i + 1))
-                    .on_press(move |s: &mut Settings| { s.save(|c| { if i < c.quick_apps.len() { c.quick_apps.remove(i); } }); s.reset_app_names() }).build(&k)),
-        );
-    }
-    sections.push(section(s, "quick-apps", "Quick apps", apps));
-
-    // Integrations
-    let providers = [("groq", "Groq"), ("openrouter", "OpenRouter")];
-    sections.push(section(s, "integrations", "Integrations", vec![
-        setting(s, "AI provider", {
-            let labels: Vec<&str> = providers.iter().map(|p| p.1).collect();
-            Select::new("provider", &labels).label("AI provider").width(190.0)
-                .current(providers.iter().find(|p| p.0 == cfg.ai_provider).map(|p| p.1))
-                .open(s.open == Some("provider")).on_toggle(toggle_open("provider")).on_close(close)
-                .on_choose(move |s: &mut Settings, label: &str, _: &mut Tx| {
-                    s.open = None;
-                    let Some(&(provider, _)) = providers.iter().find(|p| p.1 == label) else { return };
-                    s.save(|c| { c.ai_provider = provider.into(); c.ai_model = default_model(provider).into() });
-                    s.ai_model.replace_text(default_model(provider));
-                })
-                .build(&k, &mut layer)
-        }),
-        col().w_full().gap(6.0)
-            .child(text("AI model").font(font(cfg, 14.0, 500.0)).color(fg.alpha(0.85)))
-            .child(TextInput::new(&s.ai_model).label("AI model").placeholder(default_model(&cfg.ai_provider))
-                .on_edit(|s: &mut Settings| &mut s.ai_model).on_change(|s: &mut Settings, _| { let v = s.ai_model.text.clone(); s.save(|c| c.ai_model = v) }).build(&k)),
-        col().w_full().gap(6.0)
-            .child(text("API key").font(font(cfg, 14.0, 500.0)).color(fg.alpha(0.85)))
-            .child(TextInput::new(&s.api_key).label("API key").secure().placeholder(if cfg.ai_provider == "groq" { "gsk_..." } else { "sk-or-..." })
-                .on_edit(|s: &mut Settings| &mut s.api_key).on_change(|s: &mut Settings, _| { let v = s.api_key.text.clone(); s.save(|c| c.api_key = v) }).build(&k)),
-    ]));
-
-    // T3 Code devices
-    let mut t3 = vec![text("Token: run `t3 auth session issue --token-only` on that device.").font(font(cfg, 12.0, 400.0)).color(fg.alpha(0.6))];
-    for (i, d) in cfg.t3_devices.iter().enumerate() {
-        t3.push(setting(s, d.label(), IconButton::new(&icons::TRASH).label(format!("Remove {}", d.label()))
-            .on_press(move |s: &mut Settings| s.save(|c| { if i < c.t3_devices.len() { c.t3_devices.remove(i); } })).build(&k)));
-    }
-    t3.push(TextInput::new(&s.t3_name).label("Device name").placeholder("Name (e.g. Laptop)").on_edit(|s: &mut Settings| &mut s.t3_name).build(&k));
-    t3.push(TextInput::new(&s.t3_url).label("Device URL").placeholder("http://127.0.0.1:3773").on_edit(|s: &mut Settings| &mut s.t3_url).build(&k));
-    t3.push(TextInput::new(&s.t3_token).label("Bearer token").secure().placeholder("Bearer token").on_edit(|s: &mut Settings| &mut s.t3_token).on_submit(|s: &mut Settings, _| s.add_t3_device()).build(&k));
-    t3.push(row().child(Button::new("Add device").variant(ButtonVariant::Contrast).disabled(!s.t3_addable()).on_press(Settings::add_t3_device).build(&k)));
-    sections.push(section(s, "t3", "T3 Code devices", t3));
-
-    // Workflows
-    let mut workflows = vec![
-        text("Workflow name").font(font(cfg, 14.0, 500.0)).color(fg.alpha(0.8)),
-        TextInput::new(&s.workflow_name).label("Workflow name").placeholder("e.g. Work Tools").on_edit(|s: &mut Settings| &mut s.workflow_name).build(&k),
-        text("Apps or URLs, comma separated").font(font(cfg, 14.0, 500.0)).color(fg.alpha(0.8)).mt(10.0),
-        TextArea::new(&s.workflow_urls).label("Apps or URLs").placeholder("e.g. Spotify, docs.google.com").rows(2).on_edit(|s: &mut Settings| &mut s.workflow_urls).build(&k),
-        row().child(Button::new("Save workflow").variant(ButtonVariant::Contrast).on_press(Settings::add_workflow).build(&k)),
-    ];
-    for (i, wf) in cfg.workflows.iter().enumerate() {
-        workflows.push(
-            row().key(format!("workflow-{i}-{}", wf.name)).w_full().py(8.0).gap(10.0).center_y().justify_between()
-                .border_sides([0.0, 0.0, 1.0, 0.0], fg.alpha(0.05))
-                .child(col().shrink().min_w(0.0)
-                    .child(text(&wf.name).font(font(cfg, 14.0, 600.0)).color(fg).truncate())
-                    .child(text(format!("{} items", wf.urls.len())).font(font(cfg, 11.0, 400.0)).color(fg.alpha(0.6))))
-                .child(Button::new("Remove").variant(ButtonVariant::Ghost).icon(&icons::TRASH)
-                    .on_press(move |s: &mut Settings| s.save(|c| { if i < c.workflows.len() { c.workflows.remove(i); } })).build(&k)),
-        );
-    }
-    sections.push(section(s, "workflows", "Workflows", workflows));
+pub fn view(s: &Settings, cx: &mut Cx<Settings>) -> El {
+    let k = kit(&s.cfg);
+    let mut layer = Vec::new();
+    let cfg = &s.cfg;
+    let fg = cfg.text().alpha(1.0);
+    let sections = match s.page {
+        Some(id) => {
+            let name = TABS.iter().find(|t| t.id == id).map_or("", |t| t.name);
+            let header = row().key("page-header").w_full().gap(8.0).center_y()
+                .child(IconButton::new(&icons::CHEVRON_LEFT).label("Back to settings").on_press(|s: &mut Settings| { s.open = None; s.page = None }).build(&k))
+                .child(text(name).font(font(cfg, 16.0, 600.0)).color(fg));
+            std::iter::once(header).chain(panel(s, &k, &mut layer, id)).collect()
+        }
+        None => home(s, &k, &mut layer),
+    };
 
     let content = sections.into_iter().fold(col().key("settings-content").w_full().px(24.0).pt(20.0).pb(36.0).gap(28.0), El::child);
     // An opaque base, so a translucent Island colour stays readable in a normal window.
     let base = col().key("settings").w_full().h_full().min_h(0.0).fill(Color::BLACK)
-        .child(col().key("settings-scroll").w_full().grow(1.0).min_h(0.0).fill(cfg.bg()).scroll(ScrollSpec { stick_bottom: false }).child(content));
+        .child(col().key(format!("settings-scroll-{}", s.page.map_or(-1, i32::from))).w_full().grow(1.0).min_h(0.0).fill(cfg.bg()).scroll(ScrollSpec { stick_bottom: false }).child(content));
     let _ = cx;
     rune_kit::root(base, layer)
 }
@@ -463,6 +504,15 @@ mod tests {
         for _ in 0..30 { rt.frame(1.0 / 60.0); }
         let after = rt.find("tab-0").unwrap().1;
         assert!(after < before - 50.0, "tab-0 stayed at {before} -> {after}");
+    }
+
+    #[test]
+    fn a_tab_settings_page_replaces_the_main_page() {
+        let mut s = Settings::new(Store::memory(Config::default()), None, &[]);
+        s.page = Some(4);
+        let mut rt = rune::Runtime::new(s, view, (520.0, 720.0), rune::Env { system_dark: true, scale: 1.0 });
+        rt.frame(0.0);
+        assert!(rt.find("integrations").is_some() && rt.find("tab-0").is_none());
     }
 
     #[test]
