@@ -192,6 +192,8 @@ pub struct Island {
     wheel_reset: f64,
     /// This wheel gesture already changed tab; the rest of it, momentum included, is ignored.
     wheel_spent: bool,
+    /// A phased trackpad gesture is under the fingers; a pause in it is not a new gesture.
+    wheel_phased: bool,
     /// The way the last tab change went: 1 to the next tab, -1 to the previous.
     pub tab_dir: i32,
     swipe_lock_until: f64,
@@ -261,6 +263,7 @@ impl Island {
             wheel: 0.0,
             wheel_reset: 0.0,
             wheel_spent: false,
+            wheel_phased: false,
             tab_dir: 1,
             swipe_lock_until: 0.0,
             next_second: 0.0,
@@ -388,13 +391,24 @@ impl Island {
         self.set_mode(Mode::Still);
     }
 
+    /// Switches to `tab`, animating in the direction it sits from the current one.
+    pub fn set_tab(&mut self, tab: u8) {
+        let visible = self.cfg.visible_tabs();
+        let at = |t: u8| visible.iter().position(|v| *v == t);
+        if let (Some(from), Some(to)) = (at(self.tab), at(tab))
+            && from != to
+        {
+            self.tab_dir = if to > from { 1 } else { -1 };
+        }
+        self.tab = tab;
+    }
+
     pub fn move_tab(&mut self, direction: i32) {
         let visible = self.cfg.visible_tabs();
         let Some(i) = visible.iter().position(|t| *t == self.tab) else { return };
         let next = i as i32 + direction;
         if next < 0 || next >= visible.len() as i32 { return }
-        self.tab = visible[next as usize];
-        self.tab_dir = direction.signum();
+        self.set_tab(visible[next as usize]);
         self.entered_tab();
     }
 
@@ -408,12 +422,9 @@ impl Island {
             Key::Right => self.move_tab(1),
             Key::Left => self.move_tab(-1),
             Key::Command(c @ '1'..='8') => {
-                let visible = self.cfg.visible_tabs();
-                let Some(&id) = visible.get(c as usize - '1' as usize) else { return false };
-                let at = |t: u8| visible.iter().position(|v| *v == t);
-                if at(id) != at(self.tab) { self.tab_dir = if at(id) > at(self.tab) { 1 } else { -1 } }
+                let Some(&id) = self.cfg.visible_tabs().get(c as usize - '1' as usize) else { return false };
                 self.mode = Mode::Large;
-                self.tab = id;
+                self.set_tab(id);
                 self.entered_tab();
             }
             _ => return false,
@@ -425,12 +436,16 @@ impl Island {
     pub fn wheel(&mut self, e: WheelEvent, tx: &mut Tx) -> bool {
         let now = tx.clock();
         if self.mode != Mode::Large { return false }
-        // A pause or a fresh touch starts a new gesture; a fixed timeout would let a long
-        // momentum tail change tab a second time.
-        if now > self.wheel_reset || (e.phase == GesturePhase::Began && !e.momentum) {
+        // A fresh touch starts a new gesture. A pause in a trackpad gesture does not: the
+        // fingers are still down, so the rest of that swipe stays spent. A wheel that reports
+        // no phases has no touch, so an idle gap starts its next run instead.
+        let touch = e.phase == GesturePhase::Began && !e.momentum;
+        if touch || (!self.wheel_phased && !e.momentum && now > self.wheel_reset) {
             self.wheel = 0.0;
             self.wheel_spent = false;
         }
+        if touch { self.wheel_phased = true }
+        if e.phase == GesturePhase::Ended { self.wheel_phased = false }
         self.wheel_reset = now + 0.2;
         if e.dy.abs() > e.dx.abs() { return false }
         if self.wheel_spent { return true }
@@ -462,7 +477,7 @@ impl Island {
     pub fn reload(&mut self, _: &mut Tx) {
         let old = std::mem::replace(&mut self.cfg, self.store.get());
         self.kit = kit(&self.cfg);
-        if !self.cfg.visible_tabs().contains(&self.tab) { self.tab = self.cfg.first_tab() }
+        if !self.cfg.visible_tabs().contains(&self.tab) { self.set_tab(self.cfg.first_tab()) }
         if self.mode != Mode::Large || !self.hovered { self.mode = self.rest() }
         let moved = (old.position_mode != self.cfg.position_mode, old.notch_mode != self.cfg.notch_mode, old.island_x != self.cfg.island_x, old.island_y != self.cfg.island_y, old.display != self.cfg.display);
         if moved != (false, false, false, false, false) { self.place_window() }
@@ -1155,20 +1170,47 @@ mod tests {
 
     #[test]
     fn one_long_swipe_changes_tab_once_and_a_new_one_again() {
-        let mut s = island(Config { default_tab: 0, ..Config::default() });
+        // Tab 1 scrolls, and a scroll view takes a wheel before the Island's handler, so skip
+        // it: the swipe is about the gesture, not about which tab happens to have a scroller.
+        let mut s = island(Config { hidden_tabs: vec![1], default_tab: 0, ..Config::default() });
         s.mode = Mode::Large;
-        let [left, top, w, h] = s.rect();
+        let [left, top, w, _] = s.rect();
         let mut rt = rune::Runtime::new(s, view, CANVAS, rune::Env { system_dark: true, scale: 1.0 });
         rt.frame(0.0);
-        let mut swipe = |rt: &mut rune::Runtime<Island>| for _ in 0..90 {
-            rt.wheel_event(WheelEvent::new(-10.0, 0.0).at(left + w / 2.0, top + h / 2.0).precise(true));
+        let swipe = |rt: &mut rune::Runtime<Island>| for i in 0..90 {
+            let phase = match i { 0 => rune::GesturePhase::Began, 89 => rune::GesturePhase::Ended, _ => rune::GesturePhase::Moved };
+            rt.wheel_event(WheelEvent::new(-10.0, 0.0).at(left + w / 2.0, top + 10.0).precise(true).phase(phase));
             rt.frame(1.0 / 60.0);
         };
         // 1.5 s of fingers and momentum outlasts any fixed lock.
         swipe(&mut rt);
-        assert_eq!(rt.state.tab, 1);
+        assert_eq!(rt.state.tab, 2);
         rt.frame(0.3);
         swipe(&mut rt);
+        assert_eq!(rt.state.tab, 4);
+    }
+
+    #[test]
+    fn a_pause_within_one_swipe_does_not_change_tab_again() {
+        let mut s = island(Config { hidden_tabs: vec![1], default_tab: 0, ..Config::default() });
+        s.mode = Mode::Large;
+        let [left, top, w, _] = s.rect();
+        let at = |phase| WheelEvent::new(-10.0, 0.0).at(left + w / 2.0, top + 10.0).precise(true).phase(phase);
+        let mut rt = rune::Runtime::new(s, view, CANVAS, rune::Env { system_dark: true, scale: 1.0 });
+        rt.frame(0.0);
+        rt.wheel_event(at(rune::GesturePhase::Began));
+        rt.frame(1.0 / 60.0);
+        for _ in 0..5 {
+            rt.wheel_event(at(rune::GesturePhase::Moved));
+            rt.frame(1.0 / 60.0);
+        }
+        assert_eq!(rt.state.tab, 2);
+        // The fingers stay down through the pause, so this is still one swipe.
+        for _ in 0..20 { rt.frame(1.0 / 60.0); }
+        for _ in 0..6 {
+            rt.wheel_event(at(rune::GesturePhase::Moved));
+            rt.frame(1.0 / 60.0);
+        }
         assert_eq!(rt.state.tab, 2);
     }
 
