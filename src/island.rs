@@ -427,7 +427,10 @@ impl Island {
         (estimate_width(&name, 13.0) + estimate_width(&artist, 13.0) + 24.0 + 6.0 + 20.0 + 31.0).ceil().clamp(122.0, 300.0)
     }
 
-    pub fn notch_inset(&self) -> f32 { if self.cfg.notch_mode { 34.0 } else { 0.0 } }
+    /// True when the Island must clear a physical notch (Notch Mode, not Mini).
+    fn clears_notch(&self) -> bool { self.cfg.notch_mode && !self.cfg.notch_mini }
+
+    pub fn notch_inset(&self) -> f32 { if self.clears_notch() { 34.0 } else { 0.0 } }
 
     /// Notch Mode's compact width: the notch, plus the wider half of the glance and its padding on
     /// each side, so neither half sits under the notch. Mirrors `glance`.
@@ -451,7 +454,7 @@ impl Island {
     }
 
     pub fn size(&self) -> (f32, f32) {
-        let notch = self.cfg.notch_mode;
+        let notch = self.clears_notch();
         let alerting = self.alert().is_some();
         let track = self.shows_track();
         let mut w = match self.mode {
@@ -464,7 +467,7 @@ impl Island {
         if notch && track && !alerting && self.mode != Mode::Large { w = (w + 40.0).max(300.0) }
         let h = match self.mode {
             Mode::Large => self.notch_inset() + match self.tab { 6 | 8 | 9 | 10 => 290.0, 0 => 160.0, 1 => 250.0, _ => 230.0 },
-            _ => if notch { 34.0 } else { 40.0 },
+            _ => if self.cfg.notch_mode { 34.0 } else { 40.0 }, // Mini notch keeps the notch height
         };
         (w, h)
     }
@@ -1597,6 +1600,12 @@ mod tests {
         assert!(s.size().0 > quick);
         s.cfg.notch_auto_size = false;
         assert_eq!(s.size(), (300.0, 34.0));
+        // Mini notch keeps the notch height but drops the notch gap and the Large inset.
+        s.cfg.notch_mini = true;
+        s.capture = None;
+        assert_eq!(s.size(), (140.0, 34.0));
+        s.mode = Mode::Large;
+        assert_eq!(s.size(), (520.0, 290.0));
     }
 
     #[test]

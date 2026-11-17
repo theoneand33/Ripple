@@ -19,7 +19,7 @@ https://github.com/user-attachments/assets/a7b9ed8a-97b5-4603-bad7-6f4c4bef1f5d
 ### Island
 
 - The Island follows you across every desktop and monitor.
-- Notch Mode on macOS moves the Island into the MacBook notch.
+- Notch Mode on macOS moves the Island into the MacBook notch. Mini notch keeps that look, pinned to the top edge, on displays without a notch.
 - Standby mode is on by default, so the Island rests in Quick Mode instead of hiding. You can also make it rest in Large Mode.
 - Corners use iOS-style radii.
 - Themes include Win95, SleekBlack, and more.
