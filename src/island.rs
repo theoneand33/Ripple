@@ -17,7 +17,7 @@ use crate::config::{Config, Store};
 use crate::net::Weather;
 use crate::platform::Passthrough;
 use crate::system::{self, MediaCommand, Track};
-use crate::{icons, t3, tabs};
+use crate::{icons, stremflix, t3, tabs};
 
 /// The Island's window, in points: the largest Island at its hover scale, its tab dock, plus their shadows.
 pub const CANVAS: (f32, f32) = (560.0, 420.0);
@@ -178,6 +178,18 @@ impl Placement {
 }
 
 #[derive(Default)]
+pub struct StremflixState {
+    /// Continue Watching, or why it couldn't load; None while loading.
+    pub entries: Option<Result<Vec<stremflix::Entry>, String>>,
+    /// Loaded posters by URL.
+    pub posters: std::collections::HashMap<String, Image>,
+    /// A play request that failed.
+    pub status: String,
+    /// Bumped on every load, so an earlier answer is dropped.
+    generation: u64,
+}
+
+#[derive(Default)]
 pub struct T3State {
     pub data: Option<t3::Loaded>,
     pub projects: Option<Vec<t3::Project>>,
@@ -239,6 +251,7 @@ pub struct Island {
     /// The open note's editor and which note it edits.
     pub note: TextEdit,
     pub note_index: usize,
+    pub stremflix: StremflixState,
     pub t3: T3State,
     pub t3_client: Arc<t3::Client>,
 
@@ -317,6 +330,7 @@ impl Island {
             task: TextEdit::new(""),
             note: TextEdit::new(cfg.notes.first().map_or("", String::as_str)),
             note_index: 0,
+            stremflix: StremflixState::default(),
             t3: T3State::default(),
             t3_client,
             me: None,
@@ -396,7 +410,7 @@ impl Island {
         let alerting = self.alert().is_some();
         let track = self.shows_track();
         let mut w = match self.mode {
-            Mode::Large => match self.tab { 1 | 9 => 480.0, 0 => 405.0, _ => 380.0 },
+            Mode::Large => match self.tab { 1 | 9 | 10 => 480.0, 0 => 405.0, _ => 380.0 },
             _ if alerting => if notch { 260.0 } else { 160.0 }, // fits icon + "Microphone"
             _ if track => self.now_playing_width(),
             Mode::Quick => if notch { 260.0 } else { 140.0 }, // fits "23:59" + weather/"100%"
@@ -404,7 +418,7 @@ impl Island {
         };
         if notch && self.mode != Mode::Large { w = (w + 40.0).max(if track { 300.0 } else { 0.0 }) }
         let h = match self.mode {
-            Mode::Large => self.notch_inset() + match self.tab { 6 | 8 | 9 => 250.0, 0 => 120.0, 1 => 210.0, _ => 190.0 },
+            Mode::Large => self.notch_inset() + match self.tab { 6 | 8 | 9 | 10 => 250.0, 0 => 120.0, 1 => 210.0, _ => 190.0 },
             _ => if notch { 34.0 } else { 40.0 },
         };
         (w, h)
@@ -519,6 +533,45 @@ impl Island {
     fn entered_tab(&mut self) {
         self.t3.open = None;
         if self.mode == Mode::Large && self.tab == 8 { self.t3_load() }
+        if self.mode == Mode::Large && self.tab == 10 { self.stremflix_load() }
+    }
+
+    // --- Stremflix ---
+
+    /// Asks Stremflix-rs for Continue Watching, then fetches the posters not yet loaded.
+    pub fn stremflix_load(&mut self) {
+        let Some(me) = self.me.clone() else { return };
+        let Some(base) = stremflix::base() else {
+            self.stremflix.entries = Some(Err("Stremflix-rs's API is off (STREMFLIX_RS_API=off)".into()));
+            return;
+        };
+        // The last list stays up while it refreshes.
+        if self.stremflix.entries.as_ref().is_some_and(Result::is_err) { self.stremflix.entries = None }
+        self.stremflix.status.clear();
+        self.stremflix.generation += 1;
+        let generation = self.stremflix.generation;
+        let cached: Vec<String> = self.stremflix.posters.keys().cloned().collect();
+        std::thread::spawn(move || {
+            let result = stremflix::continue_watching(&base);
+            // Posters come from addons: only the web, never file: or data: URLs.
+            let posters: Vec<String> = result.iter().flatten().filter_map(|e| e.poster.clone())
+                .filter(|p| (p.starts_with("https://") || p.starts_with("http://")) && !cached.contains(p)).collect();
+            me.update(move |s, _| if s.stremflix.generation == generation { s.stremflix.entries = Some(result) });
+            for url in posters {
+                let Some(bytes) = crate::net::fetch_image(&url) else { continue };
+                me.update(move |s, _| if let Some(image) = s.images.as_ref().map(|i| i.load(bytes)) { s.stremflix.posters.insert(url, image); });
+            }
+        });
+    }
+
+    /// Resumes an entry in Stremflix-rs's window.
+    pub fn stremflix_play(&mut self, entry: stremflix::Entry) {
+        let (Some(base), Some(me)) = (stremflix::base(), self.me.clone()) else { return };
+        self.stremflix.status = format!("Opening {}...", entry.title);
+        std::thread::spawn(move || {
+            let result = stremflix::play(&base, &entry);
+            me.update(move |s, _| s.stremflix.status = result.err().unwrap_or_default());
+        });
     }
 
     // --- Notes ---

@@ -34,6 +34,7 @@ https://github.com/user-attachments/assets/a7b9ed8a-97b5-4603-bad7-6f4c4bef1f5d
 - Clipboard keeps your clipboard history.
 - Tasks is a simple to-do list.
 - Notes keeps notes in a list beside an editor. A note's first line is its title.
+- Stremflix shows Continue Watching from [Stremflix-rs](https://github.com/theoneand33/stremflix-rs) when it is open. Click a title to resume it in Stremflix-rs. Set `STREMFLIX_RS_API` if Stremflix-rs serves its API on another address.
 - T3 Code starts an agent thread on a project on one of your T3 devices. You choose the model, the worktree, and the linked environment.
 
 You can reorder and hide tabs in Settings.
