@@ -102,6 +102,15 @@ pub struct Track {
     pub playing: bool,
     pub paused: bool,
     pub source: String,
+    /// Position and length in whole seconds, when the player reports a length.
+    pub progress: Option<(u32, u32)>,
+}
+
+/// Position and length as the player gives them, in seconds, as `Track::progress`.
+fn progress(position: Option<f64>, length: Option<f64>) -> Option<(u32, u32)> {
+    let length = length.filter(|l| l.is_finite() && *l >= 1.0)?;
+    let position = position.filter(|p| p.is_finite()).unwrap_or(0.0).clamp(0.0, length);
+    Some((position as u32, length as u32))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -111,20 +120,36 @@ pub enum MediaCommand {
     Previous,
 }
 
+/// One `playerctl -a` line per player: `instance||status||title||artist||album||artUrl||position||length`.
+const PLAYERCTL_FORMAT: &str = "{{playerInstance}}||{{status}}||{{title}}||{{artist}}||{{album}}||{{mpris:artUrl}}||{{position}}||{{mpris:length}}";
+
+/// The player to show from `playerctl -a` output: the first one playing, else the first paused
+/// one, else any with a title. `playerctl` alone takes the first player, often an idle tab.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn pick_player(out: &str) -> Option<Vec<&str>> {
+    let players: Vec<Vec<&str>> = out.lines().map(|l| l.split("||").collect::<Vec<_>>())
+        .filter(|p| p.len() >= 5 && !p[2].trim().is_empty()).collect();
+    let status = |want: &str| players.iter().find(|p| p[1].eq_ignore_ascii_case(want)).cloned();
+    status("playing").or_else(|| status("paused")).or_else(|| players.into_iter().next())
+}
+
 #[cfg(target_os = "linux")]
 pub fn media() -> Option<Track> {
-    let out = output("playerctl", &["metadata", "--format", "{{title}}||{{artist}}||{{album}}||{{status}}||{{mpris:artUrl}}"])?;
-    let parts: Vec<&str> = out.split("||").collect();
-    if parts.len() < 4 || parts[0].is_empty() { return None }
-    let status = parts[3].to_lowercase();
+    let out = output("playerctl", &["-a", "metadata", "--format", PLAYERCTL_FORMAT])?;
+    let p = pick_player(&out)?;
+    let status = p[1].to_lowercase();
+    let micros = |i: usize| p.get(i).and_then(|v| v.trim().parse::<f64>().ok()).map(|v| v / 1e6);
     Some(Track {
-        name: parts[0].into(),
-        artist: parts[1].into(),
-        album: parts[2].into(),
-        artwork_url: parts.get(4).filter(|u| !u.is_empty()).map(|u| u.to_string()),
+        name: p[2].into(),
+        artist: p[3].into(),
+        album: p[4].into(),
+        artwork_url: p.get(5).filter(|u| !u.is_empty()).map(|u| u.to_string()),
         playing: status == "playing",
         paused: status == "paused",
+        // Not the MPRIS name: any bus client can claim one, and a cover press would launch it.
         source: "System".into(),
+        // playerctl reports microseconds.
+        progress: progress(micros(6), micros(7)),
     })
 }
 
@@ -135,6 +160,14 @@ tell application "System Events"
     set spotifyRunning to (name of every process) contains "Spotify"
     set musicRunning to (name of every process) contains "Music"
 end tell
+-- Prefer the app that is playing: Music wins only while Spotify is not.
+if spotifyRunning and musicRunning then
+    try
+        tell application "Spotify" to set spotifyState to player state as string
+        tell application "Music" to set musicState to player state as string
+        if musicState is "playing" and spotifyState is not "playing" then set spotifyRunning to false
+    end try
+end if
 if spotifyRunning then
     try
         tell application "Spotify"
@@ -147,8 +180,14 @@ if spotifyRunning then
             on error
                 set artUrl to ""
             end try
+            set posText to ""
+            set lenText to ""
+            try
+                set posText to (player position as integer) as string
+                set lenText to ((duration of current track) div 1000) as string
+            end try
         end tell
-        return "Spotify" & "||" & mediaState & "||" & songName & "||" & artistName & "||" & albumName & "||" & artUrl
+        return "Spotify" & "||" & mediaState & "||" & songName & "||" & artistName & "||" & albumName & "||" & artUrl & "||" & posText & "||" & lenText
     on error
         return "Error"
     end try
@@ -159,8 +198,14 @@ else if musicRunning then
             set songName to name of current track
             set artistName to artist of current track
             set albumName to album of current track
+            set posText to ""
+            set lenText to ""
+            try
+                set posText to (player position as integer) as string
+                set lenText to (duration of current track as integer) as string
+            end try
         end tell
-        return "Music" & "||" & mediaState & "||" & songName & "||" & artistName & "||" & albumName & "||" & ""
+        return "Music" & "||" & mediaState & "||" & songName & "||" & artistName & "||" & albumName & "||" & "" & "||" & posText & "||" & lenText
     on error
         return "Error"
     end try
@@ -171,6 +216,7 @@ end if"#;
     let parts: Vec<&str> = out.split("||").collect();
     if parts.len() < 4 { return None }
     let playing = parts[1] == "playing";
+    let seconds = |i: usize| parts.get(i).and_then(|v| v.trim().parse::<f64>().ok());
     Some(Track {
         name: parts[2].into(),
         artist: parts[3].into(),
@@ -179,12 +225,13 @@ end if"#;
         playing,
         paused: !playing,
         source: parts[0].into(),
+        progress: progress(seconds(6), seconds(7)),
     })
 }
 
 #[cfg(windows)]
 pub fn media() -> Option<Track> {
-    const SCRIPT: &str = "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Add-Type -AssemblyName System.Runtime.WindowsRuntime; $manager = [Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager, Windows.Media.Control, ContentType = WindowsRuntime]::RequestAsync().GetAwaiter().GetResult(); $session = $manager.GetCurrentSession(); if ($session) { $props = $session.TryGetMediaPropertiesAsync().GetAwaiter().GetResult(); $playback = $session.GetPlaybackInfo(); $status = $playback.PlaybackStatus; $thumbnail = $props.Thumbnail; $artwork = ''; if ($thumbnail) { try { $stream = $thumbnail.OpenReadAsync().GetAwaiter().GetResult(); $buffer = New-Object byte[] $stream.Size; $reader = New-Object Windows.Storage.Streams.DataReader $stream; $reader.LoadAsync($stream.Size).GetAwaiter().GetResult() | Out-Null; $reader.ReadBytes($buffer); $artwork = 'data:image/png;base64,' + [Convert]::ToBase64String($buffer); $reader.Close(); $stream.Close(); } catch { } } $info = @{ Title = $props.Title; Artist = $props.Artist; Album = $props.AlbumTitle; Status = $status.ToString().ToLower(); Source = $session.SourceAppUserModelId; Artwork = $artwork }; return $info | ConvertTo-Json -Compress; } return 'null';";
+    const SCRIPT: &str = "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Add-Type -AssemblyName System.Runtime.WindowsRuntime; $manager = [Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager, Windows.Media.Control, ContentType = WindowsRuntime]::RequestAsync().GetAwaiter().GetResult(); $session = $manager.GetSessions() | Where-Object { $_.GetPlaybackInfo().PlaybackStatus -eq 'Playing' } | Select-Object -First 1; if (-not $session) { $session = $manager.GetCurrentSession() }; if ($session) { $props = $session.TryGetMediaPropertiesAsync().GetAwaiter().GetResult(); $playback = $session.GetPlaybackInfo(); $status = $playback.PlaybackStatus; $timeline = $session.GetTimelineProperties(); $position = $timeline.Position; if ($status.ToString() -eq 'Playing' -and $timeline.LastUpdatedTime.Year -gt 2000) { $position += [DateTimeOffset]::Now - $timeline.LastUpdatedTime }; $length = $timeline.EndTime - $timeline.StartTime; $thumbnail = $props.Thumbnail; $artwork = ''; if ($thumbnail) { try { $stream = $thumbnail.OpenReadAsync().GetAwaiter().GetResult(); $buffer = New-Object byte[] $stream.Size; $reader = New-Object Windows.Storage.Streams.DataReader $stream; $reader.LoadAsync($stream.Size).GetAwaiter().GetResult() | Out-Null; $reader.ReadBytes($buffer); $artwork = 'data:image/png;base64,' + [Convert]::ToBase64String($buffer); $reader.Close(); $stream.Close(); } catch { } } $info = @{ Title = $props.Title; Artist = $props.Artist; Album = $props.AlbumTitle; Status = $status.ToString().ToLower(); Source = $session.SourceAppUserModelId; Artwork = $artwork; Position = $position.TotalSeconds; Length = $length.TotalSeconds }; return $info | ConvertTo-Json -Compress; } return 'null';";
     let out = powershell(SCRIPT);
     if let Ok(data) = serde_json::from_str::<serde_json::Value>(&out)
         && data.is_object()
@@ -200,6 +247,7 @@ pub fn media() -> Option<Track> {
             playing,
             paused: !playing,
             source: or(field("Source"), "System"),
+            progress: progress(data["Position"].as_f64(), data["Length"].as_f64()),
         });
     }
     // No media session: fall back to Spotify's window title ("Artist - Song").
@@ -213,7 +261,13 @@ pub fn media_control(cmd: MediaCommand) {
     #[cfg(target_os = "linux")]
     {
         let arg = match cmd { MediaCommand::PlayPause => "play-pause", MediaCommand::Next => "next", MediaCommand::Previous => "previous" };
-        output("playerctl", &[arg]);
+        // Control the player the Island shows, not playerctl's first one.
+        let shown = output("playerctl", &["-a", "metadata", "--format", PLAYERCTL_FORMAT])
+            .and_then(|out| pick_player(&out).map(|p| p[0].to_string()));
+        match shown {
+            Some(name) => output("playerctl", &["-p", &name, arg]),
+            None => output("playerctl", &[arg]),
+        };
     }
     #[cfg(target_os = "macos")]
     {
@@ -224,6 +278,13 @@ tell application "System Events"
     set spotifyRunning to (name of every process) contains "Spotify"
     set musicRunning to (name of every process) contains "Music"
 end tell
+if spotifyRunning and musicRunning then
+    try
+        tell application "Spotify" to set spotifyState to player state as string
+        tell application "Music" to set musicState to player state as string
+        if musicState is "playing" and spotifyState is not "playing" then set spotifyRunning to false
+    end try
+end if
 if spotifyRunning then
     tell application "Spotify" to {verb}
 else if musicRunning then
@@ -234,7 +295,7 @@ end if"#);
     #[cfg(windows)]
     {
         let method = match cmd { MediaCommand::PlayPause => "TryTogglePlayPauseAsync", MediaCommand::Next => "TrySkipNextAsync", MediaCommand::Previous => "TrySkipPreviousAsync" };
-        powershell(&format!("Add-Type -AssemblyName System.Runtime.WindowsRuntime; $m = [Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager, Windows.Media.Control, ContentType = WindowsRuntime]::RequestAsync().GetAwaiter().GetResult(); $s = $m.GetCurrentSession(); if ($s) {{ $s.{method}().GetAwaiter().GetResult() | Out-Null }}"));
+        powershell(&format!("Add-Type -AssemblyName System.Runtime.WindowsRuntime; $m = [Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager, Windows.Media.Control, ContentType = WindowsRuntime]::RequestAsync().GetAwaiter().GetResult(); $s = $m.GetSessions() | Where-Object {{ $_.GetPlaybackInfo().PlaybackStatus -eq 'Playing' }} | Select-Object -First 1; if (-not $s) {{ $s = $m.GetCurrentSession() }}; if ($s) {{ $s.{method}().GetAwaiter().GetResult() | Out-Null }}"));
     }
 }
 
@@ -629,6 +690,15 @@ mod tests {
     use super::*;
 
     #[test]
+    fn progress_needs_a_length_and_stays_within_it() {
+        assert_eq!(progress(Some(30.5), Some(200.0)), Some((30, 200)));
+        assert_eq!(progress(Some(250.0), Some(200.0)), Some((200, 200)));
+        assert_eq!(progress(None, Some(200.0)), Some((0, 200)));
+        assert_eq!(progress(Some(30.0), Some(0.0)), None);
+        assert_eq!(progress(Some(30.0), None), None);
+    }
+
+    #[test]
     fn quick_app_entries_open_as_links_hosts_or_apps() {
         assert_eq!(classify("https://example.com/a?b=1&c=2"), Target::Url);
         assert_eq!(classify("file:///home/me/notes.pdf"), Target::Url);
@@ -691,6 +761,18 @@ mod tests {
     fn launch_at_login_paths_are_escaped_for_the_desktop_entry() {
         assert_eq!(desktop_exec("/opt/Ripple/ripple"), r#""/opt/Ripple/ripple""#);
         assert_eq!(desktop_exec(r#"/a "b"/$c`d`/100%\e"#), r#""/a \\"b\\"/\\$c\\`d\\`/100%%\\\\e""#);
+    }
+
+    #[test]
+    fn the_playing_player_wins_over_idle_ones() {
+        let out = "firefox||Paused||Tab||A||||\nspotify||Playing||Song||B||Album||https://i/1\nchromium||Stopped||||||||";
+        assert_eq!(pick_player(out).map(|p| p[0]), Some("spotify"));
+        assert_eq!(pick_player("firefox||Stopped||Tab||A||||\nvlc||Paused||Film||||||").map(|p| p[0]), Some("vlc"));
+        assert_eq!(pick_player("chromium||Stopped||||||||"), None);
+        assert_eq!(pick_player(""), None);
+        // Two instances of one app keep apart, so controls reach the playing one.
+        let two = "chromium.instance11||Paused||Idle||A||||\nchromium.instance42||Playing||Song||B||||";
+        assert_eq!(pick_player(two).map(|p| p[0]), Some("chromium.instance42"));
     }
 
     #[test]

@@ -127,7 +127,7 @@ fn workflows(s: &Island) -> El {
         );
     }
     col().key("workflows").w_full().h_full()
-        .child(el().key("workflow-scroll").w_full().grow(1.0).min_h(0.0).scroll(ScrollSpec { stick_bottom: false }).child(list))
+        .child(col().key("workflow-scroll").w_full().grow(1.0).min_h(0.0).scroll(ScrollSpec { stick_bottom: false }).child(list))
         .child(
             el().key("quick-app-strip").w_full().py(12.0)
                 .fill(fg.alpha(0.02 * fg.a)).border_sides([1.0, 0.0, 0.0, 0.0], fg.alpha(0.1 * fg.a))
@@ -215,14 +215,14 @@ fn overview(s: &Island) -> El {
 fn assistant(s: &Island) -> El {
     let (bg, fg) = (s.cfg.bg().alpha(1.0), s.cfg.text());
     if !s.asked {
-        let input = text_input(&s.ask, s.font(20.0, 400.0).lh(26.0)).key("userinput").label("Ask").w_full().grow(1.0).min_h(0.0)
+        let input = text_input(&s.ask, s.font(20.0, 400.0).lh(26.0)).key("userinput").label("Ask").w_full().grow(1.0)
             .color(fg).placeholder("Ask", fg.alpha(0.7 * fg.a))
             .on_edit(|s: &mut Island| &mut s.ask)
             .on_submit(|s: &mut Island, _| s.ask_ai())
             .on_input_key(tab_arrows);
         return col().key("ask").w_full().h_full().pt(16.0).px(24.0).pb(20.0).gap(8.0)
             .transition(Transition::blur_replace())
-            .child(el().w_full().grow(1.0).min_h(0.0).padding(8.0).scroll(ScrollSpec { stick_bottom: false }).child(input))
+            .child(col().w_full().grow(1.0).min_h(0.0).padding(8.0).scroll(ScrollSpec { stick_bottom: false }).child(input))
             .child(row().w_full().justify_end().child(button(s, "chatsubmit", "Ask", true).on_press(|s: &mut Island| s.ask_ai())));
     }
     let answer = match &s.answer {
@@ -232,7 +232,7 @@ fn assistant(s: &Island) -> El {
     el().key("result").w_full().h_full()
         .transition(Transition::blur_replace())
         .child(
-            el().key("answer-scroll").w_full().h_full().scroll(ScrollSpec { stick_bottom: false }).scroll_edge_fade(16.0)
+            col().key("answer-scroll").w_full().h_full().scroll(ScrollSpec { stick_bottom: false }).scroll_edge_fade(16.0)
                 .child(col().w_full().px(24.0).pt(28.0).pb(56.0).child(answer)),
         )
         .child(button(s, "ask-another", "Ask another", true).pin(None, None, Some(16.0), Some(15.0))
@@ -267,7 +267,7 @@ fn clipboard(s: &Island) -> El {
                 .child(copy),
         );
     }
-    el().key("clipboard").w_full().h_full().scroll(ScrollSpec { stick_bottom: false }).scroll_edge_fade(12.0).child(list)
+    col().key("clipboard").w_full().h_full().scroll(ScrollSpec { stick_bottom: false }).scroll_edge_fade(12.0).child(list)
 }
 
 // --- Tasks ---
@@ -304,7 +304,7 @@ fn tasks(s: &Island) -> El {
         );
     }
     col().key("tasks").w_full().h_full().px(16.0).pt(18.0).pb(14.0).gap(10.0)
-        .child(el().key("task-scroll").w_full().grow(1.0).min_h(0.0).scroll(ScrollSpec { stick_bottom: false }).child(list))
+        .child(col().key("task-scroll").w_full().grow(1.0).min_h(0.0).scroll(ScrollSpec { stick_bottom: false }).child(list))
         .child(
             row().key("task-input").w_full().gap(8.0).center_y()
                 .child(field(s, "new-task", &s.task, "New task...", |s: &mut Island| &mut s.task, add_task))
@@ -367,9 +367,9 @@ fn notes(s: &Island) -> El {
         .on_input_change(|s: &mut Island, _| s.note_edited());
     root.child(
         row().key("notes-body").w_full().grow(1.0).min_h(0.0).gap(12.0)
-            .child(el().key("note-scroll").w(160.0).h_full().scroll(ScrollSpec { stick_bottom: false }).scroll_edge_fade(8.0).child(list))
+            .child(col().key("note-scroll").w(160.0).h_full().scroll(ScrollSpec { stick_bottom: false }).scroll_edge_fade(8.0).child(list))
             .child(
-                el().key(format!("note-card-{}", s.note_index)).grow(1.0).min_w(0.0).h_full().px(14.0).py(10.0)
+                col().key(format!("note-card-{}", s.note_index)).grow(1.0).min_w(0.0).h_full().px(14.0).py(10.0)
                     .radius(round(18.0)).fill(fg.alpha(0.08 * fg.a)).border(1.0, fg.alpha(0.06 * fg.a))
                     .transition(Transition::opacity())
                     // The editor is only as tall as its text: a press on the rest of the card types into it too.
@@ -571,7 +571,7 @@ fn t3(s: &Island, layer: &mut Vec<El>) -> El {
     root.child(selects)
         .child(model_row)
         .child(
-            el().key("t3-message-box").w_full().grow(1.0).min_h(0.0).px(12.0).py(8.0)
+            col().key("t3-message-box").w_full().grow(1.0).min_h(0.0).px(12.0).py(8.0)
                 .radius(if s.cfg.win95() { 0.0 } else { 10.0 })
                 .fill(fg.alpha(0.05 * fg.a)).border(1.0, fg.alpha(0.1 * fg.a))
                 .scroll(ScrollSpec { stick_bottom: false }).child(message),
