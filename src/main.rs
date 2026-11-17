@@ -91,6 +91,16 @@ fn island_spec() -> AppSpec<Island> {
             ("clipboard", |s| { s.mode = island::Mode::Large; s.set_tab(5); s.push_clipboard("Hello from Ripple"); }),
             ("tasks", |s| { s.mode = island::Mode::Large; s.set_tab(6) }),
             ("t3", |s| { s.mode = island::Mode::Large; s.set_tab(8) }),
+            ("notes", |s| {
+                s.mode = island::Mode::Large;
+                s.set_tab(9);
+                s.cfg.notes = vec![
+                    "PR review queue\nGitHub\n• PR #482 — notch profile switcher polish\n• PR #491 — Screen Time category colors\n\nLeave blocking comments only; merge green builds.".into(),
+                    "Sprint board\nIn progress • MN-214 — Code hosting".into(),
+                    "Merge checklist\nBefore merge: CI green, changelog".into(),
+                ];
+                s.open_note(0);
+            }),
             ("t3-device", |s| {
                 s.mode = island::Mode::Large;
                 s.set_tab(8);

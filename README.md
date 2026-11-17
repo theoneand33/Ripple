@@ -33,6 +33,7 @@ https://github.com/user-attachments/assets/a7b9ed8a-97b5-4603-bad7-6f4c4bef1f5d
 - AI Assistant answers questions using Groq.
 - Clipboard keeps your clipboard history.
 - Tasks is a simple to-do list.
+- Notes keeps notes in a list beside an editor. A note's first line is its title.
 - T3 Code starts an agent thread on a project on one of your T3 devices. You choose the model, the worktree, and the linked environment.
 
 You can reorder and hide tabs in Settings.
