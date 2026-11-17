@@ -23,8 +23,6 @@ pub const CANVAS: (f32, f32) = (620.0, 460.0);
 const PAD: f32 = 30.0;
 /// The tab dock under the Large Island: its height, the gap above it, one button and the space between.
 const DOCK: (f32, f32, f32, f32) = (44.0, 12.0, 32.0, 6.0);
-/// Seconds the Large Island stays open after the pointer leaves, once its tab was changed.
-const TAB_LINGER: f64 = 3.0;
 /// Room between the Large Island's edge and its tab's content.
 const LARGE_EDGE: f32 = 12.0;
 /// Framer's spring (stiffness 400, damping 40, mass 2.5) as duration and bounce.
@@ -255,7 +253,7 @@ pub struct Island {
     /// The way the last tab change went: 1 to the next tab, -1 to the previous.
     pub tab_dir: i32,
     swipe_lock_until: f64,
-    /// The tab changed in this Large session: leaving waits `TAB_LINGER` before closing.
+    /// The tab changed in this Large session: leaving waits `cfg.tab_linger` before closing.
     tab_changed: bool,
     /// When a lingering Island closes, unless the pointer comes back first.
     close_at: Option<f64>,
@@ -517,8 +515,9 @@ impl Island {
         let now = tx.clock();
         let left = std::mem::take(&mut self.left);
         if left && self.tab_changed && self.mode == Mode::Large {
-            self.close_at = Some(now + TAB_LINGER);
-            tx.wake_at(now + TAB_LINGER);
+            let at = now + f64::from(self.cfg.tab_linger);
+            self.close_at = Some(at);
+            tx.wake_at(at);
             return false;
         }
         if !left && !self.close_at.is_some_and(|t| now >= t) { return false }

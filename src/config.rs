@@ -157,6 +157,8 @@ pub struct Config {
     pub default_tab: Tab,
     /// Large Mode opens on the starred tab each time, not the last one used.
     pub open_default_tab: bool,
+    /// Seconds Large Mode stays open after the pointer leaves, once its tab was changed.
+    pub tab_linger: f32,
     pub battery_alerts: bool,
     pub island_border: bool,
     pub standby: bool,
@@ -213,6 +215,7 @@ impl Default for Config {
             hidden_tabs: Vec::new(),
             default_tab: Tab::Overview,
             open_default_tab: true,
+            tab_linger: 1.0,
             battery_alerts: true,
             island_border: false,
             standby: true,
@@ -266,6 +269,7 @@ impl Config {
         if self.hidden_tabs.len() >= Tab::ALL.len() { self.hidden_tabs.clear() }
         self.island_x = self.island_x.clamp(0.0, 100.0);
         self.island_y = self.island_y.clamp(0.0, 1000.0);
+        self.tab_linger = self.tab_linger.clamp(0.0, 10.0);
         if !SEARCH_ENGINES.iter().any(|e| e.0 == self.search_engine) { self.search_engine = "google".into() }
         if !PROVIDERS.iter().any(|p| p.id == self.ai_provider) { self.ai_provider = PROVIDERS[0].id.into() }
         self
