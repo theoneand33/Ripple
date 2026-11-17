@@ -129,3 +129,27 @@ pub fn unconstrain(ns_view: *mut c_void) {
         method.set_implementation(replacement);
     }
 }
+
+// --- Focus hand-back ---
+
+/// The frontmost app's process id.
+pub fn frontmost_pid() -> Option<i32> {
+    // SAFETY: NSWorkspace is safe from any thread; a nil app gives None.
+    unsafe {
+        let workspace: *mut AnyObject = msg_send![class!(NSWorkspace), sharedWorkspace];
+        let app: *mut AnyObject = msg_send![workspace, frontmostApplication];
+        if app.is_null() { return None }
+        let pid: i32 = msg_send![app, processIdentifier];
+        Some(pid)
+    }
+}
+
+/// Brings the app with `pid` to the front; Ripple, being active, may hand activation over.
+pub fn activate_pid(pid: i32) {
+    // SAFETY: a nil app (it quit) is skipped.
+    unsafe {
+        let app: *mut AnyObject = msg_send![class!(NSRunningApplication), runningApplicationWithProcessIdentifier: pid];
+        if app.is_null() { return }
+        let _: objc2::runtime::Bool = msg_send![app, activateWithOptions: 0usize];
+    }
+}
