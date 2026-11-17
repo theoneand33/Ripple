@@ -85,15 +85,15 @@ fn island_spec() -> AppSpec<Island> {
         scenes: &[
             ("quick", |s| { s.cfg.standby = true; s.mode = island::Mode::Quick }),
             ("large", |s| s.mode = island::Mode::Large),
-            ("search", |s| { s.mode = island::Mode::Large; s.tab = 0 }),
-            ("workflows", |s| { s.mode = island::Mode::Large; s.tab = 1 }),
-            ("assistant", |s| { s.mode = island::Mode::Large; s.tab = 4; s.asked = true; s.answer = Some("**Rust** is a systems language.\n\n```rust\nfn main() {}\n```".into()) }),
-            ("clipboard", |s| { s.mode = island::Mode::Large; s.tab = 5; s.push_clipboard("Hello from Ripple"); }),
-            ("tasks", |s| { s.mode = island::Mode::Large; s.tab = 6 }),
-            ("t3", |s| { s.mode = island::Mode::Large; s.tab = 8 }),
+            ("search", |s| { s.mode = island::Mode::Large; s.set_tab(0) }),
+            ("workflows", |s| { s.mode = island::Mode::Large; s.set_tab(1) }),
+            ("assistant", |s| { s.mode = island::Mode::Large; s.set_tab(4); s.asked = true; s.answer = Some("**Rust** is a systems language.\n\n```rust\nfn main() {}\n```".into()) }),
+            ("clipboard", |s| { s.mode = island::Mode::Large; s.set_tab(5); s.push_clipboard("Hello from Ripple"); }),
+            ("tasks", |s| { s.mode = island::Mode::Large; s.set_tab(6) }),
+            ("t3", |s| { s.mode = island::Mode::Large; s.set_tab(8) }),
             ("t3-device", |s| {
                 s.mode = island::Mode::Large;
-                s.tab = 8;
+                s.set_tab(8);
                 s.cfg.t3_devices = vec![config::T3Device { name: "Laptop".into(), url: "http://127.0.0.1:3773".into(), token: "t".into() }];
                 s.t3.data = Some(t3::Loaded {
                     favorites: vec![t3::Favorite { instance_id: "claude".into(), model: "opus".into(), label: "Claude Opus".into() }],
@@ -110,7 +110,7 @@ fn island_spec() -> AppSpec<Island> {
             }),
             ("overview-playing", |s| {
                 s.mode = island::Mode::Large;
-                s.tab = 2;
+                s.set_tab(2);
                 let mut tx = rune::Tx::default();
                 s.set_track(Some(system::Track { name: "Song".into(), artist: "Artist".into(), playing: true, ..Default::default() }), &mut tx);
             }),
