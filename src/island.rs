@@ -1509,10 +1509,10 @@ mod tests {
         let [left, top, w, h] = s.rect();
         let mut rt = rune::Runtime::new(s, view, CANVAS, rune::Env { system_dark: true, scale: 1.0 });
         for _ in 0..60 { rt.frame(1.0 / 60.0); }
-        let before = rt.find("task-0-task 0").unwrap().1;
+        let before = rt.find("task-task 0-0").unwrap().1;
         rt.wheel(left + w / 2.0, top + h / 2.0, -200.0);
         for _ in 0..30 { rt.frame(1.0 / 60.0); }
-        let after = rt.find("task-0-task 0").unwrap().1;
+        let after = rt.find("task-task 0-0").unwrap().1;
         assert!(after < before - 50.0, "task-0 stayed at {before} -> {after}");
     }
 
