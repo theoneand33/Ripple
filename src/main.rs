@@ -85,6 +85,7 @@ fn island_spec() -> AppSpec<Island> {
         on_key: Some(Island::key),
         scenes: &[
             ("quick", |s| { s.cfg.standby = true; s.mode = island::Mode::Quick }),
+            ("charging", |s| { s.cfg.standby = true; s.mode = island::Mode::Quick; (s.percent, s.charging) = (Some(80), true) }),
             ("large", |s| s.mode = island::Mode::Large),
             ("search", |s| { s.mode = island::Mode::Large; s.set_tab(0) }),
             ("workflows", |s| { s.mode = island::Mode::Large; s.set_tab(1) }),

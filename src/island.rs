@@ -429,6 +429,7 @@ impl Island {
             Some(Alert::Bluetooth) => (20.0, label("Connected")),
             None => (label(&self.time), match self.weather.temp {
                 Some(temp) if !(self.cfg.standby && self.percent.is_some()) => 16.0 + label(&format!("{temp}º")),
+                _ if self.charging && self.percent.is_some() => 16.0 + percent(),
                 _ => percent(),
             }),
         };
@@ -1328,17 +1329,20 @@ fn glance(s: &Island, fg: Color) -> El {
     };
     let percent = || text(s.percent.map_or(String::new(), |p| format!("{p}%"))).key("percent").font(style).color(color);
     let label = |l: &str| text(l).key("label").font(style).color(color);
+    let battery = || if s.charging {
+        row().key("battery").gap(2.0).center_y().child(icon(&icons::ZAP, 14.0).color(color)).child(percent())
+    } else { percent() };
     let right = match alert {
         Some(Alert::Charging | Alert::Battery) => percent(),
         Some(Alert::Camera) => label("Camera"),
         Some(Alert::Microphone) => label("Microphone"),
         Some(Alert::Bluetooth) => label("Connected"),
-        None if cfg.standby && s.percent.is_some() => percent(),
+        None if cfg.standby && s.percent.is_some() => battery(),
         None => match s.weather.temp {
             Some(temp) => row().key("weather").gap(2.0).center_y()
                 .child(icon(icons::weather(&s.weather.status), 14.0).color(color))
                 .child(text(format!("{temp}º")).font(style).color(color)),
-            None => percent(),
+            None => battery(),
         },
     };
     let pad = if cfg.notch_mode { 12.0 } else { 16.0 };
