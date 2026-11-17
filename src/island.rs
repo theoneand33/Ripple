@@ -231,6 +231,8 @@ pub struct Island {
     pub menu_hovered: bool,
     pub background: Option<Image>,
     bluetooth: bool,
+    /// The last Bluetooth poll found nothing connected; a disconnect needs two in a row.
+    bluetooth_missed: bool,
     pub camera: bool,
     pub microphone: bool,
 
@@ -322,6 +324,7 @@ impl Island {
             menu_hovered: false,
             background: None,
             bluetooth: false,
+            bluetooth_missed: false,
             camera: false,
             microphone: false,
             battery_alert_until: None,
@@ -408,6 +411,9 @@ impl Island {
         else { self.capture.map(|c| c.0) }
     }
 
+    /// The Bluetooth alert's label: it shows on connect and on disconnect.
+    fn bluetooth_label(&self) -> &'static str { if self.bluetooth { "Connected" } else { "Disconnected" } }
+
     fn now_playing_text(&self) -> (String, String) {
         let Some(t) = &self.track else { return Default::default() };
         (t.name.clone(), if t.artist.is_empty() { String::new() } else { format!(" • {}", t.artist) })
@@ -431,7 +437,7 @@ impl Island {
             Some(Alert::Charging | Alert::Battery) => (20.0, percent()),
             Some(Alert::Camera) => (20.0, label("Camera")),
             Some(Alert::Microphone) => (20.0, label("Microphone")),
-            Some(Alert::Bluetooth) => (20.0, label("Connected")),
+            Some(Alert::Bluetooth) => (20.0, label(self.bluetooth_label())),
             None => (label(&self.time), match self.weather.temp {
                 Some(temp) if !(self.cfg.standby && self.percent.is_some()) => 16.0 + label(&format!("{temp}º")),
                 _ if self.charging && self.percent.is_some() => 16.0 + percent(),
@@ -447,7 +453,7 @@ impl Island {
         let track = self.shows_track();
         let mut w = match self.mode {
             Mode::Large => match self.tab { 1 | 9 | 10 | tabs::SHELF => 520.0, 0 => 445.0, _ => 420.0 },
-            _ if alerting => if notch { self.notch_glance_width() } else { 160.0 }, // fits icon + "Microphone"
+            _ if alerting => if notch { self.notch_glance_width() } else { 176.0 }, // fits icon + "Disconnected"
             _ if track => self.now_playing_width(),
             _ if notch => if self.mode == Mode::Quick || self.cfg.show_info_idle { self.notch_glance_width() } else { 210.0 },
             Mode::Quick | Mode::Still => 140.0, // fits "23:59" + weather/"100%"
@@ -813,14 +819,14 @@ impl Island {
     }
 
     pub fn set_bluetooth(&mut self, connected: bool, tx: &mut Tx) -> bool {
-        if connected == self.bluetooth { return false }
+        // A failed query reads as "nothing connected": one miss alone is not a disconnect.
+        let missed = std::mem::replace(&mut self.bluetooth_missed, !connected);
+        if connected == self.bluetooth || (!connected && !missed) { return false }
         self.bluetooth = connected;
-        if connected {
-            self.mode = Mode::Quick;
-            self.bluetooth_alert_until = Some(tx.clock() + 3.0);
-            self.schedule(tx);
-        }
-        connected
+        self.mode = Mode::Quick;
+        self.bluetooth_alert_until = Some(tx.clock() + 3.0);
+        self.schedule(tx);
+        true
     }
 
     /// Camera and microphone alerts take turns, three seconds each.
@@ -1254,6 +1260,8 @@ pub fn view(s: &Island, _: &mut Cx<Island>) -> El {
         island = island.child(if s.shows_track() && s.alert().is_none() { now_playing(s, fg) } else { glance(s, fg) });
     }
 
+    if !large && let Some(dot) = capture_dot(s) { island = island.child(dot) }
+
     // The border draws over the content, as a CSS border does.
     island = island.child(border(s, radii, hidden));
     let mut canvas = el().key("canvas").w_full().h_full();
@@ -1348,7 +1356,8 @@ fn glance(s: &Island, fg: Color) -> El {
         Some(Alert::Battery) => status::low(),
         Some(Alert::Camera) => status::camera(),
         Some(Alert::Microphone) => status::mic(),
-        _ => fg,
+        Some(Alert::Bluetooth) => status::bluetooth(),
+        None => fg,
     };
     let style = s.font(16.0, 600.0).lh(16.0);
     let left = match alert {
@@ -1367,7 +1376,7 @@ fn glance(s: &Island, fg: Color) -> El {
         Some(Alert::Charging | Alert::Battery) => percent(),
         Some(Alert::Camera) => label("Camera"),
         Some(Alert::Microphone) => label("Microphone"),
-        Some(Alert::Bluetooth) => label("Connected"),
+        Some(Alert::Bluetooth) => label(s.bluetooth_label()),
         None if cfg.standby && s.percent.is_some() => battery(),
         None => match s.weather.temp {
             Some(temp) => row().key("weather").gap(2.0).center_y()
@@ -1388,6 +1397,19 @@ fn glance(s: &Island, fg: Color) -> El {
     row().key(key).w_full().h_full().px(pad).center_y().justify_between()
         .transition(Transition::blur_replace())
         .child(left).child(right)
+}
+
+/// A privacy dot at the compact Island's right end while the camera or microphone is in use,
+/// once that one's alert has had its turn. Like the border, it shows even when the Island hides.
+fn capture_dot(s: &Island) -> Option<El> {
+    let (color, label, alert) = if s.camera { (status::camera(), "Camera in use", Alert::Camera) }
+        else if s.microphone { (status::mic(), "Microphone in use", Alert::Microphone) }
+        else { return None };
+    if s.alert() == Some(alert) { return None }
+    const SIZE: f32 = 6.0;
+    Some(el().key("capture-dot").role("img").label(label).inert()
+        .pin(None, Some((s.size().1 - SIZE) / 2.0), Some(3.0), None).size(SIZE, SIZE)
+        .radius(SIZE / 2.0).fill(color).transition(Transition::opacity()))
 }
 
 /// The compact view while music plays: cover, a title that scrolls when it doesn't fit, and
@@ -1423,7 +1445,18 @@ fn now_playing(s: &Island, fg: Color) -> El {
                 .on_press(|_: &mut Island| control(MediaCommand::PlayPause)),
         );
     }
-    line
+    let wrap = el().key("now-playing").w_full().h_full().child(line);
+    let Some((position, length)) = track.progress else { return wrap };
+    // A hairline along the bottom, inset past the capsule's curve; it glides between the 2 s polls.
+    // Keyed by track, so a new track starts its own bar instead of sweeping back.
+    let inset = s.size().1 / 2.0;
+    let width = s.size().0 - 2.0 * inset;
+    let done = width * position as f32 / length as f32;
+    wrap.child(
+        el().key(format!("progress-{}-{}", track.name, track.artist)).inert().a11y_hidden()
+            .pin(Some(inset), None, Some(inset), Some(3.0)).h(2.0).radius(1.0).fill(fg.alpha(0.15 * fg.a))
+            .child(el().key("progress-done").h_full().w(done).radius(1.0).fill(fg.alpha(0.7 * fg.a)).motion(Spring::new(2.0, 0.0))),
+    )
 }
 
 /// The track's cover, or a note when it has none. A press opens the player.
@@ -1490,6 +1523,22 @@ mod tests {
         assert_eq!(island(Config::default()).mode, Mode::Quick);
         assert_eq!(island(Config { standby: false, ..Config::default() }).mode, Mode::Still);
         assert_eq!(island(Config { standby: false, large_standby: true, ..Config::default() }).mode, Mode::Large);
+    }
+
+    #[test]
+    fn bluetooth_alerts_on_connect_and_on_a_disconnect_seen_twice() {
+        let mut s = island(Config::default());
+        let mut tx = Tx::default();
+        assert!(s.set_bluetooth(true, &mut tx));
+        assert_eq!((s.alert(), s.bluetooth_label()), (Some(Alert::Bluetooth), "Connected"));
+        s.bluetooth_alert_until = None;
+        // One failed poll, then the device again: no alert.
+        assert!(!s.set_bluetooth(false, &mut tx));
+        assert!(!s.set_bluetooth(true, &mut tx));
+        assert_eq!(s.alert(), None);
+        assert!(!s.set_bluetooth(false, &mut tx));
+        assert!(s.set_bluetooth(false, &mut tx));
+        assert_eq!((s.alert(), s.bluetooth_label()), (Some(Alert::Bluetooth), "Disconnected"));
     }
 
     #[test]
