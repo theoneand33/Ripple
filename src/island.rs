@@ -512,7 +512,7 @@ impl Island {
         let was = self.mode;
         self.mode = if mode == Mode::Still { self.rest() } else { mode };
         if self.mode == Mode::Large && was != Mode::Large && self.cfg.open_default_tab { self.tab = self.cfg.first_tab() }
-        if self.mode != Mode::Large { self.t3.open = None; self.tab_changed = false }
+        if self.mode != Mode::Large { self.t3.open = None; self.tab_changed = false; self.close_at = None }
     }
 
     pub fn hover(&mut self, hovered: bool, tx: &mut Tx) { self.set_over(0, hovered, tx) }
@@ -608,6 +608,8 @@ impl Island {
 
     /// Switches tab, sliding the way it lies, and loads what the tab needs.
     pub fn open_tab(&mut self, id: u8) {
+        // Opening a tab (the Shelf on a drag, say) is activity: a pending close no longer applies.
+        self.close_at = None;
         self.set_tab(id);
         self.entered_tab();
     }
