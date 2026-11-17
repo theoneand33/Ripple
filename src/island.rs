@@ -206,7 +206,8 @@ pub struct Island {
 
     pub time: String,
     pub date: String,
-    pub percent: u8,
+    /// None on a machine without a battery.
+    pub percent: Option<u8>,
     pub charging: bool,
     pub weather: Weather,
     pub track: Option<Track>,
@@ -289,7 +290,7 @@ impl Island {
             left: false,
             time: String::new(),
             date: String::new(),
-            percent: 100,
+            percent: None,
             charging: false,
             weather: Weather::default(),
             track: None,
@@ -653,14 +654,15 @@ impl Island {
 
     // --- What the pollers report ---
 
-    pub fn set_battery(&mut self, percent: u8, charging: bool, tx: &mut Tx) -> bool {
+    pub fn set_battery(&mut self, battery: Option<(u8, bool)>, tx: &mut Tx) -> bool {
+        let (percent, charging) = battery.map_or((None, false), |(p, c)| (Some(p), c));
         if (percent, charging) == (self.percent, self.charging) { return false }
         let now = tx.clock();
         if charging && !self.charging && self.cfg.battery_alerts {
             self.mode = Mode::Quick;
             self.charging_alert_until = Some(now + 1.5);
         }
-        if percent != self.percent && [20, 15, 10, 5, 3].contains(&percent) && self.cfg.battery_alerts {
+        if percent != self.percent && percent.is_some_and(|p| [20, 15, 10, 5, 3].contains(&p)) && self.cfg.battery_alerts {
             self.mode = Mode::Quick;
             self.battery_alert_until = Some(now + 3.0);
         }
@@ -851,7 +853,7 @@ impl Island {
         let h = me.clone();
         every(3, move || { let m = system::microphone_in_use(); h.update_if(move |s, tx| s.set_capture(None, Some(m), tx)); });
         let h = me.clone();
-        every(5, move || { let (p, c) = system::battery(); h.update_if(move |s, tx| s.set_battery(p, c, tx)); });
+        every(5, move || { let b = system::battery(); h.update_if(move |s, tx| s.set_battery(b, tx)); });
 
         // Weather: every 10 minutes, and at once when the location or unit changes.
         let (kick, kicked) = std::sync::mpsc::channel();
@@ -1151,7 +1153,7 @@ fn border(s: &Island, radii: [f32; 4], hidden: bool) -> El {
     let color = if s.camera { status::camera() }
         else if s.microphone { status::mic() }
         else if s.charging || s.alert() == Some(Alert::Charging) { status::charge() }
-        else if s.percent <= 20 || s.alert() == Some(Alert::Battery) { status::low() }
+        else if s.percent.is_some_and(|p| p <= 20) || s.alert() == Some(Alert::Battery) { status::low() }
         else if s.alert() == Some(Alert::Bluetooth) { status::bluetooth() }
         else if cfg.hide_inactive || hidden { return ring }
         else { cfg.text().alpha(0.3 * cfg.text().a) };
@@ -1178,14 +1180,14 @@ fn glance(s: &Island, fg: Color) -> El {
         Some(Alert::Bluetooth) => icon(&icons::HEADPHONES, 20.0).color(color),
         None => text(&s.time).key("time").font(style.features("'tnum' 1")).color(color),
     };
-    let percent = || text(format!("{}%", s.percent)).key("percent").font(style).color(color);
+    let percent = || text(s.percent.map_or(String::new(), |p| format!("{p}%"))).key("percent").font(style).color(color);
     let label = |l: &str| text(l).key("label").font(style).color(color);
     let right = match alert {
         Some(Alert::Charging | Alert::Battery) => percent(),
         Some(Alert::Camera) => label("Camera"),
         Some(Alert::Microphone) => label("Microphone"),
         Some(Alert::Bluetooth) => label("Connected"),
-        None if cfg.standby => percent(),
+        None if cfg.standby && s.percent.is_some() => percent(),
         None => match s.weather.temp {
             Some(temp) => row().key("weather").gap(2.0).center_y()
                 .child(icon(icons::weather(&s.weather.status), 14.0).color(color))
