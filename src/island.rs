@@ -541,6 +541,8 @@ impl Island {
 
     /// The pointer stayed off the Island and its dock.
     fn leave(&mut self, tx: &mut Tx) -> bool {
+        // Large ended some way that skips set_mode (reload, alerts): the session's state ends too.
+        if self.mode != Mode::Large { self.tab_changed = false; self.close_at = None }
         if self.hovered { return false }
         let now = tx.clock();
         let left = std::mem::take(&mut self.left);
@@ -608,8 +610,6 @@ impl Island {
 
     /// Switches tab, sliding the way it lies, and loads what the tab needs.
     pub fn open_tab(&mut self, id: u8) {
-        // Opening a tab (the Shelf on a drag, say) is activity: a pending close no longer applies.
-        self.close_at = None;
         self.set_tab(id);
         self.entered_tab();
     }
@@ -687,12 +687,18 @@ impl Island {
 
     // --- Shelf ---
 
+    /// Opens the Shelf in Large without the pointer; a pending close no longer applies.
+    fn open_shelf(&mut self) {
+        self.close_at = None;
+        self.mode = Mode::Large;
+        self.open_tab(tabs::SHELF);
+    }
+
     /// A file drag over the Island opens the Shelf; one that leaves without dropping lets it rest.
     pub fn drop_hover(&mut self, over: bool, _: &mut Tx) {
         self.dropping = over;
         if over {
-            self.mode = Mode::Large;
-            self.open_tab(tabs::SHELF);
+            self.open_shelf();
         } else if !self.hovered && !self.desktop_drag {
             self.set_mode(Mode::Still);
         }
@@ -704,8 +710,7 @@ impl Island {
         if active {
             if !self.cfg.visible_tabs().contains(&tabs::SHELF) { return }
             self.desktop_drag = true;
-            self.mode = Mode::Large;
-            self.open_tab(tabs::SHELF);
+            self.open_shelf();
         } else if std::mem::take(&mut self.desktop_drag) && !self.hovered && !self.dropping {
             self.set_mode(Mode::Still);
         }
@@ -719,8 +724,7 @@ impl Island {
         });
         self.dropping = false;
         self.desktop_drag = false;
-        self.mode = Mode::Large;
-        self.open_tab(tabs::SHELF);
+        self.open_shelf();
     }
 
     pub fn key(&mut self, ev: &KeyEvent, _: &mut Tx) -> bool {
