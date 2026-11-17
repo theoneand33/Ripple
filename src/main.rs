@@ -109,6 +109,13 @@ fn island_spec() -> AppSpec<Island> {
                 let entry = |id: &str, title: &str, position| stremflix::Entry { kind: "movie".into(), id: id.into(), title: title.into(), poster: None, position, duration: 100.0 };
                 s.stremflix.entries = Some(Ok(vec![entry("a", "Big Buck Bunny", 40.0), entry("b", "Sintel", 80.0), entry("c", "A Very Long Title That Truncates", 10.0), entry("d", "Tears of Steel", 60.0), entry("e", "Elephants Dream", 5.0)]));
             }),
+            ("system", |s| {
+                s.mode = island::Mode::Large;
+                s.set_tab(tabs::SYSTEM);
+                s.percent = Some(57);
+                const GB: u64 = 1 << 30;
+                s.stats = Some(system::Stats { cpu: 7.0, mem_used: 29 * GB, mem_total: 48 * GB, disk_free: 810 * GB, disk_total: 990 * GB, down: 15_200, up: 3_100 });
+            }),
             ("shelf-drop", |s| { s.mode = island::Mode::Large; s.set_tab(tabs::SHELF); s.dropping = true }),
             ("shelf", |s| { s.mode = island::Mode::Large; s.set_tab(tabs::SHELF); s.cfg.shelf = vec!["/home/me/Report final.pdf".into(), "/home/me/photo.png".into()] }),
             ("t3-device", |s| {

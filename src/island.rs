@@ -257,6 +257,8 @@ pub struct Island {
     pub note: TextEdit,
     pub note_index: usize,
     pub stremflix: StremflixState,
+    /// The System tab's figures; None until the first sample.
+    pub stats: Option<system::Stats>,
     /// A file drag is over the Island.
     pub dropping: bool,
     /// A drag started elsewhere on the desktop opened the Shelf; it rests when the drag ends.
@@ -345,6 +347,7 @@ impl Island {
             note: TextEdit::new(cfg.notes.first().map_or("", String::as_str)),
             note_index: 0,
             stremflix: StremflixState::default(),
+            stats: None,
             dropping: false,
             desktop_drag: false,
             t3: T3State::default(),
@@ -452,7 +455,7 @@ impl Island {
         let alerting = self.alert().is_some();
         let track = self.shows_track();
         let mut w = match self.mode {
-            Mode::Large => match self.tab { 1 | 9 | 10 | tabs::SHELF => 520.0, 0 => 445.0, _ => 420.0 },
+            Mode::Large => match self.tab { 1 | 9 | 10 | tabs::SHELF | tabs::SYSTEM => 520.0, 0 => 445.0, _ => 420.0 },
             _ if alerting => if notch { self.notch_glance_width() } else { 176.0 }, // fits icon + "Disconnected"
             _ if track => self.now_playing_width(),
             _ if notch => if self.mode == Mode::Quick || self.cfg.show_info_idle { self.notch_glance_width() } else { 210.0 },
@@ -1003,6 +1006,16 @@ impl Island {
         std::thread::spawn(move || system::watch_drags(|active| h.update(move |s, _| s.desktop_drag(active))));
         let h = me.clone();
         every(5, move || { let b = system::battery(); h.update_if(move |s, tx| s.set_battery(b, tx)); });
+        let h = me.clone();
+        std::thread::spawn(move || {
+            let mut monitor = system::Monitor::new();
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(2));
+                let stats = Some(monitor.sample());
+                // Redraw only while the System tab shows; otherwise just keep the latest figures.
+                h.update_if(move |s, _| { let changed = s.stats != stats; s.stats = stats; changed && s.mode == Mode::Large && s.tab == tabs::SYSTEM });
+            }
+        });
 
         // Weather: every 10 minutes, and at once when the location or unit changes.
         let (kick, kicked) = std::sync::mpsc::channel();

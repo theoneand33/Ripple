@@ -20,6 +20,8 @@ base64 = "0.22"
 getrandom = "0.3"
 # The tray icon's pixels.
 png = "0.18"
+# The System tab's CPU, memory, disk and network figures.
+sysinfo = { version = "0.39", default-features = false, features = ["system", "disk", "network"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # The status-bar item and the Island's unconstrained frame (src/mac.rs).
