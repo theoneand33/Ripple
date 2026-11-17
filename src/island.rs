@@ -1205,7 +1205,7 @@ fn now_playing(s: &Island, fg: Color) -> El {
         el().key("play-pause").role("button").label(if track.playing { "Pause" } else { "Play" })
             .size(25.0, 24.0).center().transition(Transition::opacity())
             .child(icon(if track.playing { &icons::PAUSE } else { &icons::PLAY }, 15.0).color(Color::WHITE))
-            .on_press(|_: &mut Island| control(MediaCommand::PlayPause))
+            .on_press(|s: &mut Island| control(s, MediaCommand::PlayPause))
     } else {
         visualizer(track.playing, fg)
     });
@@ -1259,9 +1259,19 @@ pub fn cover(s: &Island, size: f32, radius: f32, glyph: f32, hover_scale: f32) -
     }
 }
 
-/// Media keys run a subprocess; never on the UI thread.
-pub fn control(command: MediaCommand) {
-    std::thread::spawn(move || system::media_control(command));
+/// Media keys run a subprocess; never on the UI thread. Play/pause flips the shown state at once,
+/// then a fresh poll after the command settles it to what the player reports.
+pub fn control(s: &mut Island, command: MediaCommand) {
+    let me = s.me.clone();
+    if command == MediaCommand::PlayPause && let (Some(me), Some(track)) = (&me, &s.track) {
+        let playing = !track.playing;
+        let track = Track { playing, paused: !playing, ..track.clone() };
+        me.update_if(move |s, tx| s.set_track(Some(track), tx));
+    }
+    std::thread::spawn(move || {
+        system::media_control(command);
+        if let Some(me) = me { let t = system::media(); me.update_if(move |s, tx| s.set_track(t, tx)); }
+    });
 }
 
 #[cfg(test)]

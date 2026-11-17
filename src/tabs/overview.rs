@@ -41,7 +41,7 @@ pub fn view(s: &Island) -> El {
         el().key(key).role("button").label(label).focusable(true)
             .padding(4.0).radius(8.0).hover(fg.alpha(0.1 * fg.a)).press(fg.alpha(0.2 * fg.a)).press_scale(0.97)
             .child(icon(glyph, size).color(fg))
-            .on_press(move |_: &mut Island| control(command))
+            .on_press(move |s: &mut Island| control(s, command))
     };
     let line = |key: &str, text: El, text_width: f32, height: f32| marquee(key, text, text_width, 175.0, 10.0).w(175.0).h(height);
     let details = col().key("details").grow(1.0).min_w(0.0).pl(5.0)
