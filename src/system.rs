@@ -458,6 +458,9 @@ impl Monitor {
         self.nets.refresh(true);
         let secs = std::mem::replace(&mut self.at, std::time::Instant::now()).elapsed().as_secs_f64().max(0.001);
         let home = rune::dirs::home().unwrap_or_else(|| "/".into());
+        // macOS firmlinks /Users from the Data volume; "/" is the small read-only system volume.
+        #[cfg(target_os = "macos")]
+        let home = std::path::Path::new("/System/Volumes/Data").join(home.strip_prefix("/").unwrap_or(&home));
         let disks = self.disks.list();
         let disk = disks.iter().filter(|d| home.starts_with(d.mount_point())).max_by_key(|d| d.mount_point().as_os_str().len())
             .or_else(|| disks.iter().max_by_key(|d| d.total_space()));
