@@ -437,6 +437,10 @@ fn home(s: &Settings, k: &Kit, layer: &mut Vec<El>) -> Vec<El> {
         style.push(setting(s, &format!("Position Y ({}px)", cfg.island_y.round()), slider(s, "island-y", "Position Y", (0.0, 500.0, 1.0), |c| c.island_y, |c, v| c.island_y = v)));
     }
     style.push(setting(s, "Island border", switch(k, "Island border", cfg.island_border, |c| c.island_border = !c.island_border).a11y_hidden()));
+    // Only the Wayland layer-shell overlay can be pushed below a panel.
+    if matches!(s.island, Some(Host::Overlay(..))) {
+        style.push(setting(s, "Overlap panels", switch(k, "Overlap panels", cfg.overlap_panels, |c| c.overlap_panels = !c.overlap_panels).a11y_hidden()));
+    }
     style.push(setting(s, "Hide when inactive", switch(k, "Hide when inactive", cfg.hide_inactive, |c| c.hide_inactive = !c.hide_inactive).a11y_hidden()));
     sections.push(section(s, "style", "Island style", style));
 

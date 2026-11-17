@@ -701,6 +701,7 @@ impl Island {
         }
         if old.bg_image != self.cfg.bg_image { self.load_background() }
         if old.hour12 != self.cfg.hour12 { self.set_clock() }
+        if old.overlap_panels != self.cfg.overlap_panels && let Some(Host::Overlay(h, ..)) = &self.me { h.set_overlap_panels(self.cfg.overlap_panels) }
         tabs::reloaded(self, &old);
     }
 

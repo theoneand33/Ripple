@@ -211,6 +211,7 @@ fn overlay_island(screens: Vec<Screen>, store: Store) -> Vec<rune::AnyWindowSpec
         input: OverlayInput::Regions,
         keys: KeyPolicy::OnDemand,
         xwayland_input: true,
+        overlap_panels: state.cfg.overlap_panels,
         ..Default::default()
     };
     let spec = OverlaySpec { name: "ripple", size: CANVAS, edge: ScreenEdge::Top, margin: 0.0, align: Align::Start, inset: 0.0, interactive: true, view: island::view };
