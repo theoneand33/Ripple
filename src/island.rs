@@ -2,12 +2,13 @@
 //! and the compact views. The Large mode's tabs are in `tabs.rs`.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
 
 use rune::time::LocalTime;
 use rune::tok::{Family, TextStyle};
 use rune::{
-    AppHandle, Color, Cx, Display, DisplayTarget, Drag, Easing, Edge, GesturePhase, El, Image, ImageCache, Key, KeyEvent, LoopSpec, OverlayPlacement,
+    AppHandle, Color, Cx, Display, DisplayTarget, Drag, Easing, Edge, GesturePhase, El, Image, ImageCache, Key, KeyEvent, LoopSpec, OverlayHandle, OverlayPlacement,
     Phase, Shadow, Spring, SurfaceFit, TextEdit, Transition, Tx, Waker, WheelEvent, WindowHandle, el, icon, row, text,
 };
 use rune_kit::{Kit, PaletteSeed};
@@ -52,6 +53,54 @@ pub enum Alert {
     Bluetooth,
     Camera,
     Microphone,
+}
+
+/// The Island's own handle: its window, or on Wayland a layer-shell overlay, since Wayland
+/// lets no ordinary window place or raise itself.
+#[derive(Clone)]
+pub enum Host {
+    Window(AppHandle<Island>),
+    /// The overlay, the windowless app that hosts it (for quitting), and whether it is shown.
+    Overlay(OverlayHandle<Island>, AppHandle<()>, Arc<AtomicBool>),
+}
+
+impl Host {
+    pub fn update(&self, f: impl FnOnce(&mut Island, &mut Tx) + Send + 'static) {
+        match self { Host::Window(h) => h.update(f), Host::Overlay(h, ..) => h.update(f) }
+    }
+
+    pub fn update_if(&self, f: impl FnOnce(&mut Island, &mut Tx) -> bool + Send + 'static) {
+        match self { Host::Window(h) => h.update_if(f), Host::Overlay(h, ..) => h.update_if(f) }
+    }
+
+    pub fn place(&self, display: DisplayTarget, placement: OverlayPlacement) {
+        match self {
+            Host::Window(h) => h.place(display, placement),
+            Host::Overlay(h, ..) => { h.set_display(display); h.set_placement(Some(placement)) }
+        }
+    }
+
+    pub fn is_visible(&self) -> bool {
+        match self { Host::Window(h) => h.is_visible(), Host::Overlay(_, _, shown) => shown.load(Ordering::Relaxed) }
+    }
+
+    /// Shows the Island without taking focus.
+    pub fn show(&self) {
+        match self { Host::Window(h) => h.show(), Host::Overlay(h, _, shown) => { shown.store(true, Ordering::Relaxed); h.show() } }
+    }
+
+    pub fn hide(&self) {
+        match self { Host::Window(h) => h.hide(), Host::Overlay(h, _, shown) => { shown.store(false, Ordering::Relaxed); h.hide() } }
+    }
+
+    pub fn quit(&self) {
+        match self { Host::Window(h) => h.quit(), Host::Overlay(_, app, _) => app.quit() }
+    }
+
+    /// Lets a click give the overlay keyboard focus; a window takes it on click already.
+    fn allow_keys(&self) {
+        if let Host::Overlay(h, ..) = self { h.request_keys() }
+    }
 }
 
 /// One display as the window factory saw it at startup.
@@ -193,7 +242,7 @@ pub struct Island {
     pub t3: T3State,
     pub t3_client: Arc<t3::Client>,
 
-    pub me: Option<AppHandle<Island>>,
+    pub me: Option<Host>,
     pub settings: Option<WindowHandle>,
     pub images: Option<ImageCache>,
     pub screens: Vec<Screen>,
@@ -405,6 +454,8 @@ impl Island {
         self.over[part] = inside;
         self.hovered = self.over[0] || self.over[1];
         if self.hovered && !was {
+            // Each show makes a new layer surface, so this is asked again on every entry.
+            if let Some(me) = &self.me { me.allow_keys() }
             if self.mode == Mode::Still && self.cfg.show_info_idle && !self.playing() { self.set_mode(Mode::Large) }
             else if self.mode != Mode::Large { self.set_mode(Mode::Quick) }
         } else if !self.hovered {
@@ -773,7 +824,13 @@ impl Island {
     /// Runs once the window exists: the pollers start here, after the first frame.
     pub fn start(&mut self, waker: Waker) {
         self.images = Some(ImageCache::new(waker));
-        if rune::is_headless() { return }
+        self.begin();
+    }
+
+    /// The pollers, once `me` is set: at `start` for a window; an overlay's handle only exists
+    /// after its state does, so `main` calls this when it sets `me`.
+    pub fn begin(&mut self) {
+        if rune::is_headless() || self.weather_kick.is_some() { return }
         let Some(me) = self.me.clone() else { return };
         if self.cfg.new_user { self.intro_at = Some(3.0) }
         self.load_background();
@@ -1045,6 +1102,8 @@ pub fn view(s: &Island, _: &mut Cx<Island>) -> El {
     // The border draws over the content, as a CSS border does.
     island = island.child(border(s, radii, hidden));
     let mut canvas = el().key("canvas").w_full().h_full().child(island);
+    // A select's menu opens outside the Island: the whole overlay takes clicks while one is open.
+    if s.t3.open.is_some() { canvas = canvas.hit() }
     if let Some(rect) = s.dock_rect() { canvas = canvas.child(dock(s, rect)) }
     rune_kit::root(canvas, layer)
 }

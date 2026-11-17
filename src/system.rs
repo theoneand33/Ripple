@@ -10,8 +10,8 @@ use crate::command::tokenize_args;
 #[cfg(windows)]
 use crate::config::QuickApp;
 
-/// `WAYLAND_DISPLAY` as Ripple was started with it. `main` unsets it so the Island runs on
-/// X11 (Wayland can't place or raise a window); apps Ripple starts get it back.
+/// `WAYLAND_DISPLAY` as Ripple was started with it. `main` unsets it when the Island runs on
+/// XWayland (headless tools); apps Ripple starts get it back.
 pub static WAYLAND_DISPLAY: OnceLock<Option<OsString>> = OnceLock::new();
 
 fn command(program: &str) -> Command {

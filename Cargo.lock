@@ -2725,6 +2725,7 @@ dependencies = [
  "sha2",
  "tungstenite",
  "ureq",
+ "wayland-client",
  "x11rb",
 ]
 

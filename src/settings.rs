@@ -1,16 +1,16 @@
 //! The Settings window. Every change saves at once and the Island picks it up.
 
-use rune::{AppHandle, Color, Cursor, Cx, Drag, El, Phase, ScrollSpec, TextEdit, Tx, col, el, icon, row, text};
+use rune::{Color, Cursor, Cx, Drag, El, Phase, ScrollSpec, TextEdit, Tx, col, el, icon, row, text};
 use rune_kit::{Button, ButtonVariant, IconButton, Kit, RadioGroup, RadioItem, Select, Switch, TextArea, TextInput};
 
 use crate::config::{Config, POSITIONS, QuickApp, SEARCH_ENGINES, Store, T3Device, TABS, Workflow, default_model};
 use crate::icons;
-use crate::island::{Island, Screen, font, kit};
+use crate::island::{Host, Screen, font, kit};
 
 pub struct Settings {
     pub store: Store,
     pub cfg: Config,
-    pub island: Option<AppHandle<Island>>,
+    pub island: Option<Host>,
     pub screens: Vec<String>,
     /// The select that is open, by key.
     open: Option<&'static str>,
@@ -36,7 +36,7 @@ pub struct Settings {
 }
 
 impl Settings {
-    pub fn new(store: Store, island: Option<AppHandle<Island>>, screens: &[Screen]) -> Settings {
+    pub fn new(store: Store, island: Option<Host>, screens: &[Screen]) -> Settings {
         let cfg = store.get();
         let edit = |s: &str| TextEdit::new(s);
         Settings {
