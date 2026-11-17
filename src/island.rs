@@ -660,8 +660,8 @@ impl Island {
     pub fn reload(&mut self, _: &mut Tx) {
         let old = std::mem::replace(&mut self.cfg, self.store.get());
         self.kit = kit(&self.cfg);
-        if !self.cfg.visible_tabs().contains(&self.tab) { self.set_tab(self.cfg.first_tab()) }
         if self.mode != Mode::Large || !self.hovered { self.mode = self.rest() }
+        if !self.cfg.visible_tabs().contains(&self.tab) { self.open_tab(self.cfg.first_tab()) }
         let moved = (old.position_mode != self.cfg.position_mode, old.notch_mode != self.cfg.notch_mode, old.island_x != self.cfg.island_x, old.island_y != self.cfg.island_y, old.display != self.cfg.display);
         if moved != (false, false, false, false, false) { self.place_window() }
         if (old.location != self.cfg.location || old.weather_unit != self.cfg.weather_unit)
