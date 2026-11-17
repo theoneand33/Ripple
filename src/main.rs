@@ -10,6 +10,7 @@ mod migrate;
 mod net;
 mod platform;
 mod settings;
+mod stremflix;
 mod system;
 mod t3;
 mod tabs;
@@ -100,6 +101,12 @@ fn island_spec() -> AppSpec<Island> {
                     "Merge checklist\nBefore merge: CI green, changelog".into(),
                 ];
                 s.open_note(0);
+            }),
+            ("stremflix", |s| {
+                s.mode = island::Mode::Large;
+                s.set_tab(10);
+                let entry = |id: &str, title: &str, position| stremflix::Entry { kind: "movie".into(), id: id.into(), title: title.into(), poster: None, position, duration: 100.0 };
+                s.stremflix.entries = Some(Ok(vec![entry("a", "Big Buck Bunny", 40.0), entry("b", "Sintel", 80.0), entry("c", "A Very Long Title That Truncates", 10.0), entry("d", "Tears of Steel", 60.0), entry("e", "Elephants Dream", 5.0)]));
             }),
             ("t3-device", |s| {
                 s.mode = island::Mode::Large;

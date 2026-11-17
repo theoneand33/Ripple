@@ -30,6 +30,7 @@ stroke!(MIC, "mic", r#"<path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-
 stroke!(LIST, "list", r#"<path d="M3 12h.01"/><path d="M3 18h.01"/><path d="M3 6h.01"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M8 6h13"/>"#);
 stroke!(CHECK, "check", r#"<path d="M20 6 9 17l-5-5"/>"#);
 stroke!(STICKY_NOTE, "sticky-note", r#"<path d="M16 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V8Z"/><path d="M15 3v4a2 2 0 0 0 2 2h4"/>"#);
+stroke!(TV, "tv", r#"<rect width="20" height="15" x="2" y="7" rx="2" ry="2"/><polyline points="17 2 12 7 7 2"/>"#);
 stroke!(TERMINAL, "terminal", r#"<polyline points="4 17 10 11 4 5"/><line x1="12" x2="20" y1="19" y2="19"/>"#);
 stroke!(CAMERA, "camera", r#"<path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/>"#);
 stroke!(HEADPHONES, "headphones", r#"<path d="M3 14h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-7a9 9 0 0 1 18 0v7a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3"/>"#);
@@ -76,6 +77,7 @@ pub fn tab(id: u8) -> &'static Icon {
         5 => &LIST,
         6 => &CHECK,
         9 => &STICKY_NOTE,
+        10 => &TV,
         _ => &TERMINAL,
     }
 }
