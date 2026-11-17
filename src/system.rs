@@ -120,8 +120,8 @@ pub enum MediaCommand {
     Previous,
 }
 
-/// One `playerctl -a` line per player: `name||status||title||artist||album||artUrl||position||length`.
-const PLAYERCTL_FORMAT: &str = "{{playerName}}||{{status}}||{{title}}||{{artist}}||{{album}}||{{mpris:artUrl}}||{{position}}||{{mpris:length}}";
+/// One `playerctl -a` line per player: `instance||status||title||artist||album||artUrl||position||length`.
+const PLAYERCTL_FORMAT: &str = "{{playerInstance}}||{{status}}||{{title}}||{{artist}}||{{album}}||{{mpris:artUrl}}||{{position}}||{{mpris:length}}";
 
 /// The player to show from `playerctl -a` output: the first one playing, else the first paused
 /// one, else any with a title. `playerctl` alone takes the first player, often an idle tab.
@@ -770,6 +770,9 @@ mod tests {
         assert_eq!(pick_player("firefox||Stopped||Tab||A||||\nvlc||Paused||Film||||||").map(|p| p[0]), Some("vlc"));
         assert_eq!(pick_player("chromium||Stopped||||||||"), None);
         assert_eq!(pick_player(""), None);
+        // Two instances of one app keep apart, so controls reach the playing one.
+        let two = "chromium.instance11||Paused||Idle||A||||\nchromium.instance42||Playing||Song||B||||";
+        assert_eq!(pick_player(two).map(|p| p[0]), Some("chromium.instance42"));
     }
 
     #[test]
