@@ -156,7 +156,8 @@ fn overview(s: &Island) -> El {
     let weather = row().key("weather").absolute(24.0, 20.0).gap(4.0).center_y()
         .child(icon(icons::weather(&s.weather.status), 16.0).color(fg))
         .child(text(s.weather.temp.map_or("??º".to_string(), |t| format!("{t}º"))).font(s.font(15.0, 500.0)).color(fg));
-    let mut root = el().key("overview").w_full().h_full().child(weather);
+    let mut root = el().key("overview").w_full().h_full();
+    if !s.cfg.location.trim().is_empty() { root = root.child(weather) }
     // A desktop without a battery shows no battery pill.
     if let Some(percent) = s.percent {
         let mut battery = row().key("battery").pin(None, Some(20.0), Some(24.0), None).px(8.0).h(24.0).gap(2.0).center_y()

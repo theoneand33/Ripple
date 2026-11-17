@@ -980,7 +980,9 @@ impl Island {
         let store = self.store.clone();
         std::thread::spawn(move || loop {
             let cfg = store.get();
-            if let Some(w) = crate::net::weather(&cfg.location, &cfg.weather_unit) {
+            // No location: clear the weather so no icon shows and no request is sent.
+            let w = if cfg.location.trim().is_empty() { Some(Weather::default()) } else { crate::net::weather(&cfg.location, &cfg.weather_unit) };
+            if let Some(w) = w {
                 me.update_if(move |s, _| s.weather != w && { s.weather = w; true });
             }
             if kicked.recv_timeout(std::time::Duration::from_secs(600)) == Err(std::sync::mpsc::RecvTimeoutError::Disconnected) { break }
