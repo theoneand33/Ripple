@@ -624,6 +624,7 @@ impl Island {
             c.shelf.retain(|f| !files.contains(f));
             c.shelf.splice(0..0, files.iter().cloned());
         });
+        self.dropping = false;
         self.mode = Mode::Large;
         self.open_tab(tabs::SHELF);
     }
