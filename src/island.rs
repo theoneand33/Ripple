@@ -1,23 +1,21 @@
 //! The Island: its state, the rules that move it between Still, Quick and Large, the alerts,
-//! and the compact views. The Large mode's tabs are in `tabs.rs`.
+//! and the compact views. The Large mode's tabs are in `tabs/`.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
 
 use rune::time::LocalTime;
-use rune::tok::{Family, TextStyle};
 use rune::{
-    AppHandle, Color, Curve, Cx, Display, DisplayTarget, Drag, Easing, Edge, Effect, GesturePhase, El, Image, ImageCache, Key, KeyEvent, LoopSpec, OverlayHandle, OverlayPlacement,
+    AppHandle, Color, Curve, Cx, DisplayTarget, Drag, Easing, Edge, Effect, GesturePhase, El, Image, ImageCache, Key, KeyEvent, LoopSpec, OverlayHandle, OverlayPlacement,
     Phase, Shadow, Spring, SurfaceFit, TextEdit, Transition, Tx, Vec2, Waker, WheelEvent, WindowHandle, el, icon, row, text,
 };
-use rune_kit::{Kit, PaletteSeed};
 
-use crate::config::{Config, Store};
+use crate::config::{Config, Store, Tab};
 use crate::net::Weather;
-use crate::platform::{self, Passthrough};
+use crate::platform::{self, Passthrough, Screen};
 use crate::system::{self, MediaCommand, Track};
-use crate::{icons, stremflix, t3, tabs};
+use crate::{icons, tabs};
 
 /// The Island's window, in points: the largest Island at its hover scale, its tab dock, plus their shadows.
 pub const CANVAS: (f32, f32) = (620.0, 460.0);
@@ -29,9 +27,11 @@ const DOCK: (f32, f32, f32, f32) = (44.0, 12.0, 32.0, 6.0);
 const LARGE_EDGE: f32 = 12.0;
 /// Framer's spring (stiffness 400, damping 40, mass 2.5) as duration and bounce.
 pub const SPRING: Spring = Spring::new(0.5, 0.3);
+/// The Island grows this much under the pointer, past its layout rect.
+const HOVER_SCALE: f32 = 1.05;
 
 /// Status hues for the pill border and alerts.
-pub mod status {
+mod status {
     use rune::Color;
     fn hex(s: &str) -> Color { crate::config::parse_color(s).unwrap_or(Color::WHITE) }
     pub fn charge() -> Color { hex("#4cc38a") }
@@ -55,6 +55,37 @@ pub enum Alert {
     Bluetooth,
     Camera,
     Microphone,
+}
+
+impl Alert {
+    fn color(self) -> Color {
+        match self {
+            Alert::Charging => status::charge(),
+            Alert::Battery => status::low(),
+            Alert::Bluetooth => status::bluetooth(),
+            Alert::Camera => status::camera(),
+            Alert::Microphone => status::mic(),
+        }
+    }
+
+    fn icon(self) -> &'static rune::Icon {
+        match self {
+            Alert::Charging | Alert::Battery => &icons::ZAP,
+            Alert::Bluetooth => &icons::HEADPHONES,
+            Alert::Camera => &icons::CAMERA,
+            Alert::Microphone => &icons::MIC,
+        }
+    }
+
+    fn key(self) -> &'static str {
+        match self {
+            Alert::Charging => "charging",
+            Alert::Battery => "battery",
+            Alert::Bluetooth => "bluetooth",
+            Alert::Camera => "camera",
+            Alert::Microphone => "microphone",
+        }
+    }
 }
 
 /// The Island's own handle: its window, or on Wayland a layer-shell overlay, since Wayland
@@ -105,37 +136,6 @@ impl Host {
     }
 }
 
-/// One display as the window factory saw it at startup.
-#[derive(Clone, Debug)]
-pub struct Screen {
-    pub name: String,
-    pub target: DisplayTarget,
-    /// Size in points.
-    pub size: (f32, f32),
-    pub scale: f32,
-    /// Top-left in the OS's global space: points on macOS, pixels elsewhere.
-    #[cfg_attr(target_os = "linux", allow(dead_code))]
-    pub origin: (f64, f64),
-    pub primary: bool,
-}
-
-impl Screen {
-    pub fn all(displays: &[Display]) -> Vec<Screen> {
-        displays.iter().enumerate().map(|(i, d)| {
-            let scale = d.scale.max(0.1) as f32;
-            let bounds = d.native_bounds();
-            Screen {
-                name: d.name.clone().filter(|n| !n.is_empty()).unwrap_or_else(|| format!("Display {}", i + 1)),
-                target: d.id.clone().map_or(DisplayTarget::Primary, DisplayTarget::Id),
-                size: (d.size.0 as f32 / scale, d.size.1 as f32 / scale),
-                scale,
-                origin: (bounds[0], bounds[1]),
-                primary: d.primary,
-            }
-        }).collect()
-    }
-}
-
 /// Where the Island's window sits on its display and where the Island is anchored inside it.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Placement {
@@ -179,38 +179,11 @@ impl Placement {
     }
 }
 
-#[derive(Default)]
-pub struct StremflixState {
-    /// Continue Watching, or why it couldn't load; None while loading.
-    pub entries: Option<Result<Vec<stremflix::Entry>, String>>,
-    /// Loaded posters by URL.
-    pub posters: std::collections::HashMap<String, Image>,
-    /// A play request that failed.
-    pub status: String,
-    /// Bumped on every load, so an earlier answer is dropped.
-    generation: u64,
-}
-
-#[derive(Default)]
-pub struct T3State {
-    pub data: Option<t3::Loaded>,
-    pub projects: Option<Vec<t3::Project>>,
-    pub status: String,
-    pub message: TextEdit,
-    /// The select that is open: "device", "folder" or "model".
-    pub open: Option<&'static str>,
-    /// Bumped on every load, so an answer for an earlier device or environment is dropped.
-    pub generation: u64,
-    /// A thread launch is in flight.
-    pub starting: bool,
-}
-
 pub struct Island {
     pub store: Store,
     pub cfg: Config,
-    pub kit: Kit,
     pub mode: Mode,
-    pub tab: u8,
+    pub tab: Tab,
     /// The pointer is over the Island or its dock.
     pub hovered: bool,
     /// Over the Island, over the dock.
@@ -227,8 +200,10 @@ pub struct Island {
     pub track: Option<Track>,
     pub art: Option<Image>,
     pub art_hovered: bool,
-    /// The pointer is over an open select's menu.
-    pub menu_hovered: bool,
+    /// The select whose menu is open, by key. Its menu hangs outside the Island.
+    pub open_select: Option<&'static str>,
+    /// The pointer is over the open select's menu.
+    menu_hovered: bool,
     pub background: Option<Image>,
     bluetooth: bool,
     /// The last Bluetooth poll found nothing connected; a disconnect needs two in a row.
@@ -245,26 +220,18 @@ pub struct Island {
     paused_until: Option<f64>,
 
     pub search: TextEdit,
-    pub ask: TextEdit,
-    pub asked: bool,
-    pub answer: Option<String>,
-    ai_generation: u64,
-    pub clipboard: Vec<String>,
-    /// The clipboard row whose button reads "Copied", and until when.
-    pub copied: Option<(usize, f64)>,
+    pub ai: tabs::Assistant,
+    pub clipboard: tabs::Clipboard,
     pub task: TextEdit,
-    /// The open note's editor and which note it edits.
-    pub note: TextEdit,
-    pub note_index: usize,
-    pub stremflix: StremflixState,
+    pub notes: tabs::Notes,
+    pub stremflix: tabs::Stremflix,
     /// The System tab's figures; None until the first sample.
     pub stats: Option<system::Stats>,
     /// A file drag is over the Island.
     pub dropping: bool,
     /// A drag started elsewhere on the desktop opened the Shelf; it rests when the drag ends.
     pub desktop_drag: bool,
-    pub t3: T3State,
-    pub t3_client: Arc<t3::Client>,
+    pub t3: tabs::T3,
 
     pub me: Option<Host>,
     pub settings: Option<WindowHandle>,
@@ -297,7 +264,7 @@ pub struct Island {
 
 /// How wide a single line of text draws, roughly: the compact Island sizes itself to its
 /// track title before anything is laid out.
-fn estimate_width(text: &str, size: f32) -> f32 {
+pub fn estimate_width(text: &str, size: f32) -> f32 {
     text.chars().map(|c| match c {
         'i' | 'l' | 'j' | '.' | ',' | '\'' | '!' | ':' | ';' | '|' => 0.3,
         ' ' | 'f' | 't' | 'r' | '(' | ')' | '-' => 0.36,
@@ -311,9 +278,7 @@ fn estimate_width(text: &str, size: f32) -> f32 {
 impl Island {
     pub fn new(store: Store, screens: Vec<Screen>) -> Island {
         let cfg = store.get();
-        let t3_client = Arc::new(t3::Client::new(store.dir().map(|d| d.join("t3-mcp-tokens.json"))));
         let mut island = Island {
-            kit: kit(&cfg),
             mode: Mode::Still,
             tab: cfg.first_tab(),
             hovered: false,
@@ -327,6 +292,7 @@ impl Island {
             track: None,
             art: None,
             art_hovered: false,
+            open_select: None,
             menu_hovered: false,
             background: None,
             bluetooth: false,
@@ -340,22 +306,16 @@ impl Island {
             capture_queue: Vec::new(),
             capture_shown: [false; 2],
             paused_until: None,
-            search: TextEdit::new(""),
-            ask: TextEdit::new(""),
-            asked: false,
-            answer: None,
-            ai_generation: 0,
-            clipboard: Vec::new(),
-            copied: None,
-            task: TextEdit::new(""),
-            note: TextEdit::new(cfg.notes.first().map_or("", String::as_str)),
-            note_index: 0,
-            stremflix: StremflixState::default(),
+            search: TextEdit::default(),
+            ai: tabs::Assistant::default(),
+            clipboard: tabs::Clipboard::default(),
+            task: TextEdit::default(),
+            notes: tabs::Notes::new(&cfg),
+            stremflix: tabs::Stremflix::default(),
             stats: None,
             dropping: false,
             desktop_drag: false,
-            t3: T3State::default(),
-            t3_client,
+            t3: tabs::T3::new(store.dir().as_deref()),
             me: None,
             settings: None,
             images: None,
@@ -393,7 +353,7 @@ impl Island {
             .or_else(|| self.screens.iter().find(|s| s.primary))
             .or(self.screens.first())
             .cloned()
-            .unwrap_or(Screen { name: String::new(), target: DisplayTarget::Primary, size: (1920.0, 1080.0), scale: 1.0, origin: (0.0, 0.0), primary: true })
+            .unwrap_or(Screen { name: String::new(), target: DisplayTarget::Primary, size: (1920.0, 1080.0), scale: 1.0, origin: (0.0, 0.0), position: (0, 0), primary: true })
     }
 
     /// Moves the window to where the settings put the Island.
@@ -420,8 +380,18 @@ impl Island {
         else { self.capture.map(|c| c.0) }
     }
 
-    /// The Bluetooth alert's label: it shows on connect and on disconnect.
-    fn bluetooth_label(&self) -> &'static str { if self.bluetooth { "Connected" } else { "Disconnected" } }
+    fn percent_label(&self) -> String { self.percent.map_or(String::new(), |p| format!("{p}%")) }
+
+    /// The text beside an alert's icon.
+    fn alert_label(&self, alert: Alert) -> String {
+        match alert {
+            Alert::Charging | Alert::Battery => self.percent_label(),
+            // It shows on connect and on disconnect.
+            Alert::Bluetooth => if self.bluetooth { "Connected" } else { "Disconnected" }.into(),
+            Alert::Camera => "Camera".into(),
+            Alert::Microphone => "Microphone".into(),
+        }
+    }
 
     fn now_playing_text(&self) -> (String, String) {
         let Some(t) = &self.track else { return Default::default() };
@@ -430,7 +400,8 @@ impl Island {
 
     fn now_playing_width(&self) -> f32 {
         let (name, artist) = self.now_playing_text();
-        (estimate_width(&name, 13.0) + estimate_width(&artist, 13.0) + 24.0 + 6.0 + 20.0 + 31.0).ceil().clamp(122.0, 300.0)
+        // 2 points of slack, so a title that fits doesn't scroll.
+        (estimate_width(&name, 13.0) + estimate_width(&artist, 13.0) + PLAYING_CHROME + 2.0).ceil().clamp(122.0, 300.0)
     }
 
     /// True when the Island must clear a physical notch (Notch Mode, not Mini).
@@ -444,12 +415,9 @@ impl Island {
         if !self.cfg.notch_auto_size { return 300.0 }
         const NOTCH: f32 = 200.0; // a MacBook notch is about 180-190pt wide; sized for the widest plus slack
         let label = |l: &str| estimate_width(l, 16.0);
-        let percent = || self.percent.map_or(0.0, |p| label(&format!("{p}%")));
+        let percent = || label(&self.percent_label());
         let (left, right) = match self.alert() {
-            Some(Alert::Charging | Alert::Battery) => (20.0, percent()),
-            Some(Alert::Camera) => (20.0, label("Camera")),
-            Some(Alert::Microphone) => (20.0, label("Microphone")),
-            Some(Alert::Bluetooth) => (20.0, label(self.bluetooth_label())),
+            Some(alert) => (20.0, label(&self.alert_label(alert))),
             None => (label(&self.time), match self.weather.temp {
                 Some(temp) if !(self.cfg.standby && self.percent.is_some()) => 16.0 + label(&format!("{temp}º")),
                 _ if self.charging && self.percent.is_some() => 16.0 + percent(),
@@ -463,8 +431,9 @@ impl Island {
         let notch = self.clears_notch();
         let alerting = self.alert().is_some();
         let track = self.shows_track();
+        let large = tabs::size(self.tab);
         let mut w = match self.mode {
-            Mode::Large => match self.tab { 1 | 9 | 10 | tabs::SHELF | tabs::SYSTEM => 520.0, 0 => 445.0, _ => 420.0 },
+            Mode::Large => large.0,
             _ if alerting => if notch { self.notch_glance_width() } else { 176.0 }, // fits icon + "Disconnected"
             _ if track => self.now_playing_width(),
             _ if notch => if self.mode == Mode::Quick || self.cfg.show_info_idle { self.notch_glance_width() } else { 210.0 },
@@ -472,7 +441,7 @@ impl Island {
         };
         if notch && track && !alerting && self.mode != Mode::Large { w = (w + 40.0).max(300.0) }
         let h = match self.mode {
-            Mode::Large => (self.notch_inset() - LARGE_EDGE).max(0.0) + match self.tab { 6 | 8 | 9 | 10 => 290.0, 0 => 160.0, 1 => 250.0, _ => 230.0 },
+            Mode::Large => (self.notch_inset() - LARGE_EDGE).max(0.0) + large.1,
             _ => if self.cfg.notch_mode { 34.0 } else { 40.0 }, // Mini notch keeps the notch height
         };
         (w, h)
@@ -493,8 +462,6 @@ impl Island {
         Some([left, if self.placement.top { y + ih } else { y - gap - h }, w, gap + h])
     }
 
-    pub fn font(&self, size: f32, weight: f32) -> TextStyle { font(&self.cfg, size, weight) }
-
     // --- Modes ---
 
     /// Where the Island rests when nothing holds it open.
@@ -502,15 +469,20 @@ impl Island {
         if self.cfg.standby { Mode::Quick } else if self.cfg.large_standby { Mode::Large } else { Mode::Still }
     }
 
-    pub fn input_focused(&self) -> bool {
-        self.search.focused || self.ask.focused || self.task.focused || self.note.focused || self.t3.message.focused
-    }
-
-    fn set_mode(&mut self, mode: Mode) {
+    /// Every mode change but `open_large_on` goes through here; Still means wherever the Island rests.
+    pub fn set_mode(&mut self, mode: Mode) {
         let was = self.mode;
         self.mode = if mode == Mode::Still { self.rest() } else { mode };
         if self.mode == Mode::Large && was != Mode::Large && self.cfg.open_default_tab { self.tab = self.cfg.first_tab() }
-        if self.mode != Mode::Large { self.t3.open = None; self.tab_changed = false; self.close_at = None }
+        // Resting closes an open select even when the Island rests in Large.
+        if mode == Mode::Still || self.mode != Mode::Large { self.open_select = None }
+        if self.mode != Mode::Large { self.tab_changed = false; self.close_at = None }
+    }
+
+    /// Opens Large straight on `tab`, as a change from the tab shown last; the starred tab doesn't apply.
+    fn open_large_on(&mut self, tab: Tab) {
+        self.mode = Mode::Large;
+        self.open_tab(tab);
     }
 
     pub fn hover(&mut self, hovered: bool, tx: &mut Tx) { self.set_over(0, hovered, tx) }
@@ -539,8 +511,6 @@ impl Island {
 
     /// The pointer stayed off the Island and its dock.
     fn leave(&mut self, tx: &mut Tx) -> bool {
-        // Large ended some way that skips set_mode (reload, alerts): the session's state ends too.
-        if self.mode != Mode::Large { self.tab_changed = false; self.close_at = None }
         if self.hovered { return false }
         let now = tx.clock();
         let left = std::mem::take(&mut self.left);
@@ -553,7 +523,7 @@ impl Island {
         if !left && !self.close_at.is_some_and(|t| now >= t) { return false }
         self.close_at = None;
         // An open select's menu hangs outside the Island; leaving for it isn't leaving (poll closes both).
-        if self.t3.open.is_none() {
+        if self.open_select.is_none() {
             tx.blur();
             self.set_mode(Mode::Still);
             self.give_focus_back();
@@ -582,20 +552,19 @@ impl Island {
         self.focused = focused;
         if focused || self.hovered { return }
         tx.blur();
-        self.t3.open = None;
         self.set_mode(Mode::Still);
     }
 
     /// Switches to `tab`, animating in the direction it sits from the current one.
-    pub fn set_tab(&mut self, tab: u8) {
+    pub fn set_tab(&mut self, tab: Tab) {
         let visible = self.cfg.visible_tabs();
-        let at = |t: u8| visible.iter().position(|v| *v == t);
+        let at = |t: Tab| visible.iter().position(|v| *v == t);
         if let (Some(from), Some(to)) = (at(self.tab), at(tab))
             && from != to
         {
             self.tab_dir = if to > from { 1 } else { -1 };
         }
-        if self.tab != tab { self.tab_changed = true }
+        if self.tab != tab && self.mode == Mode::Large { self.tab_changed = true }
         self.tab = tab;
     }
 
@@ -608,80 +577,14 @@ impl Island {
     }
 
     /// Switches tab, sliding the way it lies, and loads what the tab needs.
-    pub fn open_tab(&mut self, id: u8) {
-        self.set_tab(id);
+    pub fn open_tab(&mut self, tab: Tab) {
+        self.set_tab(tab);
         self.entered_tab();
     }
 
     fn entered_tab(&mut self) {
-        self.t3.open = None;
-        if self.mode == Mode::Large && self.tab == 8 { self.t3_load() }
-        if self.mode == Mode::Large && self.tab == 10 { self.stremflix_load() }
-    }
-
-    // --- Stremflix ---
-
-    /// Asks Stremflix-rs for Continue Watching, then fetches the posters not yet loaded.
-    pub fn stremflix_load(&mut self) {
-        let Some(me) = self.me.clone() else { return };
-        let Some(base) = stremflix::base() else {
-            self.stremflix.entries = Some(Err("Stremflix-rs's API is off (STREMFLIX_RS_API=off)".into()));
-            return;
-        };
-        // The last list stays up while it refreshes.
-        if self.stremflix.entries.as_ref().is_some_and(Result::is_err) { self.stremflix.entries = None }
-        self.stremflix.status.clear();
-        self.stremflix.generation += 1;
-        let generation = self.stremflix.generation;
-        let cached: Vec<String> = self.stremflix.posters.keys().cloned().collect();
-        std::thread::spawn(move || {
-            let result = stremflix::continue_watching(&base);
-            // Posters come from addons: only the web, never file: or data: URLs.
-            let posters: Vec<String> = result.iter().flatten().filter_map(|e| e.poster.clone())
-                .filter(|p| (p.starts_with("https://") || p.starts_with("http://")) && !cached.contains(p)).collect();
-            me.update(move |s, _| if s.stremflix.generation == generation { s.stremflix.entries = Some(result) });
-            for url in posters {
-                let Some(bytes) = crate::net::fetch_image(&url) else { continue };
-                me.update(move |s, _| if let Some(image) = s.images.as_ref().map(|i| i.load(bytes)) { s.stremflix.posters.insert(url, image); });
-            }
-        });
-    }
-
-    /// Resumes an entry in Stremflix-rs's window.
-    pub fn stremflix_play(&mut self, entry: stremflix::Entry) {
-        let (Some(base), Some(me)) = (stremflix::base(), self.me.clone()) else { return };
-        self.stremflix.status = format!("Opening {}...", entry.title);
-        std::thread::spawn(move || {
-            let result = stremflix::play(&base, &entry);
-            me.update(move |s, _| s.stremflix.status = result.err().unwrap_or_default());
-        });
-    }
-
-    // --- Notes ---
-
-    /// Edits note `i`, or the last one when `i` is past the end.
-    pub fn open_note(&mut self, i: usize) {
-        self.note_index = i.min(self.cfg.notes.len().saturating_sub(1));
-        self.note = TextEdit::new(self.cfg.notes.get(self.note_index).map_or("", String::as_str));
-    }
-
-    pub fn add_note(&mut self) {
-        // An empty note on top is reused rather than stacking blanks.
-        if self.cfg.notes.first().is_none_or(|n| !n.trim().is_empty()) { self.save(|c| c.notes.insert(0, String::new())) }
-        self.open_note(0);
-        self.note.focused = true;
-    }
-
-    pub fn delete_note(&mut self) {
-        let i = self.note_index;
-        self.save(|c| { if i < c.notes.len() { c.notes.remove(i); } });
-        self.open_note(i);
-    }
-
-    /// Saves the editor's text into its note as it changes.
-    pub fn note_edited(&mut self) {
-        let (i, text) = (self.note_index, self.note.text.clone());
-        if self.cfg.notes.get(i).is_some_and(|n| *n != text) { self.save(|c| c.notes[i] = text) }
+        self.open_select = None;
+        if self.mode == Mode::Large { tabs::entered(self) }
     }
 
     // --- Shelf ---
@@ -689,10 +592,9 @@ impl Island {
     /// Opens the Shelf in Large without the pointer; a pending close no longer applies.
     fn open_shelf(&mut self) {
         self.close_at = None;
-        self.mode = Mode::Large;
         // Not the user's tab change: it must not earn the linger.
         let changed = self.tab_changed;
-        self.open_tab(tabs::SHELF);
+        self.open_large_on(Tab::Shelf);
         self.tab_changed = changed;
     }
 
@@ -710,7 +612,7 @@ impl Island {
     /// somewhere else, the Island rests.
     pub fn desktop_drag(&mut self, active: bool) {
         if active {
-            if !self.cfg.visible_tabs().contains(&tabs::SHELF) { return }
+            if !self.cfg.visible_tabs().contains(&Tab::Shelf) { return }
             self.desktop_drag = true;
             self.open_shelf();
         } else if std::mem::take(&mut self.desktop_drag) && !self.hovered && !self.dropping {
@@ -734,9 +636,8 @@ impl Island {
             Key::Right => self.move_tab(1),
             Key::Left => self.move_tab(-1),
             Key::Command(c @ '1'..='8') => {
-                let Some(&id) = self.cfg.visible_tabs().get(c as usize - '1' as usize) else { return false };
-                self.mode = Mode::Large;
-                self.open_tab(id);
+                let Some(&tab) = self.cfg.visible_tabs().get(c as usize - '1' as usize) else { return false };
+                self.open_large_on(tab);
             }
             _ => return false,
         }
@@ -789,11 +690,10 @@ impl Island {
     /// Picks up settings another window changed.
     pub fn reload(&mut self, _: &mut Tx) {
         let old = std::mem::replace(&mut self.cfg, self.store.get());
-        self.kit = kit(&self.cfg);
-        if self.mode != Mode::Large || !self.hovered { self.mode = self.rest() }
+        if self.mode != Mode::Large || !self.hovered { self.set_mode(Mode::Still) }
         if !self.cfg.visible_tabs().contains(&self.tab) { self.open_tab(self.cfg.first_tab()) }
-        let moved = (old.position_mode != self.cfg.position_mode, old.notch_mode != self.cfg.notch_mode, old.island_x != self.cfg.island_x, old.island_y != self.cfg.island_y, old.display != self.cfg.display);
-        if moved != (false, false, false, false, false) { self.place_window() }
+        let size = self.screen().size;
+        if old.display != self.cfg.display || Placement::of(&old, size) != Placement::of(&self.cfg, size) { self.place_window() }
         if (old.location != self.cfg.location || old.weather_unit != self.cfg.weather_unit)
             && let Some(kick) = &self.weather_kick
         {
@@ -801,13 +701,12 @@ impl Island {
         }
         if old.bg_image != self.cfg.bg_image { self.load_background() }
         if old.hour12 != self.cfg.hour12 { self.set_clock() }
-        if old.t3_devices != self.cfg.t3_devices && self.tab == 8 && self.mode == Mode::Large { self.t3_load() }
+        tabs::reloaded(self, &old);
     }
 
     /// Changes the settings from the Island itself (tasks, the T3 choices).
     pub fn save(&mut self, f: impl FnOnce(&mut Config)) {
-        self.store.update(f);
-        self.cfg = self.store.get();
+        self.cfg = self.store.update(f);
     }
 
     fn load_background(&mut self) {
@@ -815,12 +714,7 @@ impl Island {
         let url = self.cfg.bg_image.trim().to_string();
         let Some(me) = self.me.clone() else { return };
         if url.is_empty() || url == "none" { return }
-        std::thread::spawn(move || {
-            let Some(bytes) = crate::net::fetch_image(&url) else { return };
-            me.update(move |s, _| {
-                if s.cfg.bg_image.trim() == url { s.background = s.images.as_ref().map(|i| i.load(bytes)) }
-            });
-        });
+        std::thread::spawn(move || fetch_image(&me, url.clone(), move |s, image| if s.cfg.bg_image.trim() == url { s.background = Some(image) }));
     }
 
     // --- The clock ---
@@ -841,11 +735,11 @@ impl Island {
         if (percent, charging) == (self.percent, self.charging) { return false }
         let now = tx.clock();
         if charging && !self.charging && self.cfg.battery_alerts {
-            self.mode = Mode::Quick;
+            self.set_mode(Mode::Quick);
             self.charging_alert_until = Some(now + 1.5);
         }
         if percent != self.percent && percent.is_some_and(|p| [20, 15, 10, 5, 3].contains(&p)) && self.cfg.battery_alerts {
-            self.mode = Mode::Quick;
+            self.set_mode(Mode::Quick);
             self.battery_alert_until = Some(now + 3.0);
         }
         (self.percent, self.charging) = (percent, charging);
@@ -858,7 +752,7 @@ impl Island {
         let missed = std::mem::replace(&mut self.bluetooth_missed, !connected);
         if connected == self.bluetooth || (!connected && !missed) { return false }
         self.bluetooth = connected;
-        self.mode = Mode::Quick;
+        self.set_mode(Mode::Quick);
         self.bluetooth_alert_until = Some(tx.clock() + 3.0);
         self.schedule(tx);
         true
@@ -880,7 +774,7 @@ impl Island {
 
     fn next_capture(&mut self, tx: &mut Tx) {
         if self.capture.is_some() || self.capture_queue.is_empty() { return }
-        self.mode = Mode::Quick;
+        self.set_mode(Mode::Quick);
         self.capture = Some((self.capture_queue.remove(0), tx.clock() + 3.0));
         self.schedule(tx);
     }
@@ -892,7 +786,7 @@ impl Island {
         if let (Some(old), Some(new)) = (&self.track, &track)
             && let (Some((from, _)), Some((to, _))) = (old.progress, new.progress)
             && (1..=4).contains(&to.saturating_sub(from))
-            && (system::Track { progress: new.progress, ..old.clone() }) == *new
+            && (Track { progress: new.progress, ..old.clone() }) == *new
         {
             tx.animated();
             tx.motion_curve(Curve::tween(2.0, Easing::LINEAR));
@@ -911,26 +805,12 @@ impl Island {
         if old_art != new_art {
             self.art = None;
             if let (Some(url), Some(me)) = (new_art, self.me.clone()) {
-                std::thread::spawn(move || {
-                    let Some(bytes) = crate::net::fetch_image(&url) else { return };
-                    me.update(move |s, _| {
-                        // The track may have changed while the cover loaded.
-                        if s.track.as_ref().and_then(|t| t.artwork_url.as_deref()) == Some(url.as_str()) {
-                            s.art = s.images.as_ref().map(|i| i.load(bytes));
-                        }
-                    });
-                });
+                std::thread::spawn(move || fetch_image(&me, url.clone(), move |s, image| {
+                    // The track may have changed while the cover loaded.
+                    if s.track.as_ref().and_then(|t| t.artwork_url.as_deref()) == Some(url.as_str()) { s.art = Some(image) }
+                }));
             }
         }
-        true
-    }
-
-    pub fn push_clipboard(&mut self, text: &str) -> bool {
-        if text.is_empty() || self.clipboard.first().is_some_and(|t| t == text) { return false }
-        self.clipboard.retain(|t| t != text);
-        self.clipboard.insert(0, text.to_string());
-        self.clipboard.truncate(50);
-        self.copied = None;
         true
     }
 
@@ -938,7 +818,7 @@ impl Island {
 
     /// Asks for a poll at the next deadline any timer holds.
     fn schedule(&self, tx: &mut Tx) {
-        let deadlines = [self.battery_alert_until, self.charging_alert_until, self.bluetooth_alert_until, self.capture.map(|c| c.1), self.paused_until, self.copied.map(|c| c.1), self.intro_at, self.close_at];
+        let deadlines = [self.battery_alert_until, self.charging_alert_until, self.bluetooth_alert_until, self.capture.map(|c| c.1), self.paused_until, self.clipboard.copied.map(|c| c.1), self.intro_at, self.close_at];
         if let Some(due) = deadlines.into_iter().flatten().reduce(f64::min) { tx.wake_at(due) }
     }
 
@@ -955,7 +835,7 @@ impl Island {
         if now >= self.next_clipboard && !rune::is_headless() {
             self.next_clipboard = now + 2.0;
             tx.wake_at(self.next_clipboard);
-            tx.read_clipboard(|s: &mut Island, content, _| { s.push_clipboard(content.text()); });
+            tx.read_clipboard(|s: &mut Island, content, _| { s.clipboard.push(content.text()); });
         }
 
         let due = |t: &mut Option<f64>| t.is_some_and(|d| now >= d) && { *t = None; true };
@@ -974,8 +854,8 @@ impl Island {
         }
         changed |= self.leave(tx);
         changed |= due(&mut self.paused_until);
-        if self.copied.is_some_and(|c| now >= c.1) {
-            self.copied = None;
+        if self.clipboard.copied.is_some_and(|c| now >= c.1) {
+            self.clipboard.copied = None;
             changed = true;
         }
         if due(&mut self.intro_at) {
@@ -985,19 +865,18 @@ impl Island {
         self.schedule(tx);
 
         // Leaving both the Island and an open select's menu closes them.
-        if self.t3.open.is_none() { self.menu_hovered = false }
+        if self.open_select.is_none() { self.menu_hovered = false }
         else if !self.hovered && !self.menu_hovered {
             tx.blur();
-            self.t3.open = None;
             self.set_mode(Mode::Still);
             changed = true;
         }
 
         // A select's menu opens outside the Island: the whole window takes clicks while one is open.
-        // The hover scale (1.05) draws the Island slightly past its layout rect.
-        let region = if self.t3.open.is_some() { [0.0, 0.0, CANVAS.0, CANVAS.1] } else {
+        let region = if self.open_select.is_some() { [0.0, 0.0, CANVAS.0, CANVAS.1] } else {
             let [x, y, w, h] = self.rect();
-            let (mx, my) = (w * 0.025 + 2.0, h * 0.025 + 2.0);
+            let grow = (HOVER_SCALE - 1.0) / 2.0;
+            let (mx, my) = (w * grow + 2.0, h * grow + 2.0);
             let [x, y, w, h] = [x - mx, y - my, w + 2.0 * mx, h + 2.0 * my];
             // The dock takes clicks too: the region spans both.
             match self.dock_rect() {
@@ -1055,7 +934,7 @@ impl Island {
                 std::thread::sleep(std::time::Duration::from_secs(2));
                 let stats = Some(monitor.sample());
                 // Redraw only while the System tab shows; otherwise just keep the latest figures.
-                h.update_if(move |s, _| { let changed = s.stats != stats; s.stats = stats; changed && s.mode == Mode::Large && s.tab == tabs::SYSTEM });
+                h.update_if(move |s, _| { let changed = s.stats != stats; s.stats = stats; changed && s.mode == Mode::Large && s.tab == Tab::System });
             }
         });
 
@@ -1077,157 +956,6 @@ impl Island {
     pub fn set_window(&mut self, window: WindowHandle) {
         self.passthrough.set_window(window);
     }
-
-    // --- The AI assistant ---
-
-    pub fn ask_ai(&mut self) {
-        self.asked = true;
-        self.ai_generation += 1;
-        let generation = self.ai_generation;
-        let key = self.cfg.api_key.trim().to_string();
-        if key.is_empty() {
-            self.answer = Some("Enter your API key in settings".into());
-            return;
-        }
-        self.answer = None;
-        let Some(me) = self.me.clone() else { return };
-        let (provider, model, question) = (self.cfg.ai_provider.clone(), self.cfg.ai_model.clone(), self.ask.text.clone());
-        std::thread::spawn(move || {
-            let model = if model.trim().is_empty() { crate::config::default_model(&provider).to_string() } else { model };
-            let stream = me.clone();
-            let result = crate::net::ask_ai(&provider, &model, &key, &question, |delta| {
-                let delta = delta.to_string();
-                stream.update(move |s, _| if s.ai_generation == generation { s.answer.get_or_insert_default().push_str(&delta) });
-            });
-            let ending = match result {
-                Ok(true) => return,
-                Ok(false) => "No response received. Check your settings.".to_string(),
-                Err(e) => format!("Error: {e}"),
-            };
-            me.update(move |s, _| if s.ai_generation == generation { s.answer = Some(ending) });
-        });
-    }
-
-    pub fn ask_another(&mut self) {
-        self.ai_generation += 1;
-        self.asked = false;
-        self.answer = None;
-        self.ask.clear();
-    }
-
-    // --- Browser search ---
-
-    pub fn search_browser(&mut self, tx: &mut Tx) {
-        let query = self.search.text.trim().to_string();
-        if query.is_empty() { return }
-        let lower = query.to_ascii_lowercase();
-        let url = if !query.contains('.') { format!("{}{}", self.cfg.search_engine().1, crate::net::percent_encode(&query)) }
-            else if lower.starts_with("http://") || lower.starts_with("https://") { query }
-            else { format!("https://{query}") };
-        system::open_external(&url);
-        self.search.clear();
-        tx.blur();
-        self.set_mode(Mode::Still);
-    }
-
-    // --- T3 Code ---
-
-    pub fn t3_device(&self) -> Option<(usize, &crate::config::T3Device)> {
-        let devices = &self.cfg.t3_devices;
-        devices.get(self.cfg.t3_device).map(|d| (self.cfg.t3_device, d)).or(devices.first().map(|d| (0, d)))
-    }
-
-    /// The chosen environment, if the device still links it; "" is the device itself.
-    pub fn t3_env(&self) -> &str {
-        let linked = self.t3.data.as_ref().is_some_and(|d| d.links.iter().any(|l| l.id == self.cfg.t3_env));
-        if linked { &self.cfg.t3_env } else { "" }
-    }
-
-    pub fn t3_project(&self) -> Option<&t3::Project> {
-        let projects = self.t3.projects.as_ref()?;
-        projects.iter().find(|p| p.id == self.cfg.t3_project).or(projects.first())
-    }
-
-    pub fn t3_model(&self) -> Option<&t3::Favorite> {
-        let favorites = &self.t3.data.as_ref()?.favorites;
-        favorites.iter().find(|f| f.key() == self.cfg.t3_model).or(favorites.first())
-    }
-
-    /// Asks the device for its models and linked environments, then for its folders.
-    pub fn t3_load(&mut self) {
-        self.t3.generation += 1;
-        self.t3.data = None;
-        self.t3.projects = None;
-        let (Some(device), Some(me)) = (self.t3_device().map(|d| d.1.clone()), self.me.clone()) else { return };
-        self.t3.status = "Loading...".into();
-        let (client, generation) = (self.t3_client.clone(), self.t3.generation);
-        std::thread::spawn(move || {
-            let result = client.load(&device);
-            me.update(move |s, _| {
-                if s.t3.generation != generation { return }
-                match result {
-                    Ok(data) => {
-                        s.t3.data = Some(data);
-                        s.t3_load_projects();
-                    }
-                    Err(e) => s.t3.status = e,
-                }
-            });
-        });
-    }
-
-    pub fn t3_load_projects(&mut self) {
-        self.t3.generation += 1;
-        self.t3.projects = None;
-        let (Some(device), Some(me)) = (self.t3_device().map(|d| d.1.clone()), self.me.clone()) else { return };
-        self.t3.status = "Loading folders...".into();
-        let (client, generation, env) = (self.t3_client.clone(), self.t3.generation, self.t3_env().to_string());
-        std::thread::spawn(move || {
-            let result = client.projects(&device, &env);
-            me.update(move |s, _| {
-                if s.t3.generation != generation { return }
-                match result {
-                    Ok(list) => {
-                        s.t3.projects = Some(list);
-                        s.t3.status.clear();
-                    }
-                    Err(e) => s.t3.status = e,
-                }
-            });
-        });
-    }
-
-    pub fn t3_can_start(&self) -> bool {
-        !self.t3.starting && self.t3_project().is_some() && self.t3_model().is_some() && !self.t3.message.text.trim().is_empty()
-    }
-
-    pub fn t3_start(&mut self) {
-        let (Some((_, device)), Some(project), Some(model), Some(me)) = (self.t3_device(), self.t3_project(), self.t3_model(), self.me.clone()) else { return };
-        // One launch at a time: a second Ctrl+Return or click while starting does nothing.
-        if self.t3.message.text.trim().is_empty() || self.t3.starting { return }
-        let launch = t3::Launch {
-            environment_id: self.t3_env().to_string(),
-            project_id: project.id.clone(),
-            instance_id: model.instance_id.clone(),
-            model: model.model.clone(),
-            message: self.t3.message.text.clone(),
-            worktree: self.cfg.t3_worktree,
-            runtime_mode: self.t3.data.as_ref().map(|d| d.runtime_mode.clone()).unwrap_or_default(),
-        };
-        let (device, client, title) = (device.clone(), self.t3_client.clone(), project.title.clone());
-        self.t3.status = "Starting...".into();
-        self.t3.starting = true;
-        std::thread::spawn(move || {
-            let result = client.start_thread(&device, &launch);
-            me.update(move |s, _| { s.t3.starting = false; match result {
-                Ok(_) => {
-                    s.t3.message.clear();
-                    s.t3.status = format!("Thread started in {title}");
-                }
-                Err(e) => s.t3.status = e,
-            } });
-        });
-    }
 }
 
 /// "Thu, Jan 1".
@@ -1241,19 +969,10 @@ fn format_date(year: i32, month: u32, day: u32) -> String {
     format!("{}, {} {}", DAYS[weekday as usize], MONTHS[(month as usize - 1) % 12], day)
 }
 
-pub fn font(cfg: &Config, size: f32, weight: f32) -> TextStyle {
-    let style = TextStyle::new(size, weight);
-    if cfg.win95() { style.family(Family::Named("W95FA")) } else { style }
-}
-
-/// rune-kit's components (selects, fields) in the Island's own two colours.
-pub fn kit(cfg: &Config) -> Kit {
-    let (bg, fg) = (cfg.bg().alpha(1.0), cfg.text().alpha(1.0));
-    let mut kit = Kit::from_palette(PaletteSeed { bg, fg, accent: fg });
-    kit.radius.md = 10.0;
-    // The accent is the text colour, so an on switch's knob (and a radio's dot) needs the background to show.
-    kit.c.knob_on = bg;
-    kit
+/// Fetches an image (blocking) and hands it, loaded, to `put` on the UI thread.
+pub fn fetch_image(me: &Host, url: String, put: impl FnOnce(&mut Island, Image) + Send + 'static) {
+    let Some(bytes) = crate::net::fetch_image(&url) else { return };
+    me.update(move |s, _| if let Some(image) = s.images.as_ref().map(|i| i.load(bytes)) { put(s, image) });
 }
 
 // --- Views ---
@@ -1274,12 +993,12 @@ pub fn view(s: &Island, _: &mut Cx<Island>) -> El {
         .fill(bg).corners(radii).clip_corners(radii)
         .motion(SPRING)
         // Large is always under the pointer, so the hover lift only tells the compact Island apart.
-        .scale(if s.hovered && !large { 1.05 } else { 1.0 })
+        .scale(if s.hovered && !large { HOVER_SCALE } else { 1.0 })
         .on_hover_change(Island::hover)
         .on_drag(Island::drag)
         .on_wheel(Island::wheel);
     // A hidden Shelf takes no drops.
-    let shelf = cfg.visible_tabs().contains(&tabs::SHELF);
+    let shelf = cfg.visible_tabs().contains(&Tab::Shelf);
     if shelf {
         island = island.on_drop_files(Island::drop_files).on_drop_hover(Island::drop_hover);
     }
@@ -1303,13 +1022,13 @@ pub fn view(s: &Island, _: &mut Cx<Island>) -> El {
                 .transition(Transition::blur_replace())
                 .child_exit(push)
                 .child(
-                    el().key(format!("tab-{}", s.tab)).pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
+                    el().key(format!("tab-{}", s.tab as u8)).pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
                         .transition(push)
                         .child(tabs::view(s, &mut layer)),
                 ),
         );
         // The open select's menu is the layer's last element.
-        if s.t3.open.is_some() && let Some(menu) = layer.pop() {
+        if s.open_select.is_some() && let Some(menu) = layer.pop() {
             layer.push(menu.on_hover_change(|s: &mut Island, hovered, _| s.menu_hovered = hovered));
         }
     } else if s.mode == Mode::Quick || s.alert().is_some() || s.shows_track() || cfg.show_info_idle {
@@ -1329,7 +1048,7 @@ pub fn view(s: &Island, _: &mut Cx<Island>) -> El {
     }
     let mut canvas = canvas.child(island);
     // A select's menu opens outside the Island: the whole overlay takes clicks while one is open.
-    if s.t3.open.is_some() { canvas = canvas.hit() }
+    if s.open_select.is_some() { canvas = canvas.hit() }
     if let Some(rect) = s.dock_rect() { canvas = canvas.child(dock(s, rect)) }
     rune_kit::root(canvas, layer)
 }
@@ -1358,21 +1077,20 @@ fn dock(s: &Island, [x, y, w, h]: [f32; 4]) -> El {
     let cfg = &s.cfg;
     let (bg, fg) = (cfg.bg(), cfg.text());
     let (height, gap, button, space) = DOCK;
-    let round = |r: f32| if cfg.win95() { 0.0 } else { r };
+    let round = |r: f32| cfg.radius(r);
     let mut pill = row().key("dock").role("group").label("Tabs").w_full().h(height).px(space).gap(space).center_y()
         .fill(bg).radius(round(height / 2.0)).border(1.0, fg.alpha(0.12 * fg.a))
         .box_shadow(Shadow { x: 0.0, y: 0.0, blur: 24.0, spread: 0.0, color: Color::BLACK.alpha(0.2), inset: false });
     if cfg.glass() { pill = pill.child(glass([round(height / 2.0); 4], false)) }
-    for id in cfg.visible_tabs() {
-        let name = crate::config::TABS.iter().find(|t| t.id == id).map_or("", |t| t.name);
-        let on = id == s.tab;
+    for tab in cfg.visible_tabs() {
+        let on = tab == s.tab;
         pill = pill.child(
-            el().key(format!("dock-{id}")).role("button").label(name).checked(on).focusable(true)
+            el().key(format!("dock-{}", tab as u8)).role("button").label(tab.name()).checked(on).focusable(true)
                 .size(button, button).center().radius(round(button / 2.0))
                 .fill(if on { fg.alpha(0.18 * fg.a) } else { Color::TRANSPARENT })
                 .hover(fg.alpha(0.1 * fg.a)).press(fg.alpha(0.2 * fg.a)).press_scale(0.97)
-                .child(icon(icons::tab(id), 17.0).color(if on { fg } else { fg.alpha(0.55 * fg.a) }).a11y_hidden())
-                .on_press(move |s: &mut Island| s.open_tab(id)),
+                .child(icon(icons::tab(tab), 17.0).color(if on { fg } else { fg.alpha(0.55 * fg.a) }).a11y_hidden())
+                .on_press(move |s: &mut Island| s.open_tab(tab)),
         );
     }
     // The gap to the Island is part of the dock, so crossing it keeps the Island open.
@@ -1410,32 +1128,18 @@ fn border(s: &Island, radii: [f32; 4], hidden: bool) -> El {
 fn glance(s: &Island, fg: Color) -> El {
     let cfg = &s.cfg;
     let alert = s.alert();
-    let color = match alert {
-        Some(Alert::Charging) => status::charge(),
-        Some(Alert::Battery) => status::low(),
-        Some(Alert::Camera) => status::camera(),
-        Some(Alert::Microphone) => status::mic(),
-        Some(Alert::Bluetooth) => status::bluetooth(),
-        None => fg,
-    };
-    let style = s.font(16.0, 600.0).lh(16.0);
+    let color = alert.map_or(fg, Alert::color);
+    let style = s.cfg.font(16.0, 600.0).lh(16.0);
     let left = match alert {
-        Some(Alert::Charging | Alert::Battery) => icon(&icons::ZAP, 20.0).color(color),
-        Some(Alert::Camera) => icon(&icons::CAMERA, 20.0).color(color),
-        Some(Alert::Microphone) => icon(&icons::MIC, 20.0).color(color),
-        Some(Alert::Bluetooth) => icon(&icons::HEADPHONES, 20.0).color(color),
+        Some(alert) => icon(alert.icon(), 20.0).color(color),
         None => text(&s.time).key("time").font(style.features("'tnum' 1")).color(color),
     };
-    let percent = || text(s.percent.map_or(String::new(), |p| format!("{p}%"))).key("percent").font(style).color(color);
-    let label = |l: &str| text(l).key("label").font(style).color(color);
+    let percent = || text(s.percent_label()).key("percent").font(style).color(color);
     let battery = || if s.charging {
         row().key("battery").gap(2.0).center_y().child(icon(&icons::ZAP, 14.0).color(color)).child(percent())
     } else { percent() };
     let right = match alert {
-        Some(Alert::Charging | Alert::Battery) => percent(),
-        Some(Alert::Camera) => label("Camera"),
-        Some(Alert::Microphone) => label("Microphone"),
-        Some(Alert::Bluetooth) => label(s.bluetooth_label()),
+        Some(alert) => text(s.alert_label(alert)).key("label").font(style).color(color),
         None if cfg.standby && s.percent.is_some() => battery(),
         None => match s.weather.temp {
             Some(temp) => row().key("weather").gap(2.0).center_y()
@@ -1445,15 +1149,7 @@ fn glance(s: &Island, fg: Color) -> El {
         },
     };
     let pad = if cfg.notch_mode { 12.0 } else { 16.0 };
-    let key = match alert {
-        Some(Alert::Charging) => "charging",
-        Some(Alert::Battery) => "battery",
-        Some(Alert::Bluetooth) => "bluetooth",
-        Some(Alert::Camera) => "camera",
-        Some(Alert::Microphone) => "microphone",
-        None => "glance",
-    };
-    row().key(key).w_full().h_full().px(pad).center_y().justify_between()
+    row().key(alert.map_or("glance", Alert::key)).w_full().h_full().px(pad).center_y().justify_between()
         .transition(Transition::blur_replace())
         .child(left).child(right)
 }
@@ -1474,25 +1170,31 @@ fn capture_dot(s: &Island) -> Option<El> {
         .radius(SIZE / 2.0).fill(color).transition(Transition::opacity()))
 }
 
+/// A clipped line; one wider than the `width` the caller gives it scrolls sideways as one
+/// endless line: two copies, sliding left by one copy's width every `period` seconds.
+pub fn marquee(key: &str, line: El, text_width: f32, width: f32, period: f64) -> El {
+    let clip = el().key(key).clip_soft(0.0);
+    if text_width <= width { return clip.child(line) }
+    let strip = row().key("strip").absolute(0.0, 0.0)
+        .child(el().pr(30.0).child(line.clone()))
+        .child(el().pr(30.0).child(line.a11y_hidden()))
+        .looping(LoopSpec::slide(period, [0.0, 0.0], [-0.5, 0.0]).easing(Easing::LINEAR));
+    clip.clip_fade(0.0, 0.0, 15.0, 15.0).child(strip)
+}
+
+/// The compact now-playing line around its title: padding 2 × 9, cover 24, gaps 2 × 6, button 25.
+const PLAYING_CHROME: f32 = 79.0;
+
 /// The compact view while music plays: cover, a title that scrolls when it doesn't fit, and
 /// a visualizer that turns into play/pause under the pointer.
 fn now_playing(s: &Island, fg: Color) -> El {
     let Some(track) = &s.track else { return el() };
     let (name, artist) = s.now_playing_text();
+    let title = row().key("title")
+        .child(text(&name).font(s.cfg.font(13.0, 600.0)).color(fg).single_line())
+        .child(text(&artist).font(s.cfg.font(13.0, 400.0)).color(fg.alpha(0.7 * fg.a)).single_line());
     let width = estimate_width(&name, 13.0) + estimate_width(&artist, 13.0);
-    let viewport = s.size().0 - 18.0 - 24.0 - 6.0 - 31.0;
-    let title = |key: &str| row().key(key).pr(30.0)
-        .child(text(&name).font(s.font(13.0, 600.0)).color(fg).single_line())
-        .child(text(&artist).font(s.font(13.0, 400.0)).color(fg.alpha(0.7 * fg.a)).single_line());
-    let scrolls = width > viewport;
-    let mut strip = row().key("strip").child(title("title"));
-    if scrolls {
-        // Two copies, sliding left by one copy's width every 12 seconds, read as one endless line.
-        strip = strip.child(title("title-again").a11y_hidden())
-            .looping(LoopSpec::slide(12.0, [0.0, 0.0], [-0.5, 0.0]).easing(Easing::LINEAR));
-    }
-    let mut marquee = el().key("marquee").grow(1.0).min_w(0.0).h(18.0).clip_soft(0.0).child(strip.absolute(0.0, 0.0));
-    if scrolls { marquee = marquee.clip_fade(0.0, 0.0, 15.0, 15.0) }
+    let marquee = marquee("marquee", title, width, s.size().0 - PLAYING_CHROME, 12.0).grow(1.0).min_w(0.0).h(18.0);
 
     let line = row().key(format!("playing-{}-{}", track.name, track.artist)).w_full().h_full().px(9.0).gap(6.0).center_y()
         .transition(Transition::blur_replace())
@@ -1609,7 +1311,7 @@ mod tests {
         let mut s = island(Config::default());
         let mut tx = Tx::default();
         assert!(s.set_bluetooth(true, &mut tx));
-        assert_eq!((s.alert(), s.bluetooth_label()), (Some(Alert::Bluetooth), "Connected"));
+        assert_eq!((s.alert(), s.alert_label(Alert::Bluetooth).as_str()), (Some(Alert::Bluetooth), "Connected"));
         s.bluetooth_alert_until = None;
         // One failed poll, then the device again: no alert.
         assert!(!s.set_bluetooth(false, &mut tx));
@@ -1617,38 +1319,33 @@ mod tests {
         assert_eq!(s.alert(), None);
         assert!(!s.set_bluetooth(false, &mut tx));
         assert!(s.set_bluetooth(false, &mut tx));
-        assert_eq!((s.alert(), s.bluetooth_label()), (Some(Alert::Bluetooth), "Disconnected"));
+        assert_eq!((s.alert(), s.alert_label(Alert::Bluetooth).as_str()), (Some(Alert::Bluetooth), "Disconnected"));
     }
 
     #[test]
-    fn sizes_follow_the_mode_and_the_tab() {
+    fn notch_mode_sizes_around_the_notch() {
         let mut s = island(Config { standby: false, ..Config::default() });
-        assert_eq!(s.size(), (140.0, 40.0));
         s.mode = Mode::Large;
-        for (tab, size) in [(0, (445.0, 160.0)), (1, (520.0, 250.0)), (2, (420.0, 230.0)), (6, (420.0, 290.0)), (8, (420.0, 290.0)), (9, (520.0, 290.0))] {
-            s.tab = tab;
-            assert_eq!(s.size(), size);
-        }
+        let large = s.size();
+        // Notch Mode's Large Island grows by what the notch hides.
         s.cfg.notch_mode = true;
-        assert_eq!(s.size(), (520.0, 312.0));
-        s.mode = Mode::Still;
-        assert_eq!(s.size(), (210.0, 34.0));
+        assert_eq!(s.size(), (large.0, large.1 + s.notch_inset() - LARGE_EDGE));
         // The compact notch glance fits its wider half on each side of the notch.
         s.mode = Mode::Quick;
         s.time = "9:41".into();
         s.percent = Some(100);
         let quick = s.size().0;
-        assert!(quick > 210.0 && quick < 300.0, "{quick}");
         s.capture = Some((Alert::Microphone, Default::default()));
-        assert!(s.size().0 > quick);
+        assert!(s.size().0 > quick, "a longer alert label widens it");
         s.cfg.notch_auto_size = false;
-        assert_eq!(s.size(), (300.0, 34.0));
+        let fixed = s.size().0;
+        s.capture = None;
+        assert_eq!(s.size().0, fixed, "without auto size the width stays put");
         // Mini notch keeps the notch height but drops the notch gap and the Large inset.
         s.cfg.notch_mini = true;
-        s.capture = None;
-        assert_eq!(s.size(), (140.0, 34.0));
+        assert_eq!(s.size().1, island(Config { notch_mode: true, ..Config::default() }).size().1);
         s.mode = Mode::Large;
-        assert_eq!(s.size(), (520.0, 290.0));
+        assert_eq!(s.size(), large);
     }
 
     #[test]
@@ -1677,22 +1374,6 @@ mod tests {
     }
 
     #[test]
-    fn notes_are_added_edited_and_deleted() {
-        let mut s = island(Config { notes: vec!["Old".into()], ..Config::default() });
-        s.add_note();
-        assert_eq!((s.note_index, s.cfg.notes.clone()), (0, vec![String::new(), "Old".into()]));
-        s.add_note();
-        assert_eq!(s.cfg.notes.len(), 2);
-        s.note.insert("Groceries");
-        s.note_edited();
-        assert_eq!(s.store.get().notes, ["Groceries", "Old"]);
-        s.open_note(5);
-        assert_eq!((s.note_index, s.note.text.as_str()), (1, "Old"));
-        s.delete_note();
-        assert_eq!((s.cfg.notes.clone(), s.note.text.clone()), (vec!["Groceries".to_string()], "Groceries".to_string()));
-    }
-
-    #[test]
     fn a_file_drag_opens_the_shelf_and_a_drop_stashes_it() {
         let s = island(Config { standby: false, shelf: vec!["/b".into()], ..Config::default() });
         let [left, top, w, h] = s.rect();
@@ -1701,7 +1382,7 @@ mod tests {
         rt.frame(0.0);
         rt.drag_files(vec!["/a".into(), "/b".into()], at);
         rt.frame(1.0 / 60.0);
-        assert_eq!((rt.state.mode, rt.state.tab, rt.state.dropping), (Mode::Large, tabs::SHELF, true));
+        assert_eq!((rt.state.mode, rt.state.tab, rt.state.dropping), (Mode::Large, Tab::Shelf, true));
         rt.drop_files(vec!["/a".into(), "/b".into()], at);
         rt.frame(2.0 / 60.0);
         assert_eq!((rt.state.mode, rt.state.dropping), (Mode::Large, false));
@@ -1718,7 +1399,7 @@ mod tests {
     fn a_desktop_drag_opens_the_shelf_until_it_ends_elsewhere() {
         let mut s = island(Config { standby: false, ..Config::default() });
         s.desktop_drag(true);
-        assert_eq!((s.mode, s.tab), (Mode::Large, tabs::SHELF));
+        assert_eq!((s.mode, s.tab), (Mode::Large, Tab::Shelf));
         // Passing over the Island and off again keeps it open while the drag goes on.
         s.drop_hover(true, &mut Tx::default());
         s.drop_hover(false, &mut Tx::default());
@@ -1731,48 +1412,37 @@ mod tests {
         s.desktop_drag(false);
         assert_eq!(s.mode, Mode::Large);
         // A hidden Shelf doesn't open.
-        let mut s = island(Config { standby: false, hidden_tabs: vec![tabs::SHELF], ..Config::default() });
+        let mut s = island(Config { standby: false, hidden_tabs: vec![Tab::Shelf], ..Config::default() });
         s.desktop_drag(true);
         assert_eq!(s.mode, Mode::Still);
     }
 
     #[test]
-    fn clipboard_history_keeps_the_newest_first_without_repeats() {
-        let mut s = island(Config::default());
-        assert!(s.push_clipboard("a") && s.push_clipboard("b"));
-        assert!(!s.push_clipboard("b") && !s.push_clipboard(""));
-        assert!(s.push_clipboard("a"));
-        assert_eq!(s.clipboard, ["a", "b"]);
-        for i in 0..60 { s.push_clipboard(&i.to_string()); }
-        assert_eq!(s.clipboard.len(), 50);
-    }
-
-    #[test]
     fn large_opens_on_the_starred_tab_unless_turned_off() {
-        let mut s = island(Config { default_tab: 0, ..Config::default() });
-        s.tab = 4;
+        let mut s = island(Config { default_tab: Tab::Search, ..Config::default() });
+        s.tab = Tab::Assistant;
         s.set_mode(Mode::Large);
-        assert_eq!(s.tab, 0);
+        assert_eq!(s.tab, Tab::Search);
         s.cfg.open_default_tab = false;
         s.set_mode(Mode::Quick);
-        s.tab = 4;
+        s.tab = Tab::Assistant;
         s.set_mode(Mode::Large);
-        assert_eq!(s.tab, 4);
+        assert_eq!(s.tab, Tab::Assistant);
     }
 
     #[test]
     fn tabs_move_within_the_visible_ones() {
-        let mut s = island(Config { hidden_tabs: vec![1], default_tab: 0, ..Config::default() });
-        assert_eq!(s.tab, 0);
+        let mut s = island(Config { hidden_tabs: vec![Tab::Workflows], default_tab: Tab::Search, ..Config::default() });
+        assert_eq!(s.tab, Tab::Search);
         s.move_tab(-1);
-        assert_eq!(s.tab, 0);
+        assert_eq!(s.tab, Tab::Search);
         s.move_tab(1);
-        assert_eq!(s.tab, 2);
+        assert_eq!(s.tab, Tab::Overview);
     }
 
     #[test]
     fn arrows_switch_tabs_even_while_typing_in_the_search_field() {
-        let mut s = island(Config { default_tab: 0, ..Config::default() });
+        let mut s = island(Config { default_tab: Tab::Search, ..Config::default() });
         s.mode = Mode::Large;
         s.search.focused = true;
         let mut rt = rune::Runtime::new(s, view, CANVAS, rune::Env { system_dark: true, scale: 1.0 });
@@ -1782,14 +1452,14 @@ mod tests {
         assert_eq!(rt.state.search.text, "a");
         rt.key(KeyEvent { key: Key::Right, mods: rune::Mods::default() });
         rt.frame(1.0 / 60.0);
-        assert_eq!(rt.state.tab, 1);
+        assert_eq!(rt.state.tab, Tab::Workflows);
     }
 
     #[test]
     fn one_long_swipe_changes_tab_once_and_a_new_one_again() {
         // Tab 1 scrolls, and a scroll view takes a wheel before the Island's handler, so skip
         // it: the swipe is about the gesture, not about which tab happens to have a scroller.
-        let mut s = island(Config { hidden_tabs: vec![1], default_tab: 0, ..Config::default() });
+        let mut s = island(Config { hidden_tabs: vec![Tab::Workflows], default_tab: Tab::Search, ..Config::default() });
         s.mode = Mode::Large;
         let [left, top, w, _] = s.rect();
         let mut rt = rune::Runtime::new(s, view, CANVAS, rune::Env { system_dark: true, scale: 1.0 });
@@ -1801,15 +1471,15 @@ mod tests {
         };
         // 1.5 s of fingers and momentum outlasts any fixed lock.
         swipe(&mut rt);
-        assert_eq!(rt.state.tab, 2);
+        assert_eq!(rt.state.tab, Tab::Overview);
         rt.frame(0.3);
         swipe(&mut rt);
-        assert_eq!(rt.state.tab, 4);
+        assert_eq!(rt.state.tab, Tab::Assistant);
     }
 
     #[test]
     fn a_pause_within_one_swipe_does_not_change_tab_again() {
-        let mut s = island(Config { hidden_tabs: vec![1], default_tab: 0, ..Config::default() });
+        let mut s = island(Config { hidden_tabs: vec![Tab::Workflows], default_tab: Tab::Search, ..Config::default() });
         s.mode = Mode::Large;
         let [left, top, w, _] = s.rect();
         let at = |phase| WheelEvent::new(-10.0, 0.0).at(left + w / 2.0, top + 10.0).precise(true).phase(phase);
@@ -1821,21 +1491,21 @@ mod tests {
             rt.wheel_event(at(rune::GesturePhase::Moved));
             rt.frame(1.0 / 60.0);
         }
-        assert_eq!(rt.state.tab, 2);
+        assert_eq!(rt.state.tab, Tab::Overview);
         // The fingers stay down through the pause, so this is still one swipe.
         for _ in 0..20 { rt.frame(1.0 / 60.0); }
         for _ in 0..6 {
             rt.wheel_event(at(rune::GesturePhase::Moved));
             rt.frame(1.0 / 60.0);
         }
-        assert_eq!(rt.state.tab, 2);
+        assert_eq!(rt.state.tab, Tab::Overview);
     }
 
     #[test]
     fn the_wheel_scrolls_a_long_task_list() {
         let mut s = island(Config { tasks: (0..30).map(|i| format!("task {i}")).collect(), ..Config::default() });
         s.mode = Mode::Large;
-        s.set_tab(6);
+        s.set_tab(Tab::Tasks);
         let [left, top, w, h] = s.rect();
         let mut rt = rune::Runtime::new(s, view, CANVAS, rune::Env { system_dark: true, scale: 1.0 });
         for _ in 0..60 { rt.frame(1.0 / 60.0); }

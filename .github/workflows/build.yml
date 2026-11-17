@@ -87,7 +87,9 @@ jobs:
           mkdir -p out
           # One build, then the binary itself: `cargo run` re-checks freshness per scene (slow on Windows).
           cargo build --locked -q
-          for scene in quick charging large search workflows assistant clipboard tasks system t3-device playing playing-progress overview-playing camera bluetooth-off notch mini-notch notch-large win95 glass glass-large; do
+          scenes=$(target/debug/ripple --list-scenes | tr -d '\r')
+          test -n "$scenes"
+          for scene in $scenes; do
             target/debug/ripple --window island --scene "$scene" --snap "out/smoke-scene-$scene.png"
           done
           target/debug/ripple --window settings --size 520x2600 --snap out/smoke-scene-settings.png
