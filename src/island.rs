@@ -457,7 +457,7 @@ impl Island {
         if notch && track && !alerting && self.mode != Mode::Large { w = (w + 40.0).max(300.0) }
         let h = match self.mode {
             Mode::Large => self.notch_inset() + match self.tab { 6 | 8 | 9 | 10 => 290.0, 0 => 160.0, 1 => 250.0, _ => 230.0 },
-            _ => if notch { 34.0 } else { 40.0 },
+            _ => if self.cfg.notch_mode { 34.0 } else { 40.0 }, // Mini notch keeps the notch height
         };
         (w, h)
     }
