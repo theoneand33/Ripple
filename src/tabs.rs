@@ -388,7 +388,7 @@ fn stremflix(s: &Island) -> El {
     };
     let mut cards = row().key("stremflix-cards").gap(12.0);
     for entry in entries {
-        let poster = el().key("poster").size(pw, ph).radius(round(10.0)).clip().fill(fg.alpha(0.08 * fg.a)).a11y_hidden();
+        let poster = el().key("poster").size(pw, ph).radius(round(10.0)).fill(fg.alpha(0.08 * fg.a)).a11y_hidden();
         let poster = match entry.poster.as_ref().and_then(|p| s.stremflix.posters.get(p)).filter(|i| i.is_ready() && i.error().is_none()) {
             Some(image) => poster.pixels_fit(image.pixels(), SurfaceFit::Fill),
             None => poster.center().child(icon(&icons::TV, 28.0).color(muted)),
