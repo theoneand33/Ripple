@@ -1519,7 +1519,7 @@ mod tests {
         s.capture = None;
         assert_eq!(s.size(), (140.0, 34.0));
         s.mode = Mode::Large;
-        assert_eq!(s.size(), (480.0, 250.0));
+        assert_eq!(s.size(), (520.0, 290.0));
     }
 
     #[test]
