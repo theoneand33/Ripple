@@ -222,6 +222,7 @@ impl Config {
         let (bg, text) = match theme {
             "sleek-black" => ("rgba(0, 0, 0, 0.64)", "rgba(255, 255, 255)"),
             "win95" => ("rgba(195, 195, 195)", "rgba(0, 0, 0)"),
+            "glass" => ("rgba(10, 10, 10, 0.92)", "rgba(255, 255, 255, 0.85)"),
             _ => ("#000000", "#FFFFFF"),
         };
         self.theme = theme.into();
@@ -230,6 +231,7 @@ impl Config {
     }
 
     pub fn win95(&self) -> bool { self.theme == "win95" }
+    pub fn glass(&self) -> bool { self.theme == "glass" }
     pub fn bg(&self) -> Color { parse_color(&self.bg_color).unwrap_or(Color::BLACK) }
     pub fn text(&self) -> Color { parse_color(&self.text_color).unwrap_or(Color::WHITE) }
 
