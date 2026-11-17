@@ -15,6 +15,7 @@ pub fn view(s: &Island, layer: &mut Vec<El>) -> El {
         4 => assistant(s),
         5 => clipboard(s),
         6 => tasks(s),
+        9 => notes(s),
         _ => t3(s, layer),
     }
 }
@@ -302,6 +303,71 @@ fn tasks(s: &Island) -> El {
         )
 }
 
+// --- Notes ---
+
+/// A note's title is its first line; the lines after it, run together, preview it.
+fn note_heading(note: &str) -> (&str, String) {
+    let mut lines = note.lines().map(str::trim).filter(|l| !l.is_empty());
+    (lines.next().unwrap_or("New Note"), lines.collect::<Vec<_>>().join(" "))
+}
+
+fn notes(s: &Island) -> El {
+    let fg = s.cfg.text();
+    let muted = fg.alpha(0.55 * fg.a);
+    let accent = crate::island::status::bluetooth();
+    let round = |r: f32| if s.cfg.win95() { 0.0 } else { r };
+    let tool = |key: &str, glyph: &'static rune::Icon, label: &str| {
+        el().key(key).role("button").label(label).focusable(true)
+            .size(28.0, 28.0).center().radius(round(14.0)).fill(fg.alpha(0.1 * fg.a))
+            .hover(fg.alpha(0.18 * fg.a)).press(fg.alpha(0.26 * fg.a))
+            .child(icon(glyph, 15.0).color(fg).a11y_hidden())
+    };
+    let mut header = row().key("notes-header").w_full().h(28.0).gap(8.0).center_y()
+        .child(text("Notes").font(s.font(17.0, 700.0)).color(fg))
+        .child(text(s.cfg.notes.len().to_string()).font(s.font(15.0, 500.0).features("'tnum' 1")).color(muted))
+        .child(el().grow(1.0));
+    if !s.cfg.notes.is_empty() {
+        header = header.child(tool("delete-note", &icons::TRASH, "Delete note").on_press(Island::delete_note));
+    }
+    header = header.child(tool("new-note", &icons::PLUS, "New note").on_press(Island::add_note));
+    let root = col().key("notes").w_full().h_full().px(16.0).pt(14.0).pb(14.0).gap(10.0).child(header);
+    if s.cfg.notes.is_empty() { return root.child(empty(s, "No notes yet, press + to write one")) }
+
+    let mut list = col().key("note-list").w_full().gap(2.0);
+    for (i, note) in s.cfg.notes.iter().enumerate() {
+        let on = i == s.note_index;
+        let (title, preview) = note_heading(note);
+        list = list.child(
+            row().key(format!("note-{i}")).role("button").label(title.to_string()).checked(on).focusable(true)
+                .w_full().px(6.0).py(6.0).gap(8.0).items_start().radius(round(10.0))
+                .hover(fg.alpha(0.06 * fg.a)).press(fg.alpha(0.12 * fg.a))
+                .on_press(move |s: &mut Island| s.open_note(i))
+                .child(el().mt(6.0).size(7.0, 7.0).radius(3.5).fill(if on { accent } else { fg.alpha(0.3 * fg.a) }).a11y_hidden())
+                .child(
+                    col().grow(1.0).min_w(0.0).gap(2.0).a11y_hidden()
+                        .child(text(title).font(s.font(14.0, 600.0)).color(if on { accent } else { fg }).truncate())
+                        .child(text(if preview.is_empty() { "No additional text" } else { &preview }).font(s.font(12.0, 400.0)).color(muted).truncate()),
+                ),
+        );
+    }
+    let editor = text_input(&s.note, s.font(14.0, 400.0).lh(20.0)).key("note-editor").label("Note").w_full()
+        .color(fg).placeholder("Title, then your note", fg.alpha(0.4 * fg.a))
+        .on_edit(|s: &mut Island| &mut s.note)
+        // Return breaks the line.
+        .on_submit(|s: &mut Island, _| { s.note.insert("\n"); s.note_edited() })
+        .on_input_change(|s: &mut Island, _| s.note_edited());
+    root.child(
+        row().key("notes-body").w_full().grow(1.0).min_h(0.0).gap(12.0)
+            .child(el().key("note-scroll").w(160.0).h_full().scroll(ScrollSpec { stick_bottom: false }).scroll_edge_fade(8.0).child(list))
+            .child(
+                el().key(format!("note-card-{}", s.note_index)).grow(1.0).min_w(0.0).h_full().px(14.0).py(10.0)
+                    .radius(round(18.0)).fill(fg.alpha(0.08 * fg.a)).border(1.0, fg.alpha(0.06 * fg.a))
+                    .transition(Transition::opacity())
+                    .scroll(ScrollSpec { stick_bottom: false }).scroll_edge_fade(10.0).child(editor),
+            ),
+    )
+}
+
 // --- T3 Code ---
 
 fn t3(s: &Island, layer: &mut Vec<El>) -> El {
@@ -402,4 +468,15 @@ fn t3(s: &Island, layer: &mut Vec<El>) -> El {
                 .child(text(&s.t3.status).key("t3-status").role("status").font(s.font(12.0, 400.0)).color(fg.alpha(0.6 * fg.a)).grow(1.0).min_w(0.0).truncate())
                 .child(button(s, "t3-start", "Start", s.t3_can_start()).on_press(Island::t3_start)),
         )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::note_heading;
+
+    #[test]
+    fn a_note_is_titled_by_its_first_line() {
+        assert_eq!(note_heading("PR queue\n\nGitHub\n• PR #482"), ("PR queue", "GitHub • PR #482".to_string()));
+        assert_eq!(note_heading("  \n"), ("New Note", String::new()));
+    }
 }

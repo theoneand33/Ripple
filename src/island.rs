@@ -18,10 +18,12 @@ use crate::platform::Passthrough;
 use crate::system::{self, MediaCommand, Track};
 use crate::{icons, t3, tabs};
 
-/// The Island's window, in points: the largest Island at its hover scale, plus its shadow.
-pub const CANVAS: (f32, f32) = (560.0, 360.0);
+/// The Island's window, in points: the largest Island at its hover scale, its tab dock, plus their shadows.
+pub const CANVAS: (f32, f32) = (560.0, 420.0);
 /// Room kept around the Island inside the window for its shadow and hover scale.
 const PAD: f32 = 30.0;
+/// The tab dock under the Large Island: its height, the gap above it, one button and the space between.
+const DOCK: (f32, f32, f32, f32) = (44.0, 12.0, 32.0, 6.0);
 /// Framer's spring (stiffness 400, damping 40, mass 2.5) as duration and bounce.
 pub const SPRING: Spring = Spring::new(0.5, 0.3);
 
@@ -146,7 +148,12 @@ pub struct Island {
     pub kit: Kit,
     pub mode: Mode,
     pub tab: u8,
+    /// The pointer is over the Island or its dock.
     pub hovered: bool,
+    /// Over the Island, over the dock.
+    over: [bool; 2],
+    /// The pointer left both; the next poll lets the Island rest.
+    left: bool,
 
     pub time: String,
     pub date: String,
@@ -180,6 +187,9 @@ pub struct Island {
     /// The clipboard row whose button reads "Copied", and until when.
     pub copied: Option<(usize, f64)>,
     pub task: TextEdit,
+    /// The open note's editor and which note it edits.
+    pub note: TextEdit,
+    pub note_index: usize,
     pub t3: T3State,
     pub t3_client: Arc<t3::Client>,
 
@@ -226,6 +236,8 @@ impl Island {
             mode: Mode::Still,
             tab: cfg.first_tab(),
             hovered: false,
+            over: [false; 2],
+            left: false,
             time: String::new(),
             date: String::new(),
             percent: 100,
@@ -254,6 +266,8 @@ impl Island {
             clipboard: Vec::new(),
             copied: None,
             task: TextEdit::new(""),
+            note: TextEdit::new(cfg.notes.first().map_or("", String::as_str)),
+            note_index: 0,
             t3: T3State::default(),
             t3_client,
             me: None,
@@ -333,7 +347,7 @@ impl Island {
         let alerting = self.alert().is_some();
         let track = self.shows_track();
         let mut w = match self.mode {
-            Mode::Large => match self.tab { 1 => 480.0, 0 => 405.0, _ => 380.0 },
+            Mode::Large => match self.tab { 1 | 9 => 480.0, 0 => 405.0, _ => 380.0 },
             _ if alerting => if notch { 260.0 } else { 160.0 }, // fits icon + "Microphone"
             _ if track => self.now_playing_width(),
             Mode::Quick => if notch { 260.0 } else { 140.0 }, // fits "23:59" + weather/"100%"
@@ -341,7 +355,7 @@ impl Island {
         };
         if notch && self.mode != Mode::Large { w = (w + 40.0).max(if track { 300.0 } else { 0.0 }) }
         let h = match self.mode {
-            Mode::Large => self.notch_inset() + match self.tab { 6 | 8 => 250.0, 0 => 120.0, 1 => 210.0, _ => 190.0 },
+            Mode::Large => self.notch_inset() + match self.tab { 6 | 8 | 9 => 250.0, 0 => 120.0, 1 => 210.0, _ => 190.0 },
             _ => if notch { 34.0 } else { 40.0 },
         };
         (w, h)
@@ -349,6 +363,18 @@ impl Island {
 
     /// The Island's rect inside its window.
     pub fn rect(&self) -> [f32; 4] { self.placement.rect(self.size()) }
+
+    /// The tab dock's rect, the gap to the Island included: under the Large Island, or over it
+    /// when the Island stands on the bottom of the display.
+    pub fn dock_rect(&self) -> Option<[f32; 4]> {
+        if self.mode != Mode::Large { return None }
+        let (h, gap, button, space) = DOCK;
+        let n = self.cfg.visible_tabs().len() as f32;
+        let w = n * button + (n - 1.0) * space + 2.0 * space;
+        let [x, y, iw, ih] = self.rect();
+        let left = (x + iw / 2.0 - w / 2.0).clamp(4.0, CANVAS.0 - w - 4.0);
+        Some([left, if self.placement.top { y + ih } else { y - gap - h }, w, gap + h])
+    }
 
     pub fn font(&self, size: f32, weight: f32) -> TextStyle { font(&self.cfg, size, weight) }
 
@@ -360,7 +386,7 @@ impl Island {
     }
 
     pub fn input_focused(&self) -> bool {
-        self.search.focused || self.ask.focused || self.task.focused || self.t3.message.focused
+        self.search.focused || self.ask.focused || self.task.focused || self.note.focused || self.t3.message.focused
     }
 
     fn set_mode(&mut self, mode: Mode) {
@@ -368,19 +394,35 @@ impl Island {
         if self.mode != Mode::Large { self.t3.open = None }
     }
 
-    pub fn hover(&mut self, hovered: bool, tx: &mut Tx) {
-        self.hovered = hovered;
-        if hovered {
+    pub fn hover(&mut self, hovered: bool, tx: &mut Tx) { self.set_over(0, hovered, tx) }
+
+    pub fn hover_dock(&mut self, hovered: bool, tx: &mut Tx) { self.set_over(1, hovered, tx) }
+
+    /// Moving from the Island to its dock leaves one before entering the other: the Island
+    /// rests only if the pointer is over neither by the next poll.
+    fn set_over(&mut self, part: usize, inside: bool, tx: &mut Tx) {
+        let was = self.hovered;
+        self.over[part] = inside;
+        self.hovered = self.over[0] || self.over[1];
+        if self.hovered && !was {
             if self.mode == Mode::Still && self.cfg.show_info_idle && !self.playing() { self.set_mode(Mode::Large) }
             else if self.mode != Mode::Large { self.set_mode(Mode::Quick) }
-        } else {
+        } else if !self.hovered {
             self.art_hovered = false;
-            // An open select's menu hangs outside the Island; leaving for it isn't leaving (poll closes both).
-            if self.t3.open.is_none() {
-                tx.blur();
-                self.set_mode(Mode::Still);
-            }
+            self.left = true;
+            tx.wake_at(tx.clock());
         }
+    }
+
+    /// The pointer stayed off the Island and its dock.
+    fn leave(&mut self, tx: &mut Tx) -> bool {
+        if !std::mem::take(&mut self.left) || self.hovered { return false }
+        // An open select's menu hangs outside the Island; leaving for it isn't leaving (poll closes both).
+        if self.t3.open.is_none() {
+            tx.blur();
+            self.set_mode(Mode::Still);
+        }
+        true
     }
 
     /// A click on the Island itself: Large opens and closes.
@@ -414,13 +456,45 @@ impl Island {
         let Some(i) = visible.iter().position(|t| *t == self.tab) else { return };
         let next = i as i32 + direction;
         if next < 0 || next >= visible.len() as i32 { return }
-        self.set_tab(visible[next as usize]);
+        self.open_tab(visible[next as usize]);
+    }
+
+    /// Switches tab, sliding the way it lies, and loads what the tab needs.
+    pub fn open_tab(&mut self, id: u8) {
+        self.set_tab(id);
         self.entered_tab();
     }
 
     fn entered_tab(&mut self) {
         self.t3.open = None;
         if self.mode == Mode::Large && self.tab == 8 { self.t3_load() }
+    }
+
+    // --- Notes ---
+
+    /// Edits note `i`, or the last one when `i` is past the end.
+    pub fn open_note(&mut self, i: usize) {
+        self.note_index = i.min(self.cfg.notes.len().saturating_sub(1));
+        self.note = TextEdit::new(self.cfg.notes.get(self.note_index).map_or("", String::as_str));
+    }
+
+    pub fn add_note(&mut self) {
+        // An empty note on top is reused rather than stacking blanks.
+        if self.cfg.notes.first().is_none_or(|n| !n.trim().is_empty()) { self.save(|c| c.notes.insert(0, String::new())) }
+        self.open_note(0);
+        self.note.focused = true;
+    }
+
+    pub fn delete_note(&mut self) {
+        let i = self.note_index;
+        self.save(|c| { if i < c.notes.len() { c.notes.remove(i); } });
+        self.open_note(i);
+    }
+
+    /// Saves the editor's text into its note as it changes.
+    pub fn note_edited(&mut self) {
+        let (i, text) = (self.note_index, self.note.text.clone());
+        if self.cfg.notes.get(i).is_some_and(|n| *n != text) { self.save(|c| c.notes[i] = text) }
     }
 
     pub fn key(&mut self, ev: &KeyEvent, _: &mut Tx) -> bool {
@@ -430,8 +504,7 @@ impl Island {
             Key::Command(c @ '1'..='8') => {
                 let Some(&id) = self.cfg.visible_tabs().get(c as usize - '1' as usize) else { return false };
                 self.mode = Mode::Large;
-                self.set_tab(id);
-                self.entered_tab();
+                self.open_tab(id);
             }
             _ => return false,
         }
@@ -654,6 +727,7 @@ impl Island {
             self.set_mode(Mode::Still);
             changed = true;
         }
+        changed |= self.leave(tx);
         changed |= due(&mut self.paused_until);
         if self.copied.is_some_and(|c| now >= c.1) {
             self.copied = None;
@@ -679,7 +753,15 @@ impl Island {
         let region = if self.t3.open.is_some() { [0.0, 0.0, CANVAS.0, CANVAS.1] } else {
             let [x, y, w, h] = self.rect();
             let (mx, my) = (w * 0.025 + 2.0, h * 0.025 + 2.0);
-            [x - mx, y - my, w + 2.0 * mx, h + 2.0 * my]
+            let [x, y, w, h] = [x - mx, y - my, w + 2.0 * mx, h + 2.0 * my];
+            // The dock takes clicks too: the region spans both.
+            match self.dock_rect() {
+                Some([dx, dy, dw, dh]) => {
+                    let (l, t) = (x.min(dx), y.min(dy));
+                    [l, t, (x + w).max(dx + dw) - l, (y + h).max(dy + dh) - t]
+                }
+                None => [x, y, w, h],
+            }
         };
         let screen = self.screen();
         self.passthrough.sync(region, self.placement.window, &screen, tx);
@@ -962,7 +1044,37 @@ pub fn view(s: &Island, _: &mut Cx<Island>) -> El {
 
     // The border draws over the content, as a CSS border does.
     island = island.child(border(s, radii, hidden));
-    rune_kit::root(el().key("canvas").w_full().h_full().child(island), layer)
+    let mut canvas = el().key("canvas").w_full().h_full().child(island);
+    if let Some(rect) = s.dock_rect() { canvas = canvas.child(dock(s, rect)) }
+    rune_kit::root(canvas, layer)
+}
+
+/// The Large Island's tabs as a row of icons in a pill of their own.
+fn dock(s: &Island, [x, y, w, h]: [f32; 4]) -> El {
+    let cfg = &s.cfg;
+    let (bg, fg) = (cfg.bg(), cfg.text());
+    let (height, gap, button, space) = DOCK;
+    let round = |r: f32| if cfg.win95() { 0.0 } else { r };
+    let mut pill = row().key("dock").role("group").label("Tabs").w_full().h(height).px(space).gap(space).center_y()
+        .fill(bg).radius(round(height / 2.0)).border(1.0, fg.alpha(0.12 * fg.a))
+        .box_shadow(Shadow { x: 0.0, y: 0.0, blur: 24.0, spread: 0.0, color: Color::BLACK.alpha(0.2), inset: false });
+    for id in cfg.visible_tabs() {
+        let name = crate::config::TABS.iter().find(|t| t.id == id).map_or("", |t| t.name);
+        let on = id == s.tab;
+        pill = pill.child(
+            el().key(format!("dock-{id}")).role("button").label(name).checked(on).focusable(true)
+                .size(button, button).center().radius(round(button / 2.0))
+                .fill(if on { fg.alpha(0.18 * fg.a) } else { Color::TRANSPARENT })
+                .hover(fg.alpha(0.1 * fg.a)).press(fg.alpha(0.2 * fg.a))
+                .child(icon(icons::tab(id), 17.0).color(if on { fg } else { fg.alpha(0.55 * fg.a) }).a11y_hidden())
+                .on_press(move |s: &mut Island| s.open_tab(id)),
+        );
+    }
+    // The gap to the Island is part of the dock, so crossing it keeps the Island open.
+    let zone = el().key("dock-zone").hit().absolute(x, y).size(w, h).motion(SPRING)
+        .transition(Transition::blur_replace())
+        .on_hover_change(Island::hover_dock);
+    if s.placement.top { zone.pt(gap) } else { zone.pb(gap) }.child(pill)
 }
 
 fn border(s: &Island, radii: [f32; 4], hidden: bool) -> El {
@@ -1141,14 +1253,55 @@ mod tests {
         let mut s = island(Config { standby: false, ..Config::default() });
         assert_eq!(s.size(), (140.0, 40.0));
         s.mode = Mode::Large;
-        for (tab, size) in [(0, (405.0, 120.0)), (1, (480.0, 210.0)), (2, (380.0, 190.0)), (6, (380.0, 250.0)), (8, (380.0, 250.0))] {
+        for (tab, size) in [(0, (405.0, 120.0)), (1, (480.0, 210.0)), (2, (380.0, 190.0)), (6, (380.0, 250.0)), (8, (380.0, 250.0)), (9, (480.0, 250.0))] {
             s.tab = tab;
             assert_eq!(s.size(), size);
         }
         s.cfg.notch_mode = true;
-        assert_eq!(s.size(), (380.0, 284.0));
+        assert_eq!(s.size(), (480.0, 284.0));
         s.mode = Mode::Still;
         assert_eq!(s.size(), (210.0, 34.0));
+    }
+
+    #[test]
+    fn crossing_from_the_island_to_its_dock_keeps_it_large() {
+        let mut s = island(Config { standby: false, ..Config::default() });
+        let mut tx = Tx::default();
+        s.hover(true, &mut tx);
+        s.toggle(&mut tx);
+        assert!(s.dock_rect().is_some());
+        // Leaving the Island and entering the dock arrive together, in either order.
+        s.hover(false, &mut tx);
+        s.hover_dock(true, &mut tx);
+        s.poll(0.0, &mut tx);
+        assert_eq!(s.mode, Mode::Large);
+        s.hover_dock(false, &mut tx);
+        s.poll(0.1, &mut tx);
+        assert_eq!(s.mode, Mode::Still);
+        assert!(s.dock_rect().is_none());
+        // Under the Island at the top of the display, over it at the bottom.
+        s.mode = Mode::Large;
+        let ([_, iy, _, ih], [_, dy, _, dh]) = (s.rect(), s.dock_rect().unwrap());
+        assert_eq!(dy, iy + ih);
+        s.placement = Placement::of(&Config { position_mode: "bottom-center".into(), ..Config::default() }, (1920.0, 1080.0));
+        let ([_, iy, _, _], [_, dy, _, dh2]) = (s.rect(), s.dock_rect().unwrap());
+        assert_eq!((dy + dh2, dh2), (iy, dh));
+    }
+
+    #[test]
+    fn notes_are_added_edited_and_deleted() {
+        let mut s = island(Config { notes: vec!["Old".into()], ..Config::default() });
+        s.add_note();
+        assert_eq!((s.note_index, s.cfg.notes.clone()), (0, vec![String::new(), "Old".into()]));
+        s.add_note();
+        assert_eq!(s.cfg.notes.len(), 2);
+        s.note.insert("Groceries");
+        s.note_edited();
+        assert_eq!(s.store.get().notes, ["Groceries", "Old"]);
+        s.open_note(5);
+        assert_eq!((s.note_index, s.note.text.as_str()), (1, "Old"));
+        s.delete_note();
+        assert_eq!((s.cfg.notes.clone(), s.note.text.clone()), (vec!["Groceries".to_string()], "Groceries".to_string()));
     }
 
     #[test]
