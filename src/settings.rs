@@ -477,6 +477,6 @@ mod tests {
         for step in 1..=10 { rt.pointer_move(x, y + step as f32 * 10.0); rt.frame(1.0 / 60.0); }
         rt.pointer_up(x, y + 100.0);
         rt.frame(1.0 / 60.0);
-        assert_eq!(store.get().tab_order, [1, 2, 0, 4, 5, 6, 8, 9, 10]);
+        assert_eq!(store.get().tab_order, [1, 2, 0, 4, 5, 6, 8, 9, 10, 11]);
     }
 }

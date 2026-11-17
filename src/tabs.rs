@@ -1,11 +1,14 @@
 //! What the Island shows in Large mode: one view per tab.
 
-use rune::{Color, El, Easing, Key, KeyEvent, LoopSpec, ScrollSpec, SurfaceFit, TextEdit, Transition, Tx, col, el, icon, row, text, text_input};
+use rune::{Color, DragItem, DragOutcome, El, Easing, Key, KeyEvent, LoopSpec, ScrollSpec, SurfaceFit, TextEdit, Transition, Tx, col, el, icon, row, text, text_input};
 use rune_kit::{Markdown, Select};
 
 use crate::icons;
 use crate::island::{Island, control, cover};
 use crate::system::{self, MediaCommand};
+
+/// The Shelf's tab id: a file drag over the Island opens it.
+pub const SHELF: u8 = 11;
 
 pub fn view(s: &Island, layer: &mut Vec<El>) -> El {
     match s.tab {
@@ -17,6 +20,7 @@ pub fn view(s: &Island, layer: &mut Vec<El>) -> El {
         6 => tasks(s),
         9 => notes(s),
         10 => stremflix(s),
+        SHELF => shelf(s),
         _ => t3(s, layer),
     }
 }
@@ -409,6 +413,69 @@ fn stremflix(s: &Island) -> El {
         );
     }
     root.child(el().key("stremflix-scroll").w_full().grow(1.0).min_h(0.0).scroll_x().scroll_edge_fade(10.0).child(cards))
+}
+
+// --- Shelf ---
+
+fn shelf(s: &Island) -> El {
+    let fg = s.cfg.text();
+    let muted = fg.alpha(0.55 * fg.a);
+    let round = |r: f32| if s.cfg.win95() { 0.0 } else { r };
+    let mut header = row().key("shelf-header").w_full().h(28.0).gap(8.0).center_y()
+        .child(text("Shelf").font(s.font(17.0, 700.0)).color(fg))
+        .child(icon(&icons::INBOX, 16.0).color(muted).a11y_hidden())
+        .child(el().grow(1.0));
+    if !s.cfg.shelf.is_empty() {
+        header = header.child(
+            el().key("clear-shelf").role("button").label("Clear shelf").focusable(true)
+                .size(28.0, 28.0).center().radius(round(14.0)).fill(fg.alpha(0.1 * fg.a))
+                .hover(fg.alpha(0.18 * fg.a)).press(fg.alpha(0.26 * fg.a))
+                .child(icon(&icons::TRASH, 15.0).color(fg).a11y_hidden())
+                .on_press(|s: &mut Island| s.save(|c| c.shelf.clear())),
+        );
+    }
+    let root = col().key("shelf").w_full().h_full().px(16.0).pt(14.0).pb(14.0).gap(10.0).child(header);
+
+    // The drop zone, while a drag is over the Island or nothing is stashed.
+    if s.dropping || s.cfg.shelf.is_empty() {
+        let line = fg.alpha(if s.dropping { 0.6 } else { 0.3 } * fg.a);
+        return root.child(
+            col().key("shelf-drop").w_full().grow(1.0).min_h(0.0).gap(4.0).center().radius(round(16.0))
+                .fill(fg.alpha(if s.dropping { 0.08 } else { 0.0 } * fg.a)).border(1.5, line).border_dash(6.0, 5.0)
+                .child(icon(&icons::DOWNLOAD, 26.0).color(muted).a11y_hidden())
+                .child(text("Drop files here").font(s.font(15.0, 600.0)).color(fg).mt(4.0))
+                .child(text("Stash files here. Drag them out when you need them.").font(s.font(12.0, 400.0)).color(muted)),
+        );
+    }
+
+    let mut files = row().key("shelf-files").gap(10.0).items_start();
+    for path in &s.cfg.shelf {
+        let name = path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
+        let (out, moved) = (path.clone(), path.clone());
+        let remove = path.clone();
+        files = files.child(
+            col().key(format!("shelf-{}", path.display())).role("button").label(name.clone()).focusable(true)
+                .w(84.0).padding(8.0).gap(6.0).items_center().radius(round(12.0))
+                .hover(fg.alpha(0.08 * fg.a)).press(fg.alpha(0.14 * fg.a))
+                .transition(Transition::opacity())
+                // shortcut: rune starts OS drags on macOS and Windows only; on Linux a file stays put until rune adds X11/Wayland drag sources.
+                .drag_out(move |_: &Island| Some(DragItem::new().file(&out)))
+                .on_drag_end(move |s: &mut Island, outcome, _| if outcome == DragOutcome::Moved { s.save(|c| c.shelf.retain(|f| *f != moved)) })
+                .child(
+                    el().size(52.0, 52.0).center().radius(round(12.0)).fill(fg.alpha(0.08 * fg.a))
+                        .child(icon(&icons::FILE, 24.0).color(fg).a11y_hidden())
+                        .child(
+                            el().key("remove").role("button").label(format!("Remove {name}")).focusable(true)
+                                .pin(None, Some(-4.0), Some(-4.0), None).size(18.0, 18.0).center().radius(9.0)
+                                .fill(fg.alpha(0.25 * fg.a)).hover(fg.alpha(0.4 * fg.a))
+                                .child(icon(&icons::X, 11.0).color(fg).a11y_hidden())
+                                .on_press(move |s: &mut Island| s.save(|c| c.shelf.retain(|f| *f != remove))),
+                        ),
+                )
+                .child(text(&name).font(s.font(11.0, 500.0)).color(fg).w_full().align(rune::Align::Center).max_lines(2).wrap_anywhere().a11y_hidden()),
+        );
+    }
+    root.child(el().key("shelf-scroll").w_full().grow(1.0).min_h(0.0).scroll_x().child(files))
 }
 
 // --- T3 Code ---
