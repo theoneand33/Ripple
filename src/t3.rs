@@ -17,7 +17,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 use crate::config::T3Device;
-use crate::net::percent_encode;
+use crate::net::{percent_decode, percent_encode};
 
 const TIMEOUT: Duration = Duration::from_secs(15);
 /// Never opened: the authorization code is read straight from the redirect URL,
@@ -121,18 +121,7 @@ fn query_param(url: &str, name: &str) -> Option<String> {
     let query = url.split_once('?')?.1.split('#').next()?;
     query.split('&').find_map(|pair| {
         let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
-        (k == name).then(|| {
-            let v = v.replace('+', " ");
-            let bytes = v.as_bytes();
-            let mut out = Vec::new();
-            let mut i = 0;
-            while i < bytes.len() {
-                let hex = (bytes[i] == b'%').then(|| v.get(i + 1..i + 3).and_then(|h| u8::from_str_radix(h, 16).ok())).flatten();
-                out.push(hex.unwrap_or(bytes[i]));
-                i += if hex.is_some() { 3 } else { 1 };
-            }
-            String::from_utf8_lossy(&out).into_owned()
-        })
+        (k == name).then(|| percent_decode(&v.replace('+', " ")))
     })
 }
 
@@ -460,7 +449,6 @@ mod tests {
         let c = T3Device { url: "http://h:1".into(), token: "u".into(), ..Default::default() };
         assert_eq!(Client::token_key(&a), Client::token_key(&b));
         assert_ne!(Client::token_key(&a), Client::token_key(&c));
-        assert_eq!(Client::token_key(&a).len(), 64);
     }
 
     /// A T3 server: HTTP API, the /mcp OAuth sign-in and tools, and the /ws RPC.

@@ -34,9 +34,8 @@ fn ns_string(s: &str) -> *mut AnyObject {
 
 // --- The status-bar item ---
 
-const ITEMS: [(&str, &str); 3] = [("toggle", "Show/Hide Ripple"), ("settings", "Settings"), ("quit", "Quit")];
-
-static HANDLER: OnceLock<Box<dyn Fn(&str) + Send + Sync>> = OnceLock::new();
+/// Called with the picked item's index.
+static HANDLER: OnceLock<Box<dyn Fn(usize) + Send + Sync>> = OnceLock::new();
 
 define_class!(
     // SAFETY: NSObject has no subclassing requirements and this class doesn't implement Drop.
@@ -49,15 +48,16 @@ define_class!(
         fn pick(&self, sender: *mut AnyObject) {
             // SAFETY: the sender is one of the NSMenuItems below.
             let tag: isize = unsafe { msg_send![sender, tag] };
-            if let (Some(handler), Some((id, _))) = (HANDLER.get(), ITEMS.get(tag as usize)) { handler(id) }
+            if let Some(handler) = HANDLER.get() { handler(tag as usize) }
         }
     }
 );
 
-/// Puts Ripple's icon in the menu bar with Show/Hide, Settings and Quit. `on_pick` gets the
-/// item's id: "toggle", "settings" or "quit". Call it once, on the main thread.
-pub fn tray(icon_png: &[u8], on_pick: impl Fn(&str) + Send + Sync + 'static) {
-    if HANDLER.set(Box::new(on_pick)).is_err() { return }
+/// Puts Ripple's icon in the menu bar with `items` as (id, title), a separator before the last.
+/// `on_pick` gets the picked item's id. Call it once, on the main thread.
+pub fn tray(icon_png: &[u8], items: &'static [(&'static str, &'static str)], on_pick: impl Fn(&str) + Send + Sync + 'static) {
+    let handler = move |i: usize| if let Some(&(id, _)) = items.get(i) { on_pick(id) };
+    if HANDLER.set(Box::new(handler)).is_err() { return }
     // SAFETY: AppKit calls on the main thread; the item, menu and target live for the process.
     unsafe {
         let target: Retained<TrayTarget> = msg_send![TrayTarget::class(), new];
@@ -76,8 +76,8 @@ pub fn tray(icon_png: &[u8], on_pick: impl Fn(&str) + Send + Sync + 'static) {
         let _: () = msg_send![button, setToolTip: ns_string("Ripple")];
 
         let menu: *mut AnyObject = msg_send![class!(NSMenu), new];
-        for (i, (_, title)) in ITEMS.iter().enumerate() {
-            if i == 2 {
+        for (i, (_, title)) in items.iter().enumerate() {
+            if i + 1 == items.len() {
                 let separator: *mut AnyObject = msg_send![class!(NSMenuItem), separatorItem];
                 let _: () = msg_send![menu, addItem: separator];
             }

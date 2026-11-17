@@ -11,7 +11,6 @@ pub fn tokenize_args(s: &str) -> Vec<String> {
         let mut token = String::new();
         while let Some(c) = chars.next_if(|c| !c.is_whitespace()) {
             if c == '"' {
-                // Consumes the closing quote too.
                 for q in chars.by_ref() {
                     if q == '"' { break }
                     token.push(q);
