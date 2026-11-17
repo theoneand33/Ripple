@@ -18,7 +18,7 @@ pub fn view(s: &Island) -> El {
         list = list.child(
             row().key(format!("workflow-{i}-{}", workflow.name)).role("button").label(workflow.name.clone()).focusable(true)
                 .w_full().h(40.0).px(14.0).gap(5.0).center_y().radius(radius)
-                .fill(fg).hover(bg.alpha(0.1)).press(bg.alpha(0.2))
+                .fill(fg).hover(bg.alpha(0.1)).press(bg.alpha(0.2)).press_scale(0.97)
                 .shadow(4.0, 15.0, Color::BLACK.alpha(0.1))
                 .transition(Transition::opacity())
                 .child(text(&workflow.name).font(s.cfg.font(14.0, 600.0)).color(bg).truncate().a11y_hidden())
@@ -40,7 +40,7 @@ pub fn view(s: &Island) -> El {
         apps = apps.child(
             el().key(format!("quick-app-{i}-{}", app.name)).role("button").label(app.name.clone()).focusable(true)
                 .h(34.0).px(14.0).center().radius(radius)
-                .fill(fg).hover(bg.alpha(0.1)).press(bg.alpha(0.2))
+                .fill(fg).hover(bg.alpha(0.1)).press(bg.alpha(0.2)).press_scale(0.97)
                 .transition(Transition::opacity())
                 .child(text(&app.name).font(s.cfg.font(13.0, 600.0)).color(bg).single_line().a11y_hidden())
                 .on_press(move |_: &mut Island| {

@@ -1,6 +1,6 @@
 //! Clipboard: the last 50 texts copied anywhere, newest first, each one copyable again.
 
-use rune::{Color, El, ScrollSpec, col, el, row, text};
+use rune::{Color, El, ScrollSpec, Transition, col, el, row, text};
 
 use super::empty;
 use crate::island::Island;
@@ -35,7 +35,8 @@ pub fn view(s: &Island) -> El {
             .px(8.0).h(24.0).center().radius(6.0)
             .fill(if copied { Color { r: 0.03, g: 0.57, b: 0.1, a: 0.4 } } else { Color::WHITE.alpha(0.15) })
             .hover(fg.alpha(0.1 * fg.a)).press(fg.alpha(0.2 * fg.a))
-            .child(text(if copied { "Copied" } else { "Copy" }).font(s.cfg.font(11.0, 500.0)).color(fg).a11y_hidden())
+            .child(text(if copied { "Copied" } else { "Copy" }).key(if copied { "copied" } else { "copy-label" }).font(s.cfg.font(11.0, 500.0)).color(fg).a11y_hidden()
+                .transition(Transition::blur_replace()))
             .on_press_tx(move |s: &mut Island, tx| {
                 tx.copy(value.clone());
                 s.clipboard.copied = Some((i, tx.clock() + 2.0));

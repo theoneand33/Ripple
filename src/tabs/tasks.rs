@@ -17,8 +17,10 @@ pub fn view(s: &Island) -> El {
     let mut list = col().key("task-list").w_full().gap(6.0);
     if s.cfg.tasks.is_empty() { list = list.child(empty(s, "No tasks yet")) }
     for (i, task) in s.cfg.tasks.iter().enumerate() {
+        // Keyed by text and occurrence, not index, so ticking one off leaves the rows below in place.
+        let n = s.cfg.tasks[..i].iter().filter(|t| *t == task).count();
         list = list.child(
-            row().key(format!("task-{i}-{task}")).w_full().px(12.0).py(8.0).gap(10.0).center_y()
+            row().key(format!("task-{task}-{n}")).w_full().px(12.0).py(8.0).gap(10.0).center_y()
                 .radius(s.cfg.radius(12.0)).fill(fg.alpha(0.05 * fg.a))
                 .transition(Transition::opacity())
                 .child(checkbox(s, "done", &format!("Done: {task}"), false).on_press(move |s: &mut Island| s.save(|c| { if i < c.tasks.len() { c.tasks.remove(i); } })))

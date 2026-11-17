@@ -39,7 +39,7 @@ pub fn view(s: &Island) -> El {
     let artist = if track.artist.is_empty() { "Unknown Artist" } else { &track.artist };
     let media = |key: &'static str, glyph: &'static rune::Icon, size: f32, command: MediaCommand, label: &str| {
         el().key(key).role("button").label(label).focusable(true)
-            .padding(4.0).radius(8.0).hover(fg.alpha(0.1 * fg.a)).press(fg.alpha(0.2 * fg.a))
+            .padding(4.0).radius(8.0).hover(fg.alpha(0.1 * fg.a)).press(fg.alpha(0.2 * fg.a)).press_scale(0.97)
             .child(icon(glyph, size).color(fg))
             .on_press(move |_: &mut Island| control(command))
     };

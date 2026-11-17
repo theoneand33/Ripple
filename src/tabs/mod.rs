@@ -79,7 +79,7 @@ fn button(s: &Island, key: &str, label: &str, enabled: bool) -> El {
     el().key(key).role("button").label(label).focusable(enabled).disabled(!enabled)
         .px(16.0).h(34.0).center().radius(s.cfg.radius(12.0))
         .fill(bg.alpha(if enabled { bg.a } else { 0.4 * bg.a }))
-        .hover(fg.alpha(0.1)).press(fg.alpha(0.2))
+        .hover(fg.alpha(0.1)).press(fg.alpha(0.2)).press_scale(0.97)
         .child(text(label).font(s.cfg.font(14.0, 600.0)).color(fg).a11y_hidden())
 }
 
