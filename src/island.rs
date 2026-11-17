@@ -483,7 +483,9 @@ impl Island {
     }
 
     fn set_mode(&mut self, mode: Mode) {
+        let was = self.mode;
         self.mode = if mode == Mode::Still { self.rest() } else { mode };
+        if self.mode == Mode::Large && was != Mode::Large && self.cfg.open_default_tab { self.tab = self.cfg.first_tab() }
         if self.mode != Mode::Large { self.t3.open = None }
     }
 
@@ -1554,6 +1556,19 @@ mod tests {
         assert_eq!(s.clipboard, ["a", "b"]);
         for i in 0..60 { s.push_clipboard(&i.to_string()); }
         assert_eq!(s.clipboard.len(), 50);
+    }
+
+    #[test]
+    fn large_opens_on_the_starred_tab_unless_turned_off() {
+        let mut s = island(Config { default_tab: 0, ..Config::default() });
+        s.tab = 4;
+        s.set_mode(Mode::Large);
+        assert_eq!(s.tab, 0);
+        s.cfg.open_default_tab = false;
+        s.set_mode(Mode::Quick);
+        s.tab = 4;
+        s.set_mode(Mode::Large);
+        assert_eq!(s.tab, 4);
     }
 
     #[test]
