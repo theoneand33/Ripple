@@ -415,18 +415,37 @@ impl Island {
 
     pub fn notch_inset(&self) -> f32 { if self.cfg.notch_mode { 34.0 } else { 0.0 } }
 
+    /// Notch Mode's compact width: the notch, plus the wider half of the glance and its padding on
+    /// each side, so neither half sits under the notch. Mirrors `glance`.
+    fn notch_glance_width(&self) -> f32 {
+        const NOTCH: f32 = 180.0; // a MacBook notch is about 180-190pt wide
+        let label = |l: &str| estimate_width(l, 16.0);
+        let percent = || self.percent.map_or(0.0, |p| label(&format!("{p}%")));
+        let (left, right) = match self.alert() {
+            Some(Alert::Charging | Alert::Battery) => (20.0, percent()),
+            Some(Alert::Camera) => (20.0, label("Camera")),
+            Some(Alert::Microphone) => (20.0, label("Microphone")),
+            Some(Alert::Bluetooth) => (20.0, label("Connected")),
+            None => (label(&self.time), match self.weather.temp {
+                Some(temp) if !(self.cfg.standby && self.percent.is_some()) => 16.0 + label(&format!("{temp}º")),
+                _ => percent(),
+            }),
+        };
+        (NOTCH + 2.0 * (left.max(right) + 12.0)).ceil().max(210.0)
+    }
+
     pub fn size(&self) -> (f32, f32) {
         let notch = self.cfg.notch_mode;
         let alerting = self.alert().is_some();
         let track = self.shows_track();
         let mut w = match self.mode {
             Mode::Large => match self.tab { 1 | 9 | 10 | tabs::SHELF => 480.0, 0 => 405.0, _ => 380.0 },
-            _ if alerting => if notch { 260.0 } else { 160.0 }, // fits icon + "Microphone"
+            _ if alerting => if notch { self.notch_glance_width() } else { 160.0 }, // fits icon + "Microphone"
             _ if track => self.now_playing_width(),
-            Mode::Quick => if notch { 260.0 } else { 140.0 }, // fits "23:59" + weather/"100%"
-            Mode::Still => if notch { 170.0 } else { 140.0 },
+            _ if notch => if self.mode == Mode::Quick || self.cfg.show_info_idle { self.notch_glance_width() } else { 210.0 },
+            Mode::Quick | Mode::Still => 140.0, // fits "23:59" + weather/"100%"
         };
-        if notch && self.mode != Mode::Large { w = (w + 40.0).max(if track { 300.0 } else { 0.0 }) }
+        if notch && track && !alerting && self.mode != Mode::Large { w = (w + 40.0).max(300.0) }
         let h = match self.mode {
             Mode::Large => self.notch_inset() + match self.tab { 6 | 8 | 9 | 10 => 250.0, 0 => 120.0, 1 => 210.0, _ => 190.0 },
             _ => if notch { 34.0 } else { 40.0 },
@@ -1427,6 +1446,14 @@ mod tests {
         assert_eq!(s.size(), (480.0, 284.0));
         s.mode = Mode::Still;
         assert_eq!(s.size(), (210.0, 34.0));
+        // The compact notch glance fits its wider half on each side of the notch.
+        s.mode = Mode::Quick;
+        s.time = "9:41".into();
+        s.percent = Some(100);
+        let quick = s.size().0;
+        assert!(quick > 210.0 && quick < 300.0, "{quick}");
+        s.capture = Some((Alert::Microphone, Default::default()));
+        assert!(s.size().0 > quick);
     }
 
     #[test]
