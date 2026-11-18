@@ -1203,9 +1203,13 @@ fn glance(s: &Island, fg: Color) -> El {
         },
     };
     let pad = if cfg.notch_mode { 12.0 } else { 16.0 };
-    row().key(alert.map_or("glance", Alert::key)).w_full().h_full().px(pad).center_y().justify_between()
-        .transition(Transition::blur_replace())
-        .child(left).child(right)
+    let row = row().key(alert.map_or("glance", Alert::key)).w_full().h_full().px(pad).center_y()
+        .transition(Transition::blur_replace());
+    // Mini notch centers the time when there is nothing to show beside it.
+    if cfg.notch_mode && cfg.notch_mini && alert.is_none() && s.weather.temp.is_none() && s.percent.is_none() {
+        return row.justify_center().child(left);
+    }
+    row.justify_between().child(left).child(right)
 }
 
 /// Privacy icons at the compact Island's right end while the camera or microphone is in use,
