@@ -221,7 +221,7 @@ pub fn view(s: &Island, layer: &mut Vec<El>) -> El {
             col().key("t3-message-box").w_full().grow(1.0).min_h(0.0).px(12.0).py(8.0)
                 .radius(s.cfg.radius(10.0))
                 .fill(fg.alpha(0.05 * fg.a)).border(1.0, fg.alpha(0.1 * fg.a))
-                .scroll(ScrollSpec { stick_bottom: false }).child(message),
+                .scroll(ScrollSpec { stick_bottom: false }).on_wheel(Island::wheel).child(message),
         )
         .child(
             row().key("t3-actions").w_full().gap(8.0).center_y()

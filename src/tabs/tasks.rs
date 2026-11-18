@@ -28,7 +28,7 @@ pub fn view(s: &Island) -> El {
         );
     }
     col().key("tasks").w_full().h_full().px(16.0).pt(18.0).pb(14.0).gap(10.0)
-        .child(col().key("task-scroll").w_full().grow(1.0).min_h(0.0).scroll(ScrollSpec { stick_bottom: false }).child(list))
+        .child(col().key("task-scroll").w_full().grow(1.0).min_h(0.0).scroll(ScrollSpec { stick_bottom: false }).on_wheel(Island::wheel).child(list))
         .child(
             row().key("task-input").w_full().gap(8.0).center_y()
                 .child(field(s, "new-task", &s.task, "New task...", |s: &mut Island| &mut s.task, add_task))

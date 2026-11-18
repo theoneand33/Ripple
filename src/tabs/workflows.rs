@@ -50,7 +50,7 @@ pub fn view(s: &Island) -> El {
         );
     }
     col().key("workflows").w_full().h_full()
-        .child(col().key("workflow-scroll").w_full().grow(1.0).min_h(0.0).scroll(ScrollSpec { stick_bottom: false }).child(list))
+        .child(col().key("workflow-scroll").w_full().grow(1.0).min_h(0.0).scroll(ScrollSpec { stick_bottom: false }).on_wheel(Island::wheel).child(list))
         .child(
             el().key("quick-app-strip").w_full().py(12.0)
                 .fill(fg.alpha(0.02 * fg.a)).border_sides([1.0, 0.0, 0.0, 0.0], fg.alpha(0.1 * fg.a))
