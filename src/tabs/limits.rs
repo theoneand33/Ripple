@@ -1,4 +1,4 @@
-//! AI Limits: how much of each signed-in coding agent's plan is used, and when it resets.
+//! AI Limits: how much of each signed-in coding agent's plan is left, and when it resets.
 
 use rune::{El, ScrollSpec, col, row, text};
 
@@ -46,9 +46,9 @@ pub fn view(s: &Island) -> El {
             Ok(windows) => for w in windows {
                 let resets = w.resets.map_or(String::new(), |r| limits::until(r, now));
                 card = card.child(
-                    row().key(format!("window-{n}-{}", w.label)).role("group").label(format!("{} {}: {:.0}% used{}", agent.name, w.label, w.used, if resets.is_empty() { String::new() } else { format!(", resets in {resets}") }))
+                    row().key(format!("window-{n}-{}", w.label)).role("group").label(format!("{} {}: {:.0}% left{}", agent.name, w.label, 100.0 - w.used, if resets.is_empty() { String::new() } else { format!(", resets in {resets}") }))
                         .w(0.0).grow(1.0).min_w(0.0).gap(8.0).center_y()
-                        .child(gauge(s, w.used, false))
+                        .child(gauge(s, 100.0 - w.used, true))
                         .child(col().min_w(0.0).gap(2.0)
                             .child(text(&w.label).font(s.cfg.font(12.0, 500.0)).color(fg).truncate().a11y_hidden())
                             .child(text(resets).font(s.cfg.font(11.0, 400.0).features("'tnum' 1")).color(muted).truncate().a11y_hidden())),
