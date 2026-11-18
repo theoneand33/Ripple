@@ -230,7 +230,7 @@ fn drag_tab(s: &mut Settings, from: usize, d: &mut Drag, tx: &mut Tx) {
 fn has_panel(tab: Tab) -> bool {
     match tab {
         Tab::Search | Tab::Workflows | Tab::Overview | Tab::Assistant | Tab::T3 | Tab::Limits => true,
-        Tab::Clipboard | Tab::Tasks | Tab::Notes | Tab::Stremflix | Tab::Shelf | Tab::System => false,
+        Tab::Clipboard | Tab::Tasks | Tab::Notes | Tab::Stremflix | Tab::Shelf | Tab::System | Tab::Calendar => false,
     }
 }
 
@@ -362,7 +362,7 @@ fn panel(s: &Settings, k: &Kit, layer: &mut Vec<El>, tab: Tab) -> Vec<El> {
                     .on_edit(|s: &mut Settings| &mut s.cliproxy_dir).on_change(|s: &mut Settings, _| { let v = s.cliproxy_dir.text.trim().to_string(); s.save(|c| c.cliproxy_dir = v) }).build(k),
             ]));
         }
-        Tab::Clipboard | Tab::Tasks | Tab::Notes | Tab::Stremflix | Tab::Shelf | Tab::System => {}
+        Tab::Clipboard | Tab::Tasks | Tab::Notes | Tab::Stremflix | Tab::Shelf | Tab::System | Tab::Calendar => {}
     }
     sections
 }
@@ -557,6 +557,6 @@ mod tests {
         rt.pointer_up(x, y + 100.0);
         rt.frame(1.0 / 60.0);
         use Tab::*;
-        assert_eq!(store.get().tab_order, [Workflows, Overview, Search, Assistant, Clipboard, Tasks, T3, Notes, Stremflix, Shelf, System]);
+        assert_eq!(store.get().tab_order, [Workflows, Overview, Search, Assistant, Clipboard, Tasks, T3, Notes, Stremflix, Shelf, System, Calendar]);
     }
 }

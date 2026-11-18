@@ -193,6 +193,8 @@ pub struct Island {
 
     pub time: String,
     pub date: String,
+    /// (year, month, day), for the Calendar tab.
+    pub today: (i32, u32, u32),
     /// None on a machine without a battery.
     pub percent: Option<u8>,
     pub charging: bool,
@@ -218,11 +220,16 @@ pub struct Island {
     capture_queue: Vec<Alert>,
     capture_shown: [bool; 2],
     paused_until: Option<f64>,
+    /// After a play/pause click: the state shown, and until when polls of the same track that
+    /// still report the old state are ignored while the player catches up.
+    expect_playing: Option<(bool, f64)>,
 
     pub search: TextEdit,
     pub ai: tabs::Assistant,
     pub clipboard: tabs::Clipboard,
     pub task: TextEdit,
+    /// The Calendar tab's month, as months from this one.
+    pub calendar_offset: i32,
     pub notes: tabs::Notes,
     pub stremflix: tabs::Stremflix,
     /// The System tab's figures; None until the first sample.
@@ -289,6 +296,7 @@ impl Island {
             over: [false; 2],
             left: false,
             time: String::new(),
+            today: (1970, 1, 1),
             date: String::new(),
             percent: None,
             charging: false,
@@ -310,10 +318,12 @@ impl Island {
             capture_queue: Vec::new(),
             capture_shown: [false; 2],
             paused_until: None,
+            expect_playing: None,
             search: TextEdit::default(),
             ai: tabs::Assistant::default(),
             clipboard: tabs::Clipboard::default(),
             task: TextEdit::default(),
+            calendar_offset: 0,
             notes: tabs::Notes::new(&cfg),
             stremflix: tabs::Stremflix::default(),
             stats: None,
@@ -479,7 +489,11 @@ impl Island {
     pub fn set_mode(&mut self, mode: Mode) {
         let was = self.mode;
         self.mode = if mode == Mode::Still { self.rest() } else { mode };
-        if self.mode == Mode::Large && was != Mode::Large && self.cfg.open_default_tab { self.tab = self.cfg.first_tab() }
+        if self.mode == Mode::Large && was != Mode::Large { self.calendar_offset = 0 }
+        if self.mode == Mode::Large && was != Mode::Large && self.cfg.open_default_tab {
+            self.tab = self.cfg.first_tab();
+            self.entered_tab();
+        }
         // Resting closes an open select even when the Island rests in Large.
         if mode == Mode::Still || self.mode != Mode::Large { self.open_select = None }
         if self.mode != Mode::Large { self.tab_changed = false; self.close_at = None }
@@ -733,6 +747,7 @@ impl Island {
         let hour = if self.cfg.hour12 { (now.hour + 11) % 12 + 1 } else { now.hour };
         self.time = format!("{hour}:{:02}", now.minute);
         self.date = format_date(now.year, now.month, now.day);
+        self.today = (now.year, now.month, now.day);
     }
 
     // --- What the pollers report ---
@@ -784,6 +799,16 @@ impl Island {
         self.set_mode(Mode::Quick);
         self.capture = Some((self.capture_queue.remove(0), tx.clock() + 3.0));
         self.schedule(tx);
+    }
+
+    /// A polled track, unless it is the old state of a play/pause the player has not applied yet.
+    fn poll_track(&mut self, track: Option<Track>, tx: &mut Tx) -> bool {
+        if let (Some((want, until)), Some(old), Some(new)) = (self.expect_playing, &self.track, &track) {
+            let same = old.name == new.name && old.artist == new.artist && old.source == new.source;
+            if same && new.playing != want && tx.clock() < until { return false }
+        }
+        self.expect_playing = None;
+        self.set_track(track, tx)
     }
 
     pub fn set_track(&mut self, track: Option<Track>, tx: &mut Tx) -> bool {
@@ -923,7 +948,7 @@ impl Island {
             });
         }
         let h = me.clone();
-        every(2, move || { let t = system::media(); h.update_if(move |s, tx| s.set_track(t, tx)); });
+        every(2, move || { let t = system::media(); h.update_if(move |s, tx| s.poll_track(t, tx)); });
         let h = me.clone();
         every(10, move || { let b = system::bluetooth_connected(); h.update_if(move |s, tx| s.set_bluetooth(b, tx)); });
         let h = me.clone();
@@ -969,11 +994,14 @@ impl Island {
 fn format_date(year: i32, month: u32, day: u32) -> String {
     const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
     const DAYS: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-    // Sakamoto's day-of-week.
+    format!("{}, {} {}", DAYS[weekday(year, month, day) as usize], MONTHS[(month as usize - 1) % 12], day)
+}
+
+/// 0 for Sunday, by Sakamoto's method.
+pub fn weekday(year: i32, month: u32, day: u32) -> u32 {
     const T: [i32; 12] = [0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4];
     let y = if month < 3 { year - 1 } else { year };
-    let weekday = (y + y / 4 - y / 100 + y / 400 + T[(month as usize - 1) % 12] + day as i32).rem_euclid(7);
-    format!("{}, {} {}", DAYS[weekday as usize], MONTHS[(month as usize - 1) % 12], day)
+    (y + y / 4 - y / 100 + y / 400 + T[(month as usize - 1) % 12] + day as i32).rem_euclid(7) as u32
 }
 
 /// Fetches an image (blocking) and hands it, loaded, to `put` on the UI thread.
@@ -1212,7 +1240,7 @@ fn now_playing(s: &Island, fg: Color) -> El {
         el().key("play-pause").role("button").label(if track.playing { "Pause" } else { "Play" })
             .size(25.0, 24.0).center().transition(Transition::opacity())
             .child(icon(if track.playing { &icons::PAUSE } else { &icons::PLAY }, 15.0).color(Color::WHITE))
-            .on_press(|_: &mut Island| control(MediaCommand::PlayPause))
+            .on_press(|s: &mut Island| control(s, MediaCommand::PlayPause))
     } else {
         visualizer(track.playing, fg)
     });
@@ -1266,8 +1294,14 @@ pub fn cover(s: &Island, size: f32, radius: f32, glyph: f32, hover_scale: f32) -
     }
 }
 
-/// Media keys run a subprocess; never on the UI thread.
-pub fn control(command: MediaCommand) {
+/// Media keys run a subprocess; never on the UI thread. Play/pause flips the shown state at once;
+/// `poll_track` holds it until the player agrees, for up to 3 s.
+pub fn control(s: &mut Island, command: MediaCommand) {
+    if command == MediaCommand::PlayPause && let (Some(me), Some(track)) = (&s.me, &s.track) {
+        let playing = !track.playing;
+        let track = Track { playing, paused: !playing, ..track.clone() };
+        me.update_if(move |s, tx| { s.expect_playing = Some((playing, tx.clock() + 3.0)); s.set_track(Some(track), tx) });
+    }
     std::thread::spawn(move || system::media_control(command));
 }
 
@@ -1311,6 +1345,27 @@ mod tests {
         assert_eq!(island(Config::default()).mode, Mode::Quick);
         assert_eq!(island(Config { standby: false, ..Config::default() }).mode, Mode::Still);
         assert_eq!(island(Config { standby: false, large_standby: true, ..Config::default() }).mode, Mode::Large);
+    }
+
+    #[test]
+    fn a_play_pause_click_holds_until_the_player_agrees() {
+        let mut s = island(Config::default());
+        let mut tx = Tx::default();
+        let song = |playing| Some(Track { name: "Song".into(), playing, paused: !playing, ..Default::default() });
+        s.set_track(song(true), &mut tx);
+        // The click shows paused; a poll that still says playing is ignored.
+        s.expect_playing = Some((false, 3.0));
+        s.set_track(song(false), &mut tx);
+        assert!(!s.poll_track(song(true), &mut tx));
+        assert!(!s.playing());
+        // Another track, or the player agreeing, ends the hold.
+        assert!(s.poll_track(Some(Track { name: "Other".into(), playing: true, ..Default::default() }), &mut tx));
+        assert_eq!(s.expect_playing, None);
+        // Past the deadline the player wins.
+        s.set_track(song(false), &mut tx);
+        s.expect_playing = Some((false, -1.0));
+        assert!(s.poll_track(song(true), &mut tx));
+        assert!(s.playing());
     }
 
     #[test]

@@ -38,7 +38,8 @@ tabs! {
     Stremflix = 10,
     Shelf = 11,
     System = 12,
-    Limits = 13,
+    Calendar = 13,
+    Limits = 14,
 }
 
 impl Tab {
@@ -56,6 +57,7 @@ impl Tab {
             Tab::Stremflix => "Stremflix",
             Tab::Shelf => "Shelf",
             Tab::System => "System",
+            Tab::Calendar => "Calendar",
             Tab::Limits => "AI Limits",
         }
     }
@@ -451,7 +453,7 @@ mod tests {
     fn saved_orders_drop_retired_tabs_and_gain_new_ones() {
         use Tab::*;
         let cfg = serde_json::from_str::<Config>(r#"{"tab_order": [7, 2, 3, 0], "hidden_tabs": [3, 0], "default_tab": 7}"#).unwrap().normalized();
-        assert_eq!(cfg.tab_order, [Overview, Search, Workflows, Assistant, Clipboard, Tasks, T3, Notes, Stremflix, Shelf, System, Limits]);
+        assert_eq!(cfg.tab_order, [Overview, Search, Workflows, Assistant, Clipboard, Tasks, T3, Notes, Stremflix, Shelf, System, Calendar, Limits]);
         assert_eq!(cfg.hidden_tabs, [Search]);
         assert_eq!(cfg.first_tab(), Overview);
     }
