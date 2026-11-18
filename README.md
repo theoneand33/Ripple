@@ -99,7 +99,7 @@ Large Mode opens when you click the Island. It shows the full interface with eve
 - Windows: the Visual Studio C++ build tools
 - macOS: Xcode Command Line Tools
 
-At runtime on Linux, now playing and media keys use `playerctl`, Bluetooth uses `bluetoothctl`, the microphone check uses `pactl` and the camera check uses `fuser`. Ripple runs on X11, or on XWayland in a Wayland session.
+At runtime on Linux, now playing and media keys use `playerctl`, Bluetooth uses `bluetoothctl`, the microphone check uses `pactl` and the camera check uses `fuser`. Ripple runs on X11, or on XWayland in a Wayland session. On Wayland, closing the Island hands focus back through `busctl`: on KDE Plasma by a KWin script, and on GNOME only when the [Window Calls](https://github.com/ickyicky/window-calls) extension is installed.
 
 ### Run
 

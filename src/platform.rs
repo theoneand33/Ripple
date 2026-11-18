@@ -225,10 +225,14 @@ pub fn focused_window() -> Option<u64> {
     { crate::mac::frontmost_pid().map(|pid| pid as u64) }
 }
 
-/// Gives keyboard focus to a window `focused_window` returned.
+/// Gives keyboard focus to a window `focused_window` or `gnome_focused_window` returned.
 pub fn focus_window(window: u64) {
     #[cfg(target_os = "linux")]
-    if let Err(e) = x11_activate(window as u32) { eprintln!("Ripple: could not give focus back: {e}") }
+    if gnome_wayland() {
+        std::thread::spawn(move || if window_calls(&["Activate", "u", &window.to_string()]).is_none() {
+            eprintln!("Ripple: could not give focus back through the Window Calls extension");
+        });
+    } else if let Err(e) = x11_activate(window as u32) { eprintln!("Ripple: could not give focus back: {e}") }
     #[cfg(windows)]
     {
         #[link(name = "user32")]
@@ -238,6 +242,93 @@ pub fn focus_window(window: u64) {
     }
     #[cfg(target_os = "macos")]
     crate::mac::activate_pid(window as i32);
+}
+
+#[cfg(target_os = "linux")]
+fn desktop_is(name: &str) -> bool {
+    std::env::var("XDG_CURRENT_DESKTOP").is_ok_and(|d| d.split(':').any(|d| d.eq_ignore_ascii_case(name)))
+}
+
+#[cfg(target_os = "linux")]
+fn gnome_wayland() -> bool { crate::system::wayland_session() && desktop_is("GNOME") }
+
+/// Calls the optional Window Calls GNOME extension; None when it isn't installed or failed.
+#[cfg(target_os = "linux")]
+fn window_calls(method_args: &[&str]) -> Option<String> {
+    let mut argv = vec!["--user", "--json=short", "call", "org.gnome.Shell", "/org/gnome/Shell/Extensions/Windows", "org.gnome.Shell.Extensions.Windows"];
+    argv.extend_from_slice(method_args);
+    crate::system::output("busctl", &argv)
+}
+
+/// The focused window on GNOME Wayland, which no Wayland client can ask for, from the
+/// Window Calls extension when it is installed. Blocks; call it off the UI thread.
+#[cfg(target_os = "linux")]
+pub fn gnome_focused_window() -> Option<u64> {
+    if !gnome_wayland() { return None }
+    // busctl --json prints {"type":"s","data":["<the extension's JSON list>"]}.
+    let reply: serde_json::Value = serde_json::from_str(&window_calls(&["List"])?).ok()?;
+    let list: Vec<serde_json::Value> = serde_json::from_str(reply["data"][0].as_str()?).ok()?;
+    focused_in(&list)
+}
+
+/// The focused window in Window Calls' list, unless it is Ripple's own.
+#[cfg(target_os = "linux")]
+fn focused_in(list: &[serde_json::Value]) -> Option<u64> {
+    let me = u64::from(std::process::id());
+    list.iter().find(|w| w["focus"] == true && w["pid"].as_u64() != Some(me))?["id"].as_u64()
+}
+
+/// Wayland lets no client focus another's window, so on Plasma a one-shot KWin script
+/// activates the topmost normal window on the current desktop. Runs off the UI thread.
+// shortcut: topmost, not most recently focused; differs under focus-follows-mouse or click-without-raise.
+#[cfg(target_os = "linux")]
+pub fn focus_previous() {
+    if !desktop_is("KDE") || !crate::system::wayland_session() { return }
+    std::thread::spawn(|| if let Err(e) = kwin_focus_previous() { eprintln!("Ripple: could not give focus back: {e}") });
+}
+
+/// KWin 6 names windows and their desktops differently from KWin 5; the script handles both.
+/// `RIPPLE_PID` is prepended so Ripple never picks its own window.
+#[cfg(target_os = "linux")]
+const KWIN_FOCUS_SCRIPT: &str = r#"
+const six = "activeWindow" in workspace;
+const here = w => six ? (w.desktops.length === 0 || w.desktops.includes(workspace.currentDesktop)) : (w.desktop === -1 || w.desktop === workspace.currentDesktop);
+const stack = workspace.stackingOrder;
+for (let i = stack.length - 1; i >= 0; i--) {
+    const w = stack[i];
+    if (w.normalWindow && !w.minimized && w.pid !== RIPPLE_PID && here(w)) {
+        if (six) workspace.activeWindow = w; else workspace.activeClient = w;
+        break;
+    }
+}
+"#;
+
+#[cfg(target_os = "linux")]
+fn kwin_focus_previous() -> Result<(), String> {
+    const NAME: &str = "ripple-focus-back";
+    let call = |path: &str, iface_method: (&str, &str), args: &[&str]| {
+        let mut argv = vec!["--user", "call", "org.kde.KWin", path, iface_method.0, iface_method.1];
+        argv.extend_from_slice(args);
+        crate::system::output("busctl", &argv)
+    };
+    // XDG_RUNTIME_DIR is the user's own (0700): a shared /tmp would let another user swap the script.
+    let dir = std::env::var_os("XDG_RUNTIME_DIR").ok_or("XDG_RUNTIME_DIR isn't set")?;
+    let path = std::path::Path::new(&dir).join(format!("{NAME}.js"));
+    let script = format!("const RIPPLE_PID = {};{KWIN_FOCUS_SCRIPT}", std::process::id());
+    std::fs::write(&path, script).map_err(|e| e.to_string())?;
+    let path = path.to_str().ok_or("runtime dir path isn't UTF-8")?;
+    // A copy left loaded by an earlier run would make loadScript refuse the name.
+    call("/Scripting", ("org.kde.kwin.Scripting", "unloadScript"), &["s", NAME]);
+    // busctl prints "i <id>"; -1 means KWin refused the script.
+    let id = call("/Scripting", ("org.kde.kwin.Scripting", "loadScript"), &["ss", path, NAME])
+        .and_then(|out| out.strip_prefix("i ")?.parse::<i32>().ok())
+        .filter(|id| *id >= 0)
+        .ok_or("KWin's scripting D-Bus interface isn't reachable (busctl missing or not KWin)")?;
+    // KWin 6 objects sit under /Scripting/Script<id>; KWin 5 under /<id>.
+    let ran = call(&format!("/Scripting/Script{id}"), ("org.kde.kwin.Script", "run"), &[]).is_some()
+        || call(&format!("/{id}"), ("org.kde.kwin.Script", "run"), &[]).is_some();
+    // Left loaded: KWin reads and runs it asynchronously, so unloading now could cancel it; the next close unloads it.
+    if ran { Ok(()) } else { Err("KWin didn't run the script".into()) }
 }
 
 #[cfg(target_os = "linux")]
@@ -324,4 +415,17 @@ fn x11_sticky(window: u32) -> Result<(), Box<dyn std::error::Error>> {
     }
     conn.flush()?;
     Ok(())
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    #[test]
+    fn focused_in_skips_ripple_and_unfocused_windows() {
+        let me = std::process::id();
+        let list: Vec<serde_json::Value> = serde_json::from_str(&format!(
+            r#"[{{"id":1,"pid":10,"focus":false}},{{"id":2,"pid":{me},"focus":true}},{{"id":3,"pid":11,"focus":true}}]"#
+        )).unwrap();
+        assert_eq!(super::focused_in(&list), Some(3));
+        assert_eq!(super::focused_in(&list[..2]), None);
+    }
 }

@@ -531,6 +531,10 @@ impl Island {
             // Each show makes a new layer surface, so this is asked again on every entry.
             if let Some(me) = &self.me { me.allow_keys() }
             if !self.focused && matches!(self.me, Some(Host::Window(_))) { self.prior = platform::focused_window() }
+            #[cfg(target_os = "linux")]
+            if !self.focused && self.prior.is_none() && let Some(me @ Host::Window(_)) = self.me.clone() {
+                std::thread::spawn(move || if let Some(w) = platform::gnome_focused_window() { me.update(move |s, _| s.prior = Some(w)) });
+            }
             if self.mode == Mode::Still && self.cfg.show_info_idle && !self.playing() { self.set_mode(Mode::Large) }
             else if self.mode != Mode::Large { self.set_mode(Mode::Quick) }
         } else if !self.hovered {
@@ -574,6 +578,8 @@ impl Island {
     fn give_focus_back(&mut self) {
         if !self.focused { return }
         if let Some(window) = self.prior { platform::focus_window(window) }
+        #[cfg(target_os = "linux")]
+        if self.prior.is_none() { platform::focus_previous() }
         // Given away; the focus event may lag, and a second close mustn't steal it back.
         self.focused = false;
     }
