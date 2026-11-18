@@ -891,7 +891,12 @@ impl Island {
             self.set_mode(Mode::Still);
             changed = true;
         }
-        if std::mem::take(&mut self.tab_changed) { self.linger_until = Some(now + f64::from(self.cfg.tab_linger)) }
+        if std::mem::take(&mut self.tab_changed) {
+            let at = now + f64::from(self.cfg.tab_linger);
+            self.linger_until = Some(at);
+            // A tab change after the pointer left pushes the pending close out too.
+            if self.close_at.is_some() { self.close_at = Some(at) }
+        }
         changed |= self.leave(tx);
         changed |= due(&mut self.paused_until);
         if self.clipboard.copied.is_some_and(|c| now >= c.1) {
