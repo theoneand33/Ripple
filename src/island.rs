@@ -2,7 +2,7 @@
 //! and the compact views. The Large mode's tabs are in `tabs/`.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
 
 use rune::time::LocalTime;
@@ -218,6 +218,9 @@ pub struct Island {
     capture_queue: Vec<Alert>,
     capture_shown: [bool; 2],
     paused_until: Option<f64>,
+    /// After a play/pause click: the state shown, and until when polls of the same track that
+    /// still report the old state are ignored while the player catches up.
+    expect_playing: Option<(bool, f64)>,
 
     pub search: TextEdit,
     pub ai: tabs::Assistant,
@@ -306,6 +309,7 @@ impl Island {
             capture_queue: Vec::new(),
             capture_shown: [false; 2],
             paused_until: None,
+            expect_playing: None,
             search: TextEdit::default(),
             ai: tabs::Assistant::default(),
             clipboard: tabs::Clipboard::default(),
@@ -779,6 +783,16 @@ impl Island {
         self.schedule(tx);
     }
 
+    /// A polled track, unless it is the old state of a play/pause the player has not applied yet.
+    fn poll_track(&mut self, track: Option<Track>, tx: &mut Tx) -> bool {
+        if let (Some((want, until)), Some(old), Some(new)) = (self.expect_playing, &self.track, &track) {
+            let same = old.name == new.name && old.artist == new.artist && old.source == new.source;
+            if same && new.playing != want && tx.clock() < until { return false }
+        }
+        self.expect_playing = None;
+        self.set_track(track, tx)
+    }
+
     pub fn set_track(&mut self, track: Option<Track>, tx: &mut Tx) -> bool {
         if track == self.track { return false }
         // A poll that only played on a few seconds: the bar runs at playback speed until the next one.
@@ -916,13 +930,7 @@ impl Island {
             });
         }
         let h = me.clone();
-        every(2, move || {
-            // A poll that overlaps a media command may hold the state from before it: drop it.
-            let started = MEDIA_STARTED.load(Ordering::SeqCst);
-            let idle = MEDIA_FINISHED.load(Ordering::SeqCst) == started;
-            let t = system::media();
-            h.update_if(move |s, tx| idle && MEDIA_STARTED.load(Ordering::SeqCst) == started && s.set_track(t, tx));
-        });
+        every(2, move || { let t = system::media(); h.update_if(move |s, tx| s.poll_track(t, tx)); });
         let h = me.clone();
         every(10, move || { let b = system::bluetooth_connected(); h.update_if(move |s, tx| s.set_bluetooth(b, tx)); });
         let h = me.clone();
@@ -1265,25 +1273,15 @@ pub fn cover(s: &Island, size: f32, radius: f32, glyph: f32, hover_scale: f32) -
     }
 }
 
-/// Media commands started and finished, so polls that overlap one are dropped.
-static MEDIA_STARTED: AtomicU64 = AtomicU64::new(0);
-static MEDIA_FINISHED: AtomicU64 = AtomicU64::new(0);
-
 /// Media keys run a subprocess; never on the UI thread. Play/pause flips the shown state at once;
-/// the next poll that starts after the command finishes settles it to what the player reports.
+/// `poll_track` holds it until the player agrees, for up to 3 s.
 pub fn control(s: &mut Island, command: MediaCommand) {
-    MEDIA_STARTED.fetch_add(1, Ordering::SeqCst);
     if command == MediaCommand::PlayPause && let (Some(me), Some(track)) = (&s.me, &s.track) {
         let playing = !track.playing;
         let track = Track { playing, paused: !playing, ..track.clone() };
-        me.update_if(move |s, tx| s.set_track(Some(track), tx));
+        me.update_if(move |s, tx| { s.expect_playing = Some((playing, tx.clock() + 3.0)); s.set_track(Some(track), tx) });
     }
-    std::thread::spawn(move || {
-        system::media_control(command);
-        // Players report the new status a moment after the command returns; polls wait it out.
-        std::thread::sleep(std::time::Duration::from_millis(500));
-        MEDIA_FINISHED.fetch_add(1, Ordering::SeqCst);
-    });
+    std::thread::spawn(move || system::media_control(command));
 }
 
 #[cfg(test)]
@@ -1326,6 +1324,27 @@ mod tests {
         assert_eq!(island(Config::default()).mode, Mode::Quick);
         assert_eq!(island(Config { standby: false, ..Config::default() }).mode, Mode::Still);
         assert_eq!(island(Config { standby: false, large_standby: true, ..Config::default() }).mode, Mode::Large);
+    }
+
+    #[test]
+    fn a_play_pause_click_holds_until_the_player_agrees() {
+        let mut s = island(Config::default());
+        let mut tx = Tx::default();
+        let song = |playing| Some(Track { name: "Song".into(), playing, paused: !playing, ..Default::default() });
+        s.set_track(song(true), &mut tx);
+        // The click shows paused; a poll that still says playing is ignored.
+        s.expect_playing = Some((false, 3.0));
+        s.set_track(song(false), &mut tx);
+        assert!(!s.poll_track(song(true), &mut tx));
+        assert!(!s.playing());
+        // Another track, or the player agreeing, ends the hold.
+        assert!(s.poll_track(Some(Track { name: "Other".into(), playing: true, ..Default::default() }), &mut tx));
+        assert_eq!(s.expect_playing, None);
+        // Past the deadline the player wins.
+        s.set_track(song(false), &mut tx);
+        s.expect_playing = Some((false, -1.0));
+        assert!(s.poll_track(song(true), &mut tx));
+        assert!(s.playing());
     }
 
     #[test]
