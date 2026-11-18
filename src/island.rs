@@ -231,6 +231,8 @@ pub struct Island {
     /// The Calendar tab's month, as months from this one.
     pub calendar_offset: i32,
     pub notes: tabs::Notes,
+    /// Nextcloud sync of Notes and Tasks, by `nextcloud::Kind`.
+    pub nextcloud: [crate::nextcloud::SyncState; 2],
     pub stremflix: tabs::Stremflix,
     /// The System tab's figures; None until the first sample.
     pub stats: Option<system::Stats>,
@@ -327,6 +329,7 @@ impl Island {
             task: TextEdit::default(),
             calendar_offset: 0,
             notes: tabs::Notes::new(&cfg),
+            nextcloud: Default::default(),
             stremflix: tabs::Stremflix::default(),
             stats: None,
             limits: None,
@@ -879,6 +882,11 @@ impl Island {
             changed |= before != (self.time.clone(), self.date.clone());
             self.next_second = now + 1.0;
             tx.wake_at(self.next_second);
+            // A note uploads once typing in it pauses.
+            if self.notes.edited.is_some_and(|t| t.elapsed().as_secs() >= 2) {
+                self.notes.edited = None;
+                self.nextcloud_sync(crate::nextcloud::Kind::Notes);
+            }
         }
         if now >= self.next_clipboard && !rune::is_headless() {
             self.next_clipboard = now + 2.0;
@@ -1609,7 +1617,7 @@ mod tests {
 
     #[test]
     fn the_wheel_scrolls_a_long_task_list() {
-        let mut s = island(Config { tasks: (0..30).map(|i| format!("task {i}")).collect(), ..Config::default() });
+        let mut s = island(Config { tasks: (0..30).map(|i| crate::config::Item::new(format!("task {i}"))).collect(), ..Config::default() });
         s.mode = Mode::Large;
         s.set_tab(Tab::Tasks);
         let [left, top, w, h] = s.rect();
@@ -1624,7 +1632,7 @@ mod tests {
 
     #[test]
     fn a_swipe_over_a_scrolling_list_changes_tab() {
-        let mut s = island(Config { tasks: (0..30).map(|i| format!("task {i}")).collect(), ..Config::default() });
+        let mut s = island(Config { tasks: (0..30).map(|i| crate::config::Item::new(format!("task {i}"))).collect(), ..Config::default() });
         s.mode = Mode::Large;
         s.set_tab(Tab::Tasks);
         let before = s.tab;

@@ -301,7 +301,7 @@ mod tests {
         assert!(!c.standby && !c.hour12 && !c.new_user);
         assert_eq!(c.tab_order, [Tab::T3, Tab::Search, Tab::Workflows, Tab::Overview, Tab::Assistant, Tab::Clipboard, Tab::Tasks]);
         assert_eq!(c.api_key, "gsk_new");
-        assert_eq!(c.tasks, ["Ship Rïpple ✓"]);
+        assert_eq!(c.tasks[0].text, "Ship Rïpple ✓");
         assert_eq!(c.t3_devices[0].token, "tok");
         assert_eq!(c.island_x, 25.5);
         assert_eq!(c.location, "");

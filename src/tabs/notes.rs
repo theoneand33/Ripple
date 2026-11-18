@@ -1,9 +1,10 @@
-//! Notes: plain-text notes, each titled by its first line, saved as they are typed.
+//! Notes: plain-text notes, each titled by its first line, saved as they are typed and synced
+//! with Nextcloud Notes when an account is set.
 
 use rune::{El, ScrollSpec, TextEdit, Transition, col, el, row, text, text_input};
 
 use super::{empty, tool};
-use crate::config::Config;
+use crate::config::{Config, Item};
 use crate::icons;
 use crate::island::Island;
 
@@ -12,11 +13,13 @@ pub struct Notes {
     pub editor: TextEdit,
     /// Which note the editor edits.
     pub index: usize,
+    /// When the open note was last typed in, until Nextcloud gets the change.
+    pub edited: Option<std::time::Instant>,
 }
 
 impl Notes {
     pub fn new(cfg: &Config) -> Notes {
-        Notes { editor: TextEdit::new(cfg.notes.first().map_or("", String::as_str)), index: 0 }
+        Notes { editor: TextEdit::new(cfg.notes.first().map_or("", |n| n.text.as_str())), index: 0, edited: None }
     }
 }
 
@@ -24,25 +27,33 @@ impl Island {
     /// Edits note `i`, or the last one when `i` is past the end.
     pub fn open_note(&mut self, i: usize) {
         self.notes.index = i.min(self.cfg.notes.len().saturating_sub(1));
-        self.notes.editor = TextEdit::new(self.cfg.notes.get(self.notes.index).map_or("", String::as_str));
+        self.notes.editor = TextEdit::new(self.cfg.notes.get(self.notes.index).map_or("", |n| n.text.as_str()));
     }
 
     pub fn add_note(&mut self) {
         // An empty note on top is reused rather than stacking blanks.
-        if self.cfg.notes.first().is_none_or(|n| !n.trim().is_empty()) { self.save(|c| c.notes.insert(0, String::new())) }
+        if self.cfg.notes.first().is_none_or(|n| !n.text.trim().is_empty()) { self.save(|c| c.notes.insert(0, Item::new(""))) }
         self.open_note(0);
         self.notes.editor.focused = true;
     }
 
     pub fn delete_note(&mut self) {
         let i = self.notes.index;
-        self.save(|c| { if i < c.notes.len() { c.notes.remove(i); } });
+        self.save(|c| {
+            if i >= c.notes.len() { return }
+            // Nextcloud deletes it on the next sync.
+            if let Some(r) = c.notes.remove(i).remote { c.nextcloud.deleted_notes.push(r.id) }
+        });
         self.open_note(i);
+        self.nextcloud_sync(crate::nextcloud::Kind::Notes);
     }
 
     pub fn note_edited(&mut self) {
         let (i, text) = (self.notes.index, self.notes.editor.text.clone());
-        if self.cfg.notes.get(i).is_some_and(|n| *n != text) { self.save(|c| c.notes[i] = text) }
+        if self.cfg.notes.get(i).is_some_and(|n| n.text != text) {
+            self.save(|c| c.notes[i].text = text);
+            self.notes.edited = Some(std::time::Instant::now());
+        }
     }
 }
 
@@ -60,6 +71,9 @@ pub fn view(s: &Island) -> El {
         .child(text("Notes").font(s.cfg.font(17.0, 700.0)).color(fg))
         .child(text(s.cfg.notes.len().to_string()).font(s.cfg.font(15.0, 500.0).features("'tnum' 1")).color(muted))
         .child(el().grow(1.0));
+    if let Some(e) = &s.nextcloud[crate::nextcloud::Kind::Notes as usize].error {
+        header = header.child(text(e).font(s.cfg.font(12.0, 400.0)).color(muted).shrink().min_w(0.0).truncate());
+    }
     if !s.cfg.notes.is_empty() {
         header = header.child(tool(s, "delete-note", &icons::TRASH, "Delete note").on_press(Island::delete_note));
     }
@@ -70,7 +84,7 @@ pub fn view(s: &Island) -> El {
     let mut list = col().key("note-list").w_full().gap(2.0);
     for (i, note) in s.cfg.notes.iter().enumerate() {
         let on = i == s.notes.index;
-        let (title, preview) = note_heading(note);
+        let (title, preview) = note_heading(&note.text);
         list = list.child(
             row().key(format!("note-{i}")).role("button").label(title.to_string()).checked(on).focusable(true)
                 .w_full().px(6.0).py(6.0).gap(8.0).items_start().radius(s.cfg.radius(10.0))
@@ -118,17 +132,18 @@ mod tests {
 
     #[test]
     fn notes_are_added_edited_and_deleted() {
-        let mut s = Island::new(Store::memory(Config { notes: vec!["Old".into()], ..Config::default() }), Vec::new());
+        let texts = |notes: &[crate::config::Item]| notes.iter().map(|n| n.text.clone()).collect::<Vec<_>>();
+        let mut s = Island::new(Store::memory(Config { notes: vec![crate::config::Item::new("Old")], ..Config::default() }), Vec::new());
         s.add_note();
-        assert_eq!((s.notes.index, s.cfg.notes.clone()), (0, vec![String::new(), "Old".into()]));
+        assert_eq!((s.notes.index, texts(&s.cfg.notes)), (0, vec![String::new(), "Old".into()]));
         s.add_note();
         assert_eq!(s.cfg.notes.len(), 2);
         s.notes.editor.insert("Groceries");
         s.note_edited();
-        assert_eq!(s.store.get().notes, ["Groceries", "Old"]);
+        assert_eq!(texts(&s.store.get().notes), ["Groceries", "Old"]);
         s.open_note(5);
         assert_eq!((s.notes.index, s.notes.editor.text.as_str()), (1, "Old"));
         s.delete_note();
-        assert_eq!((s.cfg.notes.clone(), s.notes.editor.text.clone()), (vec!["Groceries".to_string()], "Groceries".to_string()));
+        assert_eq!((texts(&s.cfg.notes), s.notes.editor.text.clone()), (vec!["Groceries".to_string()], "Groceries".to_string()));
     }
 }

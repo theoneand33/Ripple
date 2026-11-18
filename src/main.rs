@@ -9,6 +9,7 @@ mod limits;
 mod mac;
 mod migrate;
 mod net;
+mod nextcloud;
 mod platform;
 mod settings;
 mod stremflix;
@@ -93,17 +94,23 @@ fn island_spec() -> AppSpec<Island> {
             ("assistant", |s| { s.mode = Mode::Large; s.set_tab(Tab::Assistant); s.ai.asked = true; s.ai.answer = Some("**Rust** is a systems language.\n\n```rust\nfn main() {}\n```".into()) }),
             ("clipboard", |s| { s.mode = Mode::Large; s.set_tab(Tab::Clipboard); s.clipboard.push("Hello from Ripple"); }),
             ("tasks", |s| { s.mode = Mode::Large; s.set_tab(Tab::Tasks) }),
+            ("tasks-sync-error", |s| {
+                s.mode = Mode::Large;
+                s.set_tab(Tab::Tasks);
+                s.cfg.tasks = vec![config::Item::new("Water the plants")];
+                s.nextcloud[nextcloud::Kind::Tasks as usize].error = Some("Nextcloud refused the user or app password".into());
+            }),
             ("calendar", |s| { s.mode = Mode::Large; s.set_tab(Tab::Calendar) }),
             ("calendar-paged", |s| { s.mode = Mode::Large; s.set_tab(Tab::Calendar); s.calendar_offset = 1 }),
             ("t3", |s| { s.mode = Mode::Large; s.set_tab(Tab::T3) }),
             ("notes", |s| {
                 s.mode = Mode::Large;
                 s.set_tab(Tab::Notes);
-                s.cfg.notes = vec![
-                    "PR review queue\nGitHub\n• PR #482 — notch profile switcher polish\n• PR #491 — Screen Time category colors\n\nLeave blocking comments only; merge green builds.".into(),
-                    "Sprint board\nIn progress • MN-214 — Code hosting".into(),
-                    "Merge checklist\nBefore merge: CI green, changelog".into(),
-                ];
+                s.cfg.notes = [
+                    "PR review queue\nGitHub\n• PR #482 — notch profile switcher polish\n• PR #491 — Screen Time category colors\n\nLeave blocking comments only; merge green builds.",
+                    "Sprint board\nIn progress • MN-214 — Code hosting",
+                    "Merge checklist\nBefore merge: CI green, changelog",
+                ].map(config::Item::new).into();
                 s.open_note(0);
             }),
             ("stremflix", |s| {
@@ -187,7 +194,7 @@ fn settings_spec() -> AppSpec<Settings> {
         min_size: Some((420.0, 400.0)),
         fonts: FONTS,
         families: FAMILIES,
-        scenes: &[("panel-ai", |s| s.page = Some(Tab::Assistant)), ("panel-limits", |s| s.page = Some(Tab::Limits))],
+        scenes: &[("panel-ai", |s| s.page = Some(Tab::Assistant)), ("panel-limits", |s| s.page = Some(Tab::Limits)), ("panel-tasks", |s| s.page = Some(Tab::Tasks))],
         ..AppSpec::new("Ripple Settings", (520.0, 720.0), || unreachable!("state comes from WindowSpec::state"), settings::view)
     }
 }
