@@ -477,7 +477,8 @@ impl Island {
     /// Where the Island rests when nothing holds it open.
     pub fn rest(&self) -> Mode {
         // Standby is on by default, so the opt-in settings win over it or they could never apply.
-        if self.cfg.large_standby { Mode::Large } else if self.cfg.standby && !self.cfg.hide_inactive { Mode::Quick } else { Mode::Still }
+        // Hiding wins over both, since it only works at Still.
+        if self.cfg.hide_inactive { Mode::Still } else if self.cfg.large_standby { Mode::Large } else if self.cfg.standby { Mode::Quick } else { Mode::Still }
     }
 
     /// Every mode change but `open_large_on` goes through here; Still means wherever the Island rests.
@@ -1342,6 +1343,7 @@ mod tests {
         assert_eq!(island(Config { standby: false, large_standby: true, ..Config::default() }).mode, Mode::Large);
         assert_eq!(island(Config { large_standby: true, ..Config::default() }).mode, Mode::Large);
         assert_eq!(island(Config { hide_inactive: true, ..Config::default() }).mode, Mode::Still);
+        assert_eq!(island(Config { hide_inactive: true, large_standby: true, ..Config::default() }).mode, Mode::Still);
     }
 
     #[test]
