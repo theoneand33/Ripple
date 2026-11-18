@@ -85,11 +85,10 @@ fn known_tab<'de, D: Deserializer<'de>>(d: D) -> Result<Tab, D::Error> {
 
 /// (value, label, Island colour, text colour). A theme is a preset for the two colours; they
 /// stay editable afterwards.
-pub const THEMES: [(&str, &str, &str, &str); 4] = [
+pub const THEMES: [(&str, &str, &str, &str); 3] = [
     ("none", "Default", "#000000", "#FFFFFF"),
     ("sleek-black", "Sleek Black", "rgba(0, 0, 0, 0.64)", "rgba(255, 255, 255)"),
     ("win95", "Windows 95", "rgba(195, 195, 195)", "rgba(0, 0, 0)"),
-    ("glass", "Glass", "rgba(10, 10, 10, 0.92)", "rgba(255, 255, 255, 0.85)"),
 ];
 
 /// An OpenAI-compatible chat completions service.
@@ -393,7 +392,6 @@ impl Config {
     }
 
     pub fn win95(&self) -> bool { self.theme == "win95" }
-    pub fn glass(&self) -> bool { self.theme == "glass" }
     pub fn bg(&self) -> Color { parse_color(&self.bg_color).unwrap_or(Color::BLACK) }
     pub fn text(&self) -> Color { parse_color(&self.text_color).unwrap_or(Color::WHITE) }
 

@@ -185,8 +185,6 @@ fn island_spec() -> AppSpec<Island> {
             ("mini-notch", |s| { s.cfg.notch_mode = true; s.cfg.notch_mini = true; s.placement = island::Placement::of(&s.cfg, (1920.0, 1080.0)) }),
             ("mini-notch-single", |s| { s.cfg.notch_mode = true; s.cfg.notch_mini = true; s.cfg.show_info_idle = true; s.weather.temp = None; s.percent = None; s.placement = island::Placement::of(&s.cfg, (1920.0, 1080.0)) }),
             ("win95", |s| { s.cfg.set_theme("win95"); s.mode = Mode::Large }),
-            ("glass", |s| { s.cfg.set_theme("glass"); s.cfg.show_info_idle = true }),
-            ("glass-large", |s| { s.cfg.set_theme("glass"); s.mode = Mode::Large }),
         ],
         ..AppSpec::new("Ripple", CANVAS, || unreachable!("state comes from App::init"), island::view)
     }

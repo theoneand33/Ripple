@@ -1144,7 +1144,6 @@ pub fn view(s: &Island, _: &mut Cx<Island>) -> El {
         let (blur, alpha) = if s.hovered { (32.0, 0.25) } else { (24.0, 0.12) };
         island = island.box_shadow(Shadow { x: 0.0, y: 0.0, blur, spread: 0.0, color: Color::BLACK.alpha(alpha), inset: false });
     }
-    if cfg.glass() && !hidden { island = island.child(glass(radii, large)) }
     if let Some(image) = s.background.as_ref().filter(|i| i.is_ready() && i.error().is_none() && !hidden) {
         island = island.child(el().key("background").pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0)).pixels_fit(image.pixels(), SurfaceFit::Fill).a11y_hidden());
     }
@@ -1189,25 +1188,6 @@ pub fn view(s: &Island, _: &mut Cx<Island>) -> El {
     rune_kit::root(canvas, layer)
 }
 
-/// Smoked glass lit from below: dark at the top left, grey toward the bottom right, a bright lower rim.
-fn glass(radii: [f32; 4], large: bool) -> El {
-    let grey = |v: u8, a: f32| crate::config::parse_color(&format!("#{v:02x}{v:02x}{v:02x}")).unwrap_or(Color::BLACK).alpha(a);
-    let layer = |key: &str| el().key(key).pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0)).corners(radii).inert().a11y_hidden();
-    let layer = |key: &str| if large { layer(key).continuous_corners() } else { layer(key) };
-    // Body: a diagonal from near-black to a light smoke grey.
-    layer("glass").linear_gradient(1.9, [(0.0, grey(6, 1.0)), (0.3, grey(14, 1.0)), (0.6, grey(42, 1.0)), (1.0, grey(87, 1.0))])
-        // Frost pooling in the lower right, where the backdrop shows through.
-        .child(layer("glass-frost").radial_gradient([0.85, 1.1], [420.0, 90.0], [(0.0, grey(200, 0.17)), (1.0, grey(200, 0.0))]))
-        // The top edge falls into shade.
-        .child(layer("glass-shade").gradient(grey(0, 0.33), grey(0, 0.0)))
-        // Light caught along the lower edge and the left curve, with a hairline rim on top.
-        .child(layer("glass-rim")
-            .box_shadow(Shadow { x: 0.0, y: 6.0, blur: 14.0, spread: 0.0, color: grey(0, 0.3), inset: true })
-            .box_shadow(Shadow { x: 0.0, y: -2.0, blur: 4.0, spread: 0.0, color: grey(255, 0.21), inset: true })
-            .box_shadow(Shadow { x: 2.0, y: 0.0, blur: 6.0, spread: 0.0, color: grey(255, 0.07), inset: true })
-            .border_gradient(1.0, grey(255, 0.06), grey(255, 0.33)))
-}
-
 /// The Large Island's tabs as a row of icons in a pill of their own.
 fn dock(s: &Island, [x, y, w, h]: [f32; 4]) -> El {
     let cfg = &s.cfg;
@@ -1217,7 +1197,6 @@ fn dock(s: &Island, [x, y, w, h]: [f32; 4]) -> El {
     let mut pill = row().key("dock").role("group").label("Tabs").w_full().h(height).px(space).gap(space).center_y()
         .fill(bg).radius(round(height / 2.0)).border(1.0, fg.alpha(0.12 * fg.a))
         .box_shadow(Shadow { x: 0.0, y: 0.0, blur: 24.0, spread: 0.0, color: Color::BLACK.alpha(0.2), inset: false });
-    if cfg.glass() { pill = pill.child(glass([round(height / 2.0); 4], false)) }
     for tab in cfg.visible_tabs() {
         let on = tab == s.tab;
         pill = pill.child(
