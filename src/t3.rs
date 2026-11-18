@@ -392,9 +392,10 @@ fn local_origin(home: &std::path::Path) -> Option<String> {
     let runtime: Value = serde_json::from_str(&std::fs::read_to_string(home.join("userdata").join("server-runtime.json")).ok()?).ok()?;
     let origin = runtime["origin"].as_str()?.trim().trim_end_matches('/');
     // Loopback only: the token minted for it must never leave this machine.
+    // Exactly a loopback host and an optional numeric port: no userinfo, path or query to smuggle another host in.
     let authority = origin.strip_prefix("http://")?;
-    let host = authority.rsplit_once(':').map_or(authority, |(h, _)| h);
-    matches!(host, "127.0.0.1" | "localhost" | "[::1]").then(|| origin.to_string())
+    let port_ok = |p: &str| p.is_empty() || p.strip_prefix(':').is_some_and(|d| !d.is_empty() && d.bytes().all(|b| b.is_ascii_digit()));
+    ["127.0.0.1", "localhost", "[::1]"].iter().any(|h| authority.strip_prefix(h).is_some_and(port_ok)).then(|| origin.to_string())
 }
 
 /// The T3 Code installed on this machine, with a token minted by its own `t3` CLI.
@@ -491,7 +492,7 @@ mod tests {
         std::fs::create_dir_all(home.join("userdata")).unwrap();
         std::fs::write(home.join("userdata/server-runtime.json"), r#"{"port":3773,"origin":"http://127.0.0.1:3773/"}"#).unwrap();
         assert_eq!(local_origin(&home).as_deref(), Some("http://127.0.0.1:3773"));
-        for bad in [r#"{"origin":"file:///x"}"#, r#"{"origin":"httpx://h"}"#, r#"{"origin":"http://evil.example:3773"}"#, r#"{"origin":"https://127.0.0.1"}"#, r#"{"origin":"http://localhost.evil.example"}"#, r#"{"port":3773}"#, "not json"] {
+        for bad in [r#"{"origin":"file:///x"}"#, r#"{"origin":"httpx://h"}"#, r#"{"origin":"http://evil.example:3773"}"#, r#"{"origin":"https://127.0.0.1"}"#, r#"{"origin":"http://localhost.evil.example"}"#, r#"{"origin":"http://127.0.0.1:3773@evil.example"}"#, r#"{"origin":"http://127.0.0.1:3773/x"}"#, r#"{"port":3773}"#, "not json"] {
             std::fs::write(home.join("userdata/server-runtime.json"), bad).unwrap();
             assert_eq!(local_origin(&home), None, "{bad}");
         }
