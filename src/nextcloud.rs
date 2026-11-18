@@ -219,7 +219,16 @@ fn sync_notes(c: &Client, items: &[Item], pending: &[String], out: &mut Outcome)
         if !ok(status) && status != 404 { return Err(failed(status)) }
         out.cleared.push(id.clone());
     }
+    // A new note whose text Nextcloud already has, unclaimed, is that note: an upload whose
+    // answer was lost, or the same note on both sides. Taking it saves a duplicate.
+    let listed = list_notes(c, &url)?;
+    let mut claimed: Vec<&str> = items.iter().filter_map(|i| i.remote.as_ref().map(|r| r.id.as_str())).collect();
     for item in items {
+        if item.remote.is_none() && let Some(n) = listed.iter().find(|n| n.text == item.text && !claimed.contains(&n.id.as_str())) {
+            claimed.push(&n.id);
+            out.pushed.push((item.key, n.clone()));
+            continue;
+        }
         let title = item.text.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("New Note");
         let body = json!({ "content": item.text, "title": title }).to_string();
         let updated = match &item.remote {
@@ -249,13 +258,18 @@ fn sync_notes(c: &Client, items: &[Item], pending: &[String], out: &mut Outcome)
         // The text sent, so a note Nextcloud reformats isn't seen as changed here.
         out.pushed.push((item.key, Remote { text: item.text.clone(), ..remote }));
     }
-    let (status, _, res) = c.call("GET", &url, &json_body[1..], "")?;
+    out.server = Some(list_notes(c, &url)?);
+    Ok(())
+}
+
+/// Every note on Nextcloud, the latest changed first.
+fn list_notes(c: &Client, url: &str) -> Result<Vec<Remote>, String> {
+    let (status, _, res) = c.call("GET", url, &[("accept", "application/json")], "")?;
     if !ok(status) { return Err(failed(status)) }
     let list: Vec<Value> = serde_json::from_str(&res).map_err(|_| "Nextcloud Notes isn't installed on that server".to_string())?;
     let mut notes: Vec<_> = list.iter().filter_map(|v| Some((v["modified"].as_i64().unwrap_or(0), note(v)?))).collect();
     notes.sort_by_key(|(modified, _)| std::cmp::Reverse(*modified));
-    out.server = Some(notes.into_iter().map(|(_, n)| n).collect());
-    Ok(())
+    Ok(notes.into_iter().map(|(_, n)| n).collect())
 }
 
 // --- Tasks: CalDAV (RFC 4791) VTODOs in one of the user's calendars ---
@@ -535,11 +549,12 @@ mod tests {
             }
         }, |_| String::new());
         let nc = Nextcloud { url: format!("{base}/nc/"), user: "me".into(), password: "pw".into(), ..Nextcloud::default() };
-        let items = [item("Mine", 7, Some(("3", "old", "Before"))), item("Local", 8, None), item("  ", 9, None)];
+        // Item 6 matches note 1, unclaimed: it takes that note rather than uploading a copy.
+        let items = [item("Mine", 7, Some(("3", "old", "Before"))), item("Local", 8, None), item("  ", 9, None), item("Server", 6, None)];
         let out = sync(&nc, Kind::Notes, &items, &["2".into()]);
         assert_eq!(out.error, None);
         assert_eq!(out.cleared, ["2"]);
-        assert_eq!(out.pushed, [(7, remote("12", "p", "Mine")), (8, remote("13", "p", "Local"))], "the conflicting edit became a new note");
+        assert_eq!(out.pushed, [(7, remote("12", "p", "Mine")), (8, remote("13", "p", "Local")), (6, remote("1", "e1", "Server"))], "the conflicting edit became a new note");
         assert_eq!(out.server.unwrap().iter().map(|n| n.text.as_str()).collect::<Vec<_>>(), ["Theirs", "Server", "Mine", "Local"]);
         // A failure partway keeps what was uploaded, so the next sync doesn't upload it twice.
         let partial = sync(&nc, Kind::Notes, &[item("Uploads", 1, None), item("Fails", 2, Some(("99", "e", "old")))], &[]);
