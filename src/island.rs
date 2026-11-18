@@ -479,6 +479,7 @@ impl Island {
     pub fn set_mode(&mut self, mode: Mode) {
         let was = self.mode;
         self.mode = if mode == Mode::Still { self.rest() } else { mode };
+        if self.mode == Mode::Large && was != Mode::Large { self.calendar_offset = 0 }
         if self.mode == Mode::Large && was != Mode::Large && self.cfg.open_default_tab {
             self.tab = self.cfg.first_tab();
             self.entered_tab();
