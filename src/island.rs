@@ -490,8 +490,8 @@ impl Island {
         let was = self.mode;
         self.mode = if mode == Mode::Still { self.rest() } else { mode };
         if self.mode == Mode::Large && was != Mode::Large { self.calendar_offset = 0 }
-        if self.mode == Mode::Large && was != Mode::Large && self.cfg.open_default_tab {
-            self.tab = self.cfg.first_tab();
+        if self.mode == Mode::Large && was != Mode::Large {
+            if self.cfg.open_default_tab { self.tab = self.cfg.first_tab() }
             self.entered_tab();
         }
         // Resting closes an open select even when the Island rests in Large.
@@ -938,6 +938,8 @@ impl Island {
         if rune::is_headless() || self.weather_kick.is_some() { return }
         let Some(me) = self.me.clone() else { return };
         if self.cfg.new_user { self.intro_at = Some(3.0) }
+        // Starting in Large: the tab showing loads now, as it would on opening.
+        self.entered_tab();
         self.load_background();
         if self.cfg.auto_launch { std::thread::spawn(|| system::set_auto_launch(true)); }
 
