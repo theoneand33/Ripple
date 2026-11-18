@@ -479,7 +479,10 @@ impl Island {
     pub fn set_mode(&mut self, mode: Mode) {
         let was = self.mode;
         self.mode = if mode == Mode::Still { self.rest() } else { mode };
-        if self.mode == Mode::Large && was != Mode::Large && self.cfg.open_default_tab { self.tab = self.cfg.first_tab() }
+        if self.mode == Mode::Large && was != Mode::Large && self.cfg.open_default_tab {
+            self.tab = self.cfg.first_tab();
+            self.entered_tab();
+        }
         // Resting closes an open select even when the Island rests in Large.
         if mode == Mode::Still || self.mode != Mode::Large { self.open_select = None }
         if self.mode != Mode::Large { self.tab_changed = false; self.close_at = None }
