@@ -24,12 +24,15 @@ pub fn tokenize_args(s: &str) -> Vec<String> {
     args
 }
 
-/// Parses a Windows command string into (exe, args): forward slashes become backslashes and
-/// `%ENV_VAR%` expands before splitting.
+/// Parses a Windows command string into (exe, args): `%ENV_VAR%` expands before splitting, and
+/// forward slashes in the exe path become backslashes. Arguments keep theirs (URLs, `/switches`).
 #[cfg_attr(not(any(windows, test)), allow(dead_code))]
 pub fn parse_command(input: &str) -> (String, Vec<String>) {
-    let prepared = expand_env(&input.replace('/', "\\"));
+    let (exe, args) = split_command(&expand_env(input));
+    (exe.replace('/', "\\"), args)
+}
 
+fn split_command(prepared: &str) -> (String, Vec<String>) {
     // Quoted exe path: "C:\path with spaces\app.exe" [args...]
     if let Some(rest) = prepared.strip_prefix('"')
         && let Some(end) = rest.find('"')
@@ -52,7 +55,7 @@ pub fn parse_command(input: &str) -> (String, Vec<String>) {
 
     // No recognised extension (cmd, wt): split on the first whitespace.
     match prepared.find(char::is_whitespace) {
-        None => (prepared, Vec::new()),
+        None => (prepared.to_string(), Vec::new()),
         Some(i) => (prepared[..i].to_string(), tokenize_args(&prepared[i..])),
     }
 }
@@ -91,6 +94,8 @@ mod tests {
         assert_eq!(parse_command("C:/Program Files/App/app.exe -v"), (r"C:\Program Files\App\app.exe".into(), s(&["-v"])));
         assert_eq!(parse_command("wt new-tab"), ("wt".into(), s(&["new-tab"])));
         assert_eq!(parse_command("cmd"), ("cmd".into(), vec![]));
+        assert_eq!(parse_command("C:/a/app.exe --u=https://x /select,C:/b"), (r"C:\a\app.exe".into(), s(&["--u=https://x", "/select,C:/b"])));
+        assert_eq!(parse_command(r#""C:/Program Files/a.exe" https://x"#), (r"C:\Program Files\a.exe".into(), s(&["https://x"])));
     }
 
     #[test]
