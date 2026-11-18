@@ -373,6 +373,9 @@ impl Client {
     }
 }
 
+/// The name `detect_local` gives the device; removing it turns detection off.
+pub const LOCAL_NAME: &str = "This computer";
+
 /// T3's data folder: `T3CODE_HOME`, else `~/.t3`.
 fn t3_home() -> Option<PathBuf> {
     let raw = std::env::var("T3CODE_HOME").unwrap_or_default();
@@ -413,7 +416,7 @@ pub fn detect_local() -> Option<T3Device> {
     #[cfg(windows)]
     let token = token.or_else(|| crate::system::output("t3.cmd", &args));
     let token = token.filter(|t| !t.is_empty() && !t.contains(char::is_whitespace))?;
-    Some(T3Device { name: "This computer".into(), url, token })
+    Some(T3Device { name: LOCAL_NAME.into(), url, token })
 }
 
 /// initialize, initialized, tools/call. `Ok(None)` means the token was refused (401).
