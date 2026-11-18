@@ -35,6 +35,8 @@ pub struct Outcome {
     pub server: Option<Vec<Remote>>,
     /// Why the sync stopped early. What it did before that still counts.
     pub error: Option<String>,
+    /// The path `server` lists (a Tasks list); items synced elsewhere are left alone.
+    pub scope: String,
 }
 
 /// Merges a sync's outcome into the items as they are now.
@@ -50,6 +52,8 @@ pub fn apply(items: &mut Vec<Item>, pending: &mut Vec<String>, out: Outcome) {
     let Some(server) = out.server else { return };
     items.retain_mut(|i| {
         let Some(r) = &i.remote else { return true };
+        // In another list (the Tasks list was changed): still there, just not listed.
+        if !r.id.starts_with(&out.scope) { return true }
         // Changed here since the last sync: the next sync uploads it, so Nextcloud's copy doesn't win.
         let clean = i.text == r.text;
         match server.iter().find(|s| s.id == r.id) {
@@ -269,6 +273,7 @@ fn sync_tasks(c: &Client, list: &str, items: &[Item], pending: &[String], out: &
         "" => "No Nextcloud list holds tasks".to_string(),
         name => format!("No Nextcloud list is named {name}"),
     })?;
+    out.scope = format!("{}/", calendar.trim_end_matches('/'));
     let stamp = utc_stamp();
     for href in pending {
         let Some(path) = server_path(href.clone()) else { out.cleared.push(href.clone()); continue };
@@ -287,7 +292,7 @@ fn sync_tasks(c: &Client, list: &str, items: &[Item], pending: &[String], out: &
     for item in items.iter().filter(|i| i.remote.is_none() && !i.text.trim().is_empty()) {
         // Named by the item's key, so a retry after a lost answer finds it already there (412).
         let uid = format!("ripple-{:016x}", item.key);
-        let href = format!("{}/{uid}.ics", calendar.trim_end_matches('/'));
+        let href = format!("{}{uid}.ics", out.scope);
         let (status, etag, _) = c.call("PUT", &c.at(&href), &[ICS, ("if-none-match", "*")], &new_task(&uid, &item.text, &stamp))?;
         if !ok(status) && status != 412 { return Err(failed(status)) }
         out.pushed.push((item.key, Remote { id: href, etag, text: item.text.clone() }));
@@ -463,6 +468,7 @@ mod tests {
             cleared: vec!["x".into()],
             server: Some(vec![remote("a", "2", "changed there"), remote("b", "2", "also there"), remote("e", "1", "typed"), remote("g", "1", "new there"), remote("y", "1", "deleting")]),
             error: None,
+            scope: String::new(),
         };
         apply(&mut items, &mut pending, out);
         let texts: Vec<_> = items.iter().map(|i| (i.text.as_str(), i.remote.as_ref().map(|r| (r.id.as_str(), r.etag.as_str())))).collect();
@@ -479,6 +485,11 @@ mod tests {
         let mut items = vec![item("kept", 1, Some(("a", "1", "kept"))), item("up", 2, None)];
         apply(&mut items, &mut Vec::new(), Outcome { pushed: vec![(2, remote("b", "1", "up"))], error: Some("x".into()), ..Outcome::default() });
         assert_eq!(items.iter().map(|i| i.remote.as_ref().map(|r| r.id.as_str())).collect::<Vec<_>>(), [Some("a"), Some("b")]);
+
+        // A task synced to another list isn't taken as deleted when this list lacks it.
+        let mut items = vec![item("old list", 1, Some(("/cal/tasks/a.ics", "1", "old list"))), item("this list", 2, Some(("/cal/personal/b.ics", "1", "this list")))];
+        apply(&mut items, &mut Vec::new(), Outcome { server: Some(Vec::new()), scope: "/cal/personal/".into(), ..Outcome::default() });
+        assert_eq!(items.iter().map(|i| i.text.as_str()).collect::<Vec<_>>(), ["old list"]);
     }
 
     #[test]
