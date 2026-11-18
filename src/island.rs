@@ -264,8 +264,10 @@ pub struct Island {
     /// The way the last tab change went: 1 to the next tab, -1 to the previous.
     pub tab_dir: i32,
     swipe_lock_until: f64,
-    /// The tab changed in this Large session: leaving waits `cfg.tab_linger` before closing.
+    /// The tab just changed; the next poll stamps `linger_until` from it.
     tab_changed: bool,
+    /// Until when leaving waits after the last tab change (`cfg.tab_linger` from the change).
+    linger_until: Option<f64>,
     /// When a lingering Island closes, unless the pointer comes back first.
     close_at: Option<f64>,
     next_second: f64,
@@ -348,6 +350,7 @@ impl Island {
             tab_dir: 1,
             swipe_lock_until: 0.0,
             tab_changed: false,
+            linger_until: None,
             close_at: None,
             next_second: 0.0,
             next_clipboard: 0.0,
@@ -501,7 +504,7 @@ impl Island {
         }
         // Resting closes an open select even when the Island rests in Large.
         if mode == Mode::Still || self.mode != Mode::Large { self.open_select = None }
-        if self.mode != Mode::Large { self.tab_changed = false; self.close_at = None }
+        if self.mode != Mode::Large { self.tab_changed = false; self.linger_until = None; self.close_at = None }
     }
 
     /// Opens Large straight on `tab`, as a change from the tab shown last; the starred tab doesn't apply.
@@ -539,8 +542,7 @@ impl Island {
         if self.hovered { return false }
         let now = tx.clock();
         let left = std::mem::take(&mut self.left);
-        if left && self.tab_changed && self.mode == Mode::Large {
-            let at = now + f64::from(self.cfg.tab_linger);
+        if left && self.mode == Mode::Large && let Some(at) = self.linger_until && now < at {
             self.close_at = Some(at);
             tx.wake_at(at);
             return false;
@@ -888,6 +890,12 @@ impl Island {
         if alert_ended {
             self.set_mode(Mode::Still);
             changed = true;
+        }
+        if std::mem::take(&mut self.tab_changed) {
+            let at = now + f64::from(self.cfg.tab_linger);
+            self.linger_until = Some(at);
+            // A tab change after the pointer left pushes the pending close out too.
+            if self.close_at.is_some() { self.close_at = Some(at) }
         }
         changed |= self.leave(tx);
         changed |= due(&mut self.paused_until);
