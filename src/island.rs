@@ -193,6 +193,8 @@ pub struct Island {
 
     pub time: String,
     pub date: String,
+    /// (year, month, day), for the Calendar tab.
+    pub today: (i32, u32, u32),
     /// None on a machine without a battery.
     pub percent: Option<u8>,
     pub charging: bool,
@@ -223,6 +225,8 @@ pub struct Island {
     pub ai: tabs::Assistant,
     pub clipboard: tabs::Clipboard,
     pub task: TextEdit,
+    /// The Calendar tab's month, as months from this one.
+    pub calendar_offset: i32,
     pub notes: tabs::Notes,
     pub stremflix: tabs::Stremflix,
     /// The System tab's figures; None until the first sample.
@@ -285,6 +289,7 @@ impl Island {
             over: [false; 2],
             left: false,
             time: String::new(),
+            today: (1970, 1, 1),
             date: String::new(),
             percent: None,
             charging: false,
@@ -310,6 +315,7 @@ impl Island {
             ai: tabs::Assistant::default(),
             clipboard: tabs::Clipboard::default(),
             task: TextEdit::default(),
+            calendar_offset: 0,
             notes: tabs::Notes::new(&cfg),
             stremflix: tabs::Stremflix::default(),
             stats: None,
@@ -727,6 +733,7 @@ impl Island {
         let hour = if self.cfg.hour12 { (now.hour + 11) % 12 + 1 } else { now.hour };
         self.time = format!("{hour}:{:02}", now.minute);
         self.date = format_date(now.year, now.month, now.day);
+        self.today = (now.year, now.month, now.day);
     }
 
     // --- What the pollers report ---
@@ -963,11 +970,14 @@ impl Island {
 fn format_date(year: i32, month: u32, day: u32) -> String {
     const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
     const DAYS: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-    // Sakamoto's day-of-week.
+    format!("{}, {} {}", DAYS[weekday(year, month, day) as usize], MONTHS[(month as usize - 1) % 12], day)
+}
+
+/// 0 for Sunday, by Sakamoto's method.
+pub fn weekday(year: i32, month: u32, day: u32) -> u32 {
     const T: [i32; 12] = [0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4];
     let y = if month < 3 { year - 1 } else { year };
-    let weekday = (y + y / 4 - y / 100 + y / 400 + T[(month as usize - 1) % 12] + day as i32).rem_euclid(7);
-    format!("{}, {} {}", DAYS[weekday as usize], MONTHS[(month as usize - 1) % 12], day)
+    (y + y / 4 - y / 100 + y / 400 + T[(month as usize - 1) % 12] + day as i32).rem_euclid(7) as u32
 }
 
 /// Fetches an image (blocking) and hands it, loaded, to `put` on the UI thread.
