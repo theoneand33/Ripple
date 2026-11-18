@@ -255,7 +255,11 @@ fn iso(s: &str) -> Option<i64> {
     if !(1..=12).contains(&m) || !(1..=last).contains(&d) { return None }
     let secs = if s.len() > 10 { n(11..13)? * 3600 + n(14..16)? * 60 + n(17..19)? } else { 0 };
     let tz = s[10..].rfind(['+', '-']).filter(|_| s.len() > 19).map(|i| i + 10);
-    let offset = tz.and_then(|i| Some((n(i + 1..i + 3)? * 3600 + n(i + 4..i + 6)? * 60) * if &s[i..=i] == "-" { -1 } else { 1 })).unwrap_or(0);
+    let offset = tz.and_then(|i| {
+        // "+02:00" or "+0200".
+        let m = if s.get(i + 3..i + 4) == Some(":") { i + 4 } else { i + 3 };
+        Some((n(i + 1..i + 3)? * 3600 + n(m..m + 2)? * 60) * if &s[i..=i] == "-" { -1 } else { 1 })
+    }).unwrap_or(0);
     // Days from 1970-01-01 to y-m-d (Howard Hinnant's days_from_civil).
     let y = if m <= 2 { y - 1 } else { y };
     let era = y.div_euclid(400);
@@ -286,6 +290,7 @@ mod tests {
         assert_eq!(iso("1970-01-02"), Some(86_400));
         assert_eq!(iso("2026-08-13T16:27:38.287Z"), Some(1_786_638_458));
         assert_eq!(iso("2026-08-13T18:27:38+02:00"), Some(1_786_638_458));
+        assert_eq!((iso("2026-08-13T18:27:38+0200"), iso("2026-08-13T14:27:38-0200")), (Some(1_786_638_458), Some(1_786_638_458)));
         assert_eq!(iso("2026-08-13T16:27:38.930537+00:00"), Some(1_786_638_458));
         assert_eq!((iso("soon"), iso("2026-13-40"), iso("2026-02-30"), iso("2025-02-29")), (None, None, None, None));
         assert_eq!(iso("2028-02-29"), Some(1_835_395_200));
