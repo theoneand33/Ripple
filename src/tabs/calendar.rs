@@ -63,7 +63,7 @@ pub fn view(s: &Island) -> El {
                 .child(text(MONTHS[month as usize - 1]).font(s.cfg.font(17.0, 600.0)).color(fg))
                 .child(text(year.to_string()).font(s.cfg.font(17.0, 400.0).features("'tnum' 1")).color(fg.alpha(0.5 * fg.a))),
         );
-    if s.calendar_offset != 0 {
+    if s.calendar_offset != 0 || s.calendar_day.is_some_and(|d| d != s.today) {
         // Shaped like `tool`, so it sits quietly beside the arrows.
         header = header.child(
             el().key("calendar-today").role("button").label("Today").focusable(true)
@@ -86,6 +86,7 @@ pub fn view(s: &Island) -> El {
     // Six weeks always, so the Island keeps one height; days of the months around are dimmed.
     let first = weekday(year, month, 1) as i32;
     let picked = s.calendar_day.unwrap_or(s.today);
+    let busy_days: Vec<_> = s.cfg.events.iter().filter_map(|e| Some(event_day(&e.text)?.0)).collect();
     let (py, pm) = shift(year, month, -1);
     let (len, prev_len) = (days_in(year, month) as i32, days_in(py, pm) as i32);
     let mut grid = col().key(format!("calendar-grid-{year}-{month}")).role("group").label(format!("{} {year}", MONTHS[month as usize - 1]))
@@ -99,7 +100,7 @@ pub fn view(s: &Island) -> El {
             let (dy, dm) = shift(year, month, page);
             let date = (dy, dm, day as u32);
             let today = date == (ty, tm, td);
-            let busy = s.cfg.events.iter().any(|e| event_day(&e.text).is_some_and(|(d, _)| d == date));
+            let busy = busy_days.contains(&date);
             let color = if today { ink } else if page == 0 { fg } else { fg.alpha(0.25 * fg.a) };
             let mut dot = el().size(28.0, 28.0).center().radius(s.cfg.radius(14.0))
                 .child(text(day.to_string()).font(s.cfg.font(13.0, if today { 700.0 } else { 500.0 }).features("'tnum' 1")).color(color).a11y_hidden());

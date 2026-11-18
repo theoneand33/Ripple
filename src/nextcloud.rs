@@ -459,7 +459,7 @@ fn unescape_text(value: &str) -> String {
 }
 
 /// A TEXT value for iCalendar.
-fn escape_text(value: &str) -> String { value.replace('\\', "\\\\").replace(';', "\\;").replace(',', "\\,").replace('\n', "\\n") }
+fn escape_text(value: &str) -> String { value.replace('\\', "\\\\").replace(';', "\\;").replace(',', "\\,").replace('\n', "\\n").replace('\r', "") }
 
 fn new_task(uid: &str, summary: &str, stamp: &str) -> String {
     let summary = escape_text(summary);
