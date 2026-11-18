@@ -40,7 +40,6 @@ pub fn view(s: &Island) -> El {
                 .w(84.0).padding(8.0).gap(6.0).items_center().radius(s.cfg.radius(12.0))
                 .hover(fg.alpha(0.08 * fg.a)).press(fg.alpha(0.14 * fg.a))
                 .transition(Transition::opacity())
-                // shortcut: rune starts OS drags on macOS and Windows only; on Linux a file stays put until rune adds X11/Wayland drag sources.
                 .drag_out(move |_: &Island| Some(DragItem::new().file(&out)))
                 .on_drag_end(move |s: &mut Island, outcome, _| if outcome == DragOutcome::Moved { s.save(|c| c.shelf.retain(|f| *f != moved)) })
                 .child(
