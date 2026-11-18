@@ -93,10 +93,15 @@ fn ps_quote(text: &str) -> String {
 /// newline). Trimmed stdout, or "" on failure.
 #[cfg(windows)]
 fn powershell(script: &str) -> String {
+    output("powershell", &["-NoProfile", "-EncodedCommand", &ps_encode(script)]).unwrap_or_default()
+}
+
+/// A script as `-EncodedCommand` takes it: base64 of its UTF-16LE.
+#[cfg(windows)]
+fn ps_encode(script: &str) -> String {
     use base64::Engine;
     let utf16: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
-    let encoded = base64::engine::general_purpose::STANDARD.encode(utf16);
-    output("powershell", &["-NoProfile", "-EncodedCommand", &encoded]).unwrap_or_default()
+    base64::engine::general_purpose::STANDARD.encode(utf16)
 }
 
 #[cfg(windows)]
@@ -423,6 +428,151 @@ fn capability_in_use(name: &str) -> bool {
         .eq_ignore_ascii_case("true")
 }
 
+// --- Volume and brightness ---
+
+/// Calls `on(volume, brightness)` with each as a percent (a muted output reads 0), about twice a
+/// second; None where the OS doesn't say. Blocks for good; run it on its own thread.
+pub fn watch_levels(on: impl Fn(Option<u8>, Option<u8>)) {
+    #[cfg(not(windows))]
+    loop {
+        on(volume(), brightness());
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+    // One PowerShell for good: starting one per poll costs too much CPU at this rate.
+    #[cfg(windows)]
+    loop {
+        use std::io::BufRead;
+        if let Ok(mut child) = command("powershell").args(["-NoProfile", "-EncodedCommand", &ps_encode(WINDOWS_LEVELS)])
+            .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn()
+        {
+            if let Some(out) = child.stdout.take() {
+                for line in std::io::BufReader::new(out).lines().map_while(Result::ok) {
+                    let (volume, brightness) = parse_levels(&line);
+                    on(volume, brightness);
+                }
+            }
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        // It died: start another, without spinning if PowerShell is missing.
+        std::thread::sleep(std::time::Duration::from_secs(10));
+    }
+}
+
+/// Prints "volume brightness" twice a second; -1 for one it can't read.
+#[cfg(windows)]
+const WINDOWS_LEVELS: &str = r#"
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+[Guid("5CDF2C82-841E-4546-9722-0CF74078229A"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface IAudioEndpointVolume {
+  int f(); int g(); int h(); int i();
+  int SetMasterVolumeLevelScalar(float level, Guid context);
+  int j();
+  int GetMasterVolumeLevelScalar(out float level);
+  int k(); int l(); int m(); int n();
+  int SetMute([MarshalAs(UnmanagedType.Bool)] bool mute, Guid context);
+  int GetMute([MarshalAs(UnmanagedType.Bool)] out bool mute);
+}
+[Guid("D666063F-1587-4E43-81F1-B948E807363F"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface IMMDevice { int Activate(ref Guid id, int ctx, int args, out IAudioEndpointVolume volume); }
+[Guid("A95664D2-9614-4F35-A746-DE8DB63617E6"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface IMMDeviceEnumerator { int f(); int GetDefaultAudioEndpoint(int flow, int role, out IMMDevice device); }
+[ComImport, Guid("BCDE0395-E52F-467C-8E3D-C4579291692E")] class MMDeviceEnumerator { }
+public static class RippleAudio {
+  public static int Level() {
+    IMMDevice device;
+    Marshal.ThrowExceptionForHR(((IMMDeviceEnumerator)new MMDeviceEnumerator()).GetDefaultAudioEndpoint(0, 1, out device));
+    IAudioEndpointVolume volume;
+    Guid id = typeof(IAudioEndpointVolume).GUID;
+    Marshal.ThrowExceptionForHR(device.Activate(ref id, 23, 0, out volume));
+    bool mute; float level;
+    Marshal.ThrowExceptionForHR(volume.GetMute(out mute));
+    Marshal.ThrowExceptionForHR(volume.GetMasterVolumeLevelScalar(out level));
+    return mute ? 0 : (int)Math.Round(level * 100);
+  }
+}
+'@
+while ($true) {
+  $v = try { [RippleAudio]::Level() } catch { -1 }
+  $b = try { [int](Get-CimInstance -Namespace root/wmi -ClassName WmiMonitorBrightness -ErrorAction Stop | Select-Object -First 1).CurrentBrightness } catch { -1 }
+  # Ripple closed the pipe: quit rather than poll on as an orphan.
+  try { [Console]::Out.WriteLine("$v $b"); [Console]::Out.Flush() } catch { exit }
+  Start-Sleep -Milliseconds 500
+}
+"#;
+
+/// "volume brightness" from `WINDOWS_LEVELS`; anything outside 0-100 is None.
+#[cfg_attr(not(any(windows, test)), allow(dead_code))]
+fn parse_levels(line: &str) -> (Option<u8>, Option<u8>) {
+    let mut parts = line.split_whitespace().map(|p| p.parse::<u8>().ok().filter(|p| *p <= 100));
+    (parts.next().flatten(), parts.next().flatten())
+}
+
+#[cfg(target_os = "linux")]
+fn volume() -> Option<u8> {
+    output("wpctl", &["get-volume", "@DEFAULT_AUDIO_SINK@"]).and_then(|o| parse_wpctl(&o)).or_else(|| {
+        if output("pactl", &["get-sink-mute", "@DEFAULT_SINK@"])?.contains("yes") { return Some(0) }
+        first_percent(&output("pactl", &["get-sink-volume", "@DEFAULT_SINK@"])?).map(|p| p.min(100))
+    })
+}
+
+/// `wpctl get-volume`: "Volume: 0.45", with " [MUTED]" when muted; it can pass 1.0.
+#[cfg_attr(not(any(target_os = "linux", test)), allow(dead_code))]
+fn parse_wpctl(out: &str) -> Option<u8> {
+    let level: f32 = out.strip_prefix("Volume:")?.split_whitespace().next()?.parse().ok()?;
+    Some(if out.contains("[MUTED]") { 0 } else { (level * 100.0).round().clamp(0.0, 100.0) as u8 })
+}
+
+/// The first backlight, as a percent of its maximum.
+#[cfg(target_os = "linux")]
+fn brightness() -> Option<u8> {
+    let dir = std::fs::read_dir("/sys/class/backlight").ok()?.flatten().next()?.path();
+    let read = |name: &str| std::fs::read_to_string(dir.join(name)).ok()?.trim().parse::<f32>().ok();
+    let (now, max) = (read("brightness")?, read("max_brightness")?);
+    (max > 0.0).then(|| (now / max * 100.0).round().clamp(0.0, 100.0) as u8)
+}
+
+/// "missing value" (no reading) on outputs such as HDMI, which then show no ring.
+#[cfg(target_os = "macos")]
+fn volume() -> Option<u8> {
+    output("osascript", &["-e", "set s to get volume settings", "-e", "if output muted of s then return 0", "-e", "return output volume of s"])?
+        .parse::<u8>().ok().map(|v| v.min(100))
+}
+
+// shortcut: macOS has no public CLI for display brightness; read it through IOKit/DisplayServices if users ask.
+#[cfg(target_os = "macos")]
+fn brightness() -> Option<u8> { None }
+
+// --- Caps Lock ---
+
+/// Whether Caps Lock is on; None where it can't be read. Cheap enough to poll often.
+pub fn caps_lock() -> Option<bool> {
+    #[cfg(target_os = "linux")]
+    {
+        // Each keyboard's Caps Lock LED, which the kernel keeps in step on X11 and Wayland alike.
+        let leds: Vec<_> = std::fs::read_dir("/sys/class/leds").ok()?.flatten()
+            .filter(|e| e.file_name().to_string_lossy().ends_with("::capslock")).collect();
+        if leds.is_empty() { return None }
+        Some(leds.iter().any(|e| std::fs::read_to_string(e.path().join("brightness")).is_ok_and(|b| b.trim() != "0")))
+    }
+    #[cfg(target_os = "macos")]
+    {
+        #[link(name = "CoreGraphics", kind = "framework")]
+        unsafe extern "C" { fn CGEventSourceFlagsState(state: i32) -> u64; }
+        // SAFETY: a pure query. 0 is kCGEventSourceStateCombinedSessionState; 0x10000 kCGEventFlagMaskAlphaShift.
+        Some(unsafe { CGEventSourceFlagsState(0) } & 0x10000 != 0)
+    }
+    #[cfg(windows)]
+    {
+        #[link(name = "user32")]
+        unsafe extern "system" { fn GetKeyState(key: i32) -> i16; }
+        // SAFETY: a pure query. 0x14 is VK_CAPITAL; the low bit is its toggle.
+        Some(unsafe { GetKeyState(0x14) } & 1 != 0)
+    }
+}
+
 // --- Battery ---
 
 /// (percent, plugged in), or None on a machine without a battery.
@@ -448,9 +598,15 @@ pub fn battery() -> Option<(u8, bool)> {
 /// `pmset -g batt`: "Now drawing from 'AC Power'" then " -InternalBattery-0 (id=…)\t87%; charging; …".
 #[cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))]
 fn parse_pmset(out: &str) -> Option<(u8, bool)> {
+    Some((first_percent(out)?.min(100), out.contains("AC Power")))
+}
+
+/// The number before the first '%'.
+#[cfg_attr(not(any(target_os = "macos", target_os = "linux", test)), allow(dead_code))]
+fn first_percent(out: &str) -> Option<u8> {
     let end = out.find('%')?;
     let start = out[..end].rfind(|c: char| !c.is_ascii_digit()).map_or(0, |i| i + 1);
-    Some((out[start..end].parse::<u8>().ok()?.min(100), out.contains("AC Power")))
+    out[start..end].parse().ok()
 }
 
 #[cfg(windows)]
@@ -762,6 +918,18 @@ Get-StartApps -EA SilentlyContinue | ForEach-Object {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn volume_and_brightness_read_as_percents() {
+        assert_eq!(parse_wpctl("Volume: 0.45"), Some(45));
+        assert_eq!(parse_wpctl("Volume: 0.45 [MUTED]"), Some(0));
+        assert_eq!(parse_wpctl("Volume: 1.50"), Some(100));
+        assert_eq!(parse_wpctl("Could not connect to PipeWire"), None);
+        assert_eq!(first_percent("Volume: front-left: 29491 /  45% / -20.81 dB"), Some(45));
+        assert_eq!(parse_levels("37 80"), (Some(37), Some(80)));
+        assert_eq!(parse_levels("37 -1"), (Some(37), None));
+        assert_eq!(parse_levels("-1 "), (None, None));
+    }
 
     #[test]
     fn progress_needs_a_length_and_stays_within_it() {

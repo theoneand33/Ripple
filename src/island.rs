@@ -55,6 +55,9 @@ pub enum Alert {
     Bluetooth,
     Camera,
     Microphone,
+    Volume,
+    Brightness,
+    CapsLock,
 }
 
 impl Alert {
@@ -65,6 +68,8 @@ impl Alert {
             Alert::Bluetooth => status::bluetooth(),
             Alert::Camera => status::camera(),
             Alert::Microphone => status::mic(),
+            // Drawn in the text colour instead; see `glance`.
+            Alert::Volume | Alert::Brightness | Alert::CapsLock => Color::WHITE,
         }
     }
 
@@ -74,6 +79,9 @@ impl Alert {
             Alert::Bluetooth => &icons::HEADPHONES,
             Alert::Camera => &icons::CAMERA,
             Alert::Microphone => &icons::MIC,
+            Alert::Volume => &icons::VOLUME,
+            Alert::Brightness => &icons::SUN,
+            Alert::CapsLock => &icons::CAPS_LOCK,
         }
     }
 
@@ -84,6 +92,9 @@ impl Alert {
             Alert::Bluetooth => "bluetooth",
             Alert::Camera => "camera",
             Alert::Microphone => "microphone",
+            Alert::Volume => "volume",
+            Alert::Brightness => "brightness",
+            Alert::CapsLock => "caps-lock",
         }
     }
 }
@@ -212,6 +223,13 @@ pub struct Island {
     bluetooth_missed: bool,
     pub camera: bool,
     pub microphone: bool,
+    /// Percent; None until the first reading, or where the OS doesn't say.
+    volume: Option<u8>,
+    brightness: Option<u8>,
+    /// Caps Lock is on: its alert stays until it goes off.
+    caps_lock: bool,
+    /// The volume or brightness ring showing, and until when.
+    level: Option<(Alert, f64)>,
 
     battery_alert_until: Option<f64>,
     charging_alert_until: Option<f64>,
@@ -315,6 +333,10 @@ impl Island {
             bluetooth_missed: false,
             camera: false,
             microphone: false,
+            volume: None,
+            brightness: None,
+            level: None,
+            caps_lock: false,
             battery_alert_until: None,
             charging_alert_until: None,
             bluetooth_alert_until: None,
@@ -396,13 +418,16 @@ impl Island {
     pub fn shows_track(&self) -> bool { self.playing() || self.paused_until.is_some() }
 
     /// Hide when inactive: resting with no track to show.
-    pub fn hidden(&self) -> bool { self.cfg.hide_inactive && self.mode == Mode::Still && !self.shows_track() }
+    pub fn hidden(&self) -> bool { self.cfg.hide_inactive && self.mode == Mode::Still && !self.shows_track() && !self.caps_lock }
 
     pub fn alert(&self) -> Option<Alert> {
-        if self.charging_alert_until.is_some() { Some(Alert::Charging) }
+        // The level answers a key just pressed, so it goes over the rest.
+        if let Some((level, _)) = self.level { Some(level) }
+        else if self.charging_alert_until.is_some() { Some(Alert::Charging) }
         else if self.battery_alert_until.is_some() { Some(Alert::Battery) }
         else if self.bluetooth_alert_until.is_some() { Some(Alert::Bluetooth) }
-        else { self.capture.map(|c| c.0) }
+        // A playing track goes over Caps Lock, which may stay on for good.
+        else { self.capture.map(|c| c.0).or((self.caps_lock && !self.shows_track()).then_some(Alert::CapsLock)) }
     }
 
     /// Under 20% and not charging.
@@ -418,6 +443,8 @@ impl Island {
             Alert::Bluetooth => if self.bluetooth { "Connected" } else { "Disconnected" }.into(),
             Alert::Camera => "Camera".into(),
             Alert::Microphone => "Microphone".into(),
+            Alert::Volume | Alert::Brightness => String::new(),
+            Alert::CapsLock => "Caps Lock".into(),
         }
     }
 
@@ -462,6 +489,7 @@ impl Island {
         let large = tabs::size(self.tab);
         let mut w = match self.mode {
             Mode::Large => large.0,
+            _ if self.level.is_some() && !notch => 100.0, // just the ring
             _ if alerting => if notch { self.notch_glance_width() } else { 176.0 }, // fits icon + "Disconnected"
             _ if track => self.now_playing_width(),
             _ if notch => if self.mode == Mode::Quick || self.cfg.show_info_idle { self.notch_glance_width() } else { 210.0 },
@@ -799,6 +827,32 @@ impl Island {
         true
     }
 
+    /// A volume or brightness change shows its ring for 1.5 s, from the latest change. The first
+    /// reading only sets the level. Large stays as it is: the ring shows only when compact.
+    pub fn set_levels(&mut self, volume: Option<u8>, brightness: Option<u8>, tx: &mut Tx) -> bool {
+        let mut moved = None;
+        for (alert, new, old) in [(Alert::Volume, volume, &mut self.volume), (Alert::Brightness, brightness, &mut self.brightness)] {
+            if new == *old { continue }
+            if old.is_some() && new.is_some() { moved = Some(alert) }
+            *old = new;
+        }
+        let Some(alert) = moved else { return false };
+        if self.mode != Mode::Large { self.set_mode(Mode::Quick) }
+        self.level = Some((alert, tx.clock() + 1.5));
+        self.schedule(tx);
+        true
+    }
+
+    /// Caps Lock's alert shows from the moment it goes on until it goes off; Large stays as it is.
+    pub fn set_caps_lock(&mut self, on: bool) -> bool {
+        if on == self.caps_lock { return false }
+        self.caps_lock = on;
+        // Turning it off leaves a hovered Island or another alert as it is.
+        if on && self.mode != Mode::Large { self.set_mode(Mode::Quick) }
+        else if !on && self.mode == Mode::Quick && !self.hovered && self.alert().is_none() { self.set_mode(Mode::Still) }
+        true
+    }
+
     /// Camera and microphone alerts take turns, three seconds each.
     pub fn set_capture(&mut self, camera: Option<bool>, microphone: Option<bool>, tx: &mut Tx) -> bool {
         let (camera, microphone) = (camera.unwrap_or(self.camera), microphone.unwrap_or(self.microphone));
@@ -869,7 +923,7 @@ impl Island {
 
     /// Asks for a poll at the next deadline any timer holds.
     fn schedule(&self, tx: &mut Tx) {
-        let deadlines = [self.battery_alert_until, self.charging_alert_until, self.bluetooth_alert_until, self.capture.map(|c| c.1), self.paused_until, self.clipboard.copied.map(|c| c.1), self.intro_at, self.close_at];
+        let deadlines = [self.level.map(|l| l.1), self.battery_alert_until, self.charging_alert_until, self.bluetooth_alert_until, self.capture.map(|c| c.1), self.paused_until, self.clipboard.copied.map(|c| c.1), self.intro_at, self.close_at];
         if let Some(due) = deadlines.into_iter().flatten().reduce(f64::min) { tx.wake_at(due) }
     }
 
@@ -902,6 +956,12 @@ impl Island {
             self.capture = None;
             self.next_capture(tx);
             alert_ended |= self.capture.is_none();
+            changed = true;
+        }
+        if self.level.is_some_and(|l| now >= l.1) {
+            self.level = None;
+            // Leaves Large alone, as `set_levels` did.
+            alert_ended |= self.mode != Mode::Large;
             changed = true;
         }
         if alert_ended {
@@ -989,6 +1049,14 @@ impl Island {
         every(3, move || { let m = system::microphone_in_use(); h.update_if(move |s, tx| s.set_capture(None, Some(m), tx)); });
         let h = me.clone();
         std::thread::spawn(move || system::watch_drags(|active| h.update(move |s, _| s.desktop_drag(active))));
+        let h = me.clone();
+        std::thread::spawn(move || loop {
+            let on = system::caps_lock().unwrap_or(false);
+            h.update_if(move |s, _| s.set_caps_lock(on));
+            std::thread::sleep(std::time::Duration::from_millis(250));
+        });
+        let h = me.clone();
+        std::thread::spawn(move || system::watch_levels(|v, b| h.update_if(move |s, tx| s.set_levels(v, b, tx))));
         let h = me.clone();
         every(5, move || { let b = system::battery(); h.update_if(move |s, tx| s.set_battery(b, tx)); });
         let h = me.clone();
@@ -1195,8 +1263,23 @@ fn border(s: &Island, radii: [f32; 4], hidden: bool) -> El {
 fn glance(s: &Island, fg: Color) -> El {
     let cfg = &s.cfg;
     let alert = s.alert();
-    let color = alert.map_or(fg, Alert::color);
     let style = s.cfg.font(16.0, 600.0).lh(16.0);
+    let pad = if cfg.notch_mode { 12.0 } else { 16.0 };
+    if let Some((level, percent)) = match alert {
+        Some(Alert::Volume) => Some((Alert::Volume, s.volume)),
+        Some(Alert::Brightness) => Some((Alert::Brightness, s.brightness)),
+        _ => None,
+    } {
+        let percent = percent.unwrap_or(0);
+        let glyph = if level == Alert::Volume && percent == 0 { &icons::VOLUME_X } else { level.icon() };
+        let label = format!("{} {percent}%", if level == Alert::Volume { "Volume" } else { "Brightness" });
+        let ring = el().key("ring").role("img").label(label).size(24.0, 24.0).center()
+            .child(icon(icons::ring(percent), 24.0).color(fg).pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0)).a11y_hidden())
+            .child(icon(glyph, 12.0).color(fg).a11y_hidden());
+        return row().key(level.key()).w_full().h_full().px(pad - 4.0).center_y().justify_end()
+            .transition(Transition::blur_replace()).child(ring);
+    }
+    let color = alert.filter(|a| *a != Alert::CapsLock).map_or(fg, Alert::color);
     let left = match alert {
         Some(alert) => icon(alert.icon(), 20.0).color(color),
         None => text(&s.time).key("time").font(style.features("'tnum' 1")).color(color),
@@ -1216,7 +1299,6 @@ fn glance(s: &Island, fg: Color) -> El {
             None => battery(),
         },
     };
-    let pad = if cfg.notch_mode { 12.0 } else { 16.0 };
     let row = row().key(alert.map_or("glance", Alert::key)).w_full().h_full().px(pad).center_y()
         .transition(Transition::blur_replace());
     // Mini notch centers the time when there is nothing to show beside it.
@@ -1434,6 +1516,27 @@ mod tests {
         assert!(!s.set_bluetooth(false, &mut tx));
         assert!(s.set_bluetooth(false, &mut tx));
         assert_eq!((s.alert(), s.alert_label(Alert::Bluetooth).as_str()), (Some(Alert::Bluetooth), "Disconnected"));
+    }
+
+    #[test]
+    fn levels_ring_on_a_change_and_caps_lock_stays_until_off() {
+        let mut s = island(Config { standby: false, ..Config::default() });
+        let mut tx = Tx::default();
+        // The first reading only sets the level.
+        assert!(!s.set_levels(Some(40), Some(50), &mut tx));
+        assert_eq!(s.alert(), None);
+        assert!(s.set_levels(Some(45), Some(50), &mut tx));
+        assert_eq!((s.alert(), s.mode), (Some(Alert::Volume), Mode::Quick));
+        assert!(s.poll(10.0, &mut tx));
+        assert_eq!((s.alert(), s.mode), (None, Mode::Still));
+        assert!(s.set_caps_lock(true));
+        assert_eq!((s.alert(), s.mode), (Some(Alert::CapsLock), Mode::Quick));
+        // A playing track shows over it.
+        s.set_track(Some(Track { name: "Song".into(), playing: true, ..Default::default() }), &mut tx);
+        assert_eq!(s.alert(), None);
+        s.set_track(None, &mut tx);
+        assert!(s.set_caps_lock(false));
+        assert_eq!((s.alert(), s.mode), (None, Mode::Still));
     }
 
     #[test]
