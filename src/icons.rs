@@ -19,6 +19,7 @@ stroke!(CPU, "cpu", r#"<rect width="16" height="16" x="4" y="4" rx="2"/><rect wi
 stroke!(MEMORY, "memory-stick", r#"<path d="M6 19v-3"/><path d="M10 19v-3"/><path d="M14 19v-3"/><path d="M18 19v-3"/><path d="M8 11V9"/><path d="M16 11V9"/><path d="M12 11V9"/><path d="M2 15h20"/><path d="M2 7a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v1.1a2 2 0 0 0 0 3.837V17a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-5.1a2 2 0 0 0 0-3.837Z"/>"#);
 stroke!(HARD_DRIVE, "hard-drive", r#"<line x1="22" x2="2" y1="12" y2="12"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/><line x1="6" x2="6.01" y1="16" y2="16"/><line x1="10" x2="10.01" y1="16" y2="16"/>"#);
 stroke!(GLOBE, "globe", r#"<circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/>"#);
+stroke!(GAUGE, "gauge", r#"<path d="m12 14 4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/>"#);
 stroke!(BATTERY, "battery", r#"<rect width="16" height="10" x="2" y="7" rx="2" ry="2"/><line x1="22" x2="22" y1="11" y2="13"/>"#);
 
 /// Filled, as the playback controls and the default-tab star draw.
@@ -97,6 +98,7 @@ pub fn tab(tab: Tab) -> &'static Icon {
         Tab::Stremflix => &TV,
         Tab::Shelf => &INBOX,
         Tab::System => &ACTIVITY,
+        Tab::Limits => &GAUGE,
         Tab::Calendar => &CALENDAR,
     }
 }

@@ -39,6 +39,7 @@ tabs! {
     Shelf = 11,
     System = 12,
     Calendar = 13,
+    Limits = 14,
 }
 
 impl Tab {
@@ -57,6 +58,7 @@ impl Tab {
             Tab::Shelf => "Shelf",
             Tab::System => "System",
             Tab::Calendar => "Calendar",
+            Tab::Limits => "AI Limits",
         }
     }
 }
@@ -201,6 +203,10 @@ pub struct Config {
     pub ai_model: String,
     pub api_key: String,
     pub t3_devices: Vec<T3Device>,
+    /// AI Limits: more Claude Code or Codex config folders, one per account.
+    pub agent_dirs: Vec<String>,
+    /// AI Limits: CLIProxyAPI's auth folder; empty means its default, `~/.cli-proxy-api`.
+    pub cliproxy_dir: String,
     pub t3_device: usize,
     /// "" = the device itself, otherwise the id of one of its linked environments.
     pub t3_env: String,
@@ -252,6 +258,8 @@ impl Default for Config {
             ai_model: PROVIDERS[0].model.into(),
             api_key: String::new(),
             t3_devices: Vec::new(),
+            agent_dirs: Vec::new(),
+            cliproxy_dir: String::new(),
             t3_device: 0,
             t3_env: String::new(),
             t3_project: String::new(),
@@ -445,7 +453,7 @@ mod tests {
     fn saved_orders_drop_retired_tabs_and_gain_new_ones() {
         use Tab::*;
         let cfg = serde_json::from_str::<Config>(r#"{"tab_order": [7, 2, 3, 0], "hidden_tabs": [3, 0], "default_tab": 7}"#).unwrap().normalized();
-        assert_eq!(cfg.tab_order, [Overview, Search, Workflows, Assistant, Clipboard, Tasks, T3, Notes, Stremflix, Shelf, System, Calendar]);
+        assert_eq!(cfg.tab_order, [Overview, Search, Workflows, Assistant, Clipboard, Tasks, T3, Notes, Stremflix, Shelf, System, Calendar, Limits]);
         assert_eq!(cfg.hidden_tabs, [Search]);
         assert_eq!(cfg.first_tab(), Overview);
     }
@@ -454,9 +462,9 @@ mod tests {
     fn the_last_visible_tab_cannot_be_hidden() {
         let mut cfg = Config::default();
         for t in Tab::ALL { cfg.toggle_tab(t) }
-        assert_eq!(cfg.visible_tabs(), [Tab::Calendar]);
+        assert_eq!(cfg.visible_tabs(), [Tab::Limits]);
         cfg.toggle_tab(Tab::Search);
-        assert_eq!(cfg.visible_tabs(), [Tab::Search, Tab::Calendar]);
+        assert_eq!(cfg.visible_tabs(), [Tab::Search, Tab::Limits]);
     }
 
     #[cfg(unix)]
