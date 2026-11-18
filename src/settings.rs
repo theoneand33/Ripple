@@ -226,7 +226,7 @@ fn drag_tab(s: &mut Settings, from: usize, d: &mut Drag, tx: &mut Tx) {
 fn has_panel(tab: Tab) -> bool {
     match tab {
         Tab::Search | Tab::Workflows | Tab::Overview | Tab::Assistant | Tab::T3 => true,
-        Tab::Clipboard | Tab::Tasks | Tab::Notes | Tab::Stremflix | Tab::Shelf | Tab::System => false,
+        Tab::Clipboard | Tab::Tasks | Tab::Notes | Tab::Stremflix | Tab::Shelf | Tab::System | Tab::Calendar => false,
     }
 }
 
@@ -346,7 +346,7 @@ fn panel(s: &Settings, k: &Kit, layer: &mut Vec<El>, tab: Tab) -> Vec<El> {
             t3.push(row().child(Button::new("Add device").variant(ButtonVariant::Contrast).disabled(!s.t3_addable()).on_press(Settings::add_t3_device).build(k)));
             sections.push(section(s, "t3", "T3 Code devices", t3));
         }
-        Tab::Clipboard | Tab::Tasks | Tab::Notes | Tab::Stremflix | Tab::Shelf | Tab::System => {}
+        Tab::Clipboard | Tab::Tasks | Tab::Notes | Tab::Stremflix | Tab::Shelf | Tab::System | Tab::Calendar => {}
     }
     sections
 }
@@ -541,6 +541,6 @@ mod tests {
         rt.pointer_up(x, y + 100.0);
         rt.frame(1.0 / 60.0);
         use Tab::*;
-        assert_eq!(store.get().tab_order, [Workflows, Overview, Search, Assistant, Clipboard, Tasks, T3, Notes, Stremflix, Shelf, System]);
+        assert_eq!(store.get().tab_order, [Workflows, Overview, Search, Assistant, Clipboard, Tasks, T3, Notes, Stremflix, Shelf, System, Calendar]);
     }
 }

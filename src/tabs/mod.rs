@@ -2,6 +2,7 @@
 //! and its view.
 
 mod assistant;
+mod calendar;
 mod clipboard;
 mod monitor;
 mod notes;
@@ -38,6 +39,7 @@ pub fn view(s: &Island, layer: &mut Vec<El>) -> El {
         Tab::Stremflix => stremflix::view(s),
         Tab::Shelf => shelf::view(s),
         Tab::System => monitor::view(s),
+        Tab::Calendar => calendar::view(s),
     }
 }
 
@@ -49,6 +51,7 @@ pub fn size(tab: Tab) -> (f32, f32) {
         Tab::Notes | Tab::Stremflix => (520.0, 290.0),
         Tab::Shelf | Tab::System => (520.0, 230.0),
         Tab::Tasks | Tab::T3 => (420.0, 290.0),
+        Tab::Calendar => (420.0, 280.0),
         Tab::Overview | Tab::Assistant | Tab::Clipboard => (420.0, 230.0),
     }
 }
@@ -58,6 +61,7 @@ pub fn entered(s: &mut Island) {
     match s.tab {
         Tab::T3 => s.t3_load(),
         Tab::Stremflix => s.stremflix_load(),
+        Tab::Calendar => s.calendar_offset = 0,
         _ => {}
     }
 }

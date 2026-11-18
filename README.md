@@ -33,6 +33,7 @@ https://github.com/user-attachments/assets/a7b9ed8a-97b5-4603-bad7-6f4c4bef1f5d
 - AI Assistant answers questions using Groq.
 - Clipboard keeps your clipboard history.
 - Tasks is a simple to-do list.
+- Calendar shows a month with today marked. Page through months, and press Today to jump back.
 - Notes keeps notes in a list beside an editor. A note's first line is its title.
 - Stremflix shows Continue Watching from [Stremflix-rs](https://github.com/theoneand33/stremflix-rs) when it is open. Click a title to resume it in Stremflix-rs. Set `STREMFLIX_RS_API` if Stremflix-rs serves its API on another address.
 - System shows CPU, memory, storage, network and battery use.
