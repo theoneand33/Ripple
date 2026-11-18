@@ -433,31 +433,44 @@ fn capability_in_use(name: &str) -> bool {
 /// Calls `on(volume, brightness)` with each as a percent (a muted output reads 0), about twice a
 /// second; None where the OS doesn't say. Blocks for good; run it on its own thread.
 pub fn watch_levels(on: impl Fn(Option<u8>, Option<u8>)) {
-    #[cfg(not(windows))]
+    // shortcut: spawns wpctl twice a second (a few ms each); switch to `pactl subscribe` if that shows up in idle CPU.
+    #[cfg(target_os = "linux")]
     loop {
         on(volume(), brightness());
         std::thread::sleep(std::time::Duration::from_millis(500));
     }
-    // One PowerShell for good: starting one per poll costs too much CPU at this rate.
+    // One process for good: starting one per poll costs too much CPU at this rate.
     #[cfg(windows)]
+    let (mut cmd, from_stderr) = { let mut c = command("powershell"); c.args(["-NoProfile", "-EncodedCommand", &ps_encode(WINDOWS_LEVELS)]); (c, false) };
+    // AppleScript's `log` writes to stderr. shortcut: no brightness, as macOS has no public CLI for it; read it through IOKit/DisplayServices if users ask.
+    #[cfg(target_os = "macos")]
+    let (mut cmd, from_stderr) = { let mut c = command("osascript"); for line in MAC_LEVELS { c.args(["-e", line]); } (c, true) };
+    #[cfg(not(target_os = "linux"))]
     loop {
         use std::io::BufRead;
-        if let Ok(mut child) = command("powershell").args(["-NoProfile", "-EncodedCommand", &ps_encode(WINDOWS_LEVELS)])
-            .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn()
-        {
-            if let Some(out) = child.stdout.take() {
-                for line in std::io::BufReader::new(out).lines().map_while(Result::ok) {
-                    let (volume, brightness) = parse_levels(&line);
-                    on(volume, brightness);
-                }
+        cmd.stdin(Stdio::null());
+        if from_stderr { cmd.stdout(Stdio::null()).stderr(Stdio::piped()) } else { cmd.stdout(Stdio::piped()).stderr(Stdio::null()) };
+        if let Ok(mut child) = cmd.spawn() {
+            let out: Option<Box<dyn std::io::Read>> = if from_stderr { child.stderr.take().map(|e| Box::new(e) as _) } else { child.stdout.take().map(|o| Box::new(o) as _) };
+            for line in out.into_iter().flat_map(|o| std::io::BufReader::new(o).lines().map_while(Result::ok)) {
+                let (volume, brightness) = parse_levels(&line);
+                on(volume, brightness);
             }
             let _ = child.kill();
             let _ = child.wait();
         }
-        // It died: start another, without spinning if PowerShell is missing.
+        // It died: start another, without spinning if the program is missing.
         std::thread::sleep(std::time::Duration::from_secs(10));
     }
 }
+
+/// Logs the volume twice a second, 0 when muted; "missing value" where the output has none (HDMI).
+#[cfg(target_os = "macos")]
+const MAC_LEVELS: [&str; 9] = [
+    "repeat", "set s to get volume settings",
+    "if output muted of s then", "log 0", "else", "log (output volume of s)", "end if",
+    "delay 0.5", "end repeat",
+];
 
 /// Prints "volume brightness" twice a second; -1 for one it can't read.
 #[cfg(windows)]
@@ -503,8 +516,8 @@ while ($true) {
 }
 "#;
 
-/// "volume brightness" from `WINDOWS_LEVELS`; anything outside 0-100 is None.
-#[cfg_attr(not(any(windows, test)), allow(dead_code))]
+/// "volume brightness" from `WINDOWS_LEVELS`, or "volume" from `MAC_LEVELS`; anything outside 0-100 is None.
+#[cfg_attr(not(any(windows, target_os = "macos", test)), allow(dead_code))]
 fn parse_levels(line: &str) -> (Option<u8>, Option<u8>) {
     let mut parts = line.split_whitespace().map(|p| p.parse::<u8>().ok().filter(|p| *p <= 100));
     (parts.next().flatten(), parts.next().flatten())
@@ -534,16 +547,6 @@ fn brightness() -> Option<u8> {
     (max > 0.0).then(|| (now / max * 100.0).round().clamp(0.0, 100.0) as u8)
 }
 
-/// "missing value" (no reading) on outputs such as HDMI, which then show no ring.
-#[cfg(target_os = "macos")]
-fn volume() -> Option<u8> {
-    output("osascript", &["-e", "set s to get volume settings", "-e", "if output muted of s then return 0", "-e", "return output volume of s"])?
-        .parse::<u8>().ok().map(|v| v.min(100))
-}
-
-// shortcut: macOS has no public CLI for display brightness; read it through IOKit/DisplayServices if users ask.
-#[cfg(target_os = "macos")]
-fn brightness() -> Option<u8> { None }
 
 // --- Caps Lock ---
 
@@ -944,6 +947,8 @@ mod tests {
         assert_eq!(parse_levels("37 80"), (Some(37), Some(80)));
         assert_eq!(parse_levels("37 -1"), (Some(37), None));
         assert_eq!(parse_levels("-1 "), (None, None));
+        assert_eq!(parse_levels("50"), (Some(50), None));
+        assert_eq!(parse_levels("missing value"), (None, None));
     }
 
     #[test]

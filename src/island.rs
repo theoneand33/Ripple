@@ -832,7 +832,8 @@ impl Island {
     pub fn set_levels(&mut self, volume: Option<u8>, brightness: Option<u8>, tx: &mut Tx) -> bool {
         let mut moved = None;
         for (alert, new, old) in [(Alert::Volume, volume, &mut self.volume), (Alert::Brightness, brightness, &mut self.brightness)] {
-            if new == *old { continue }
+            // A failed read keeps the last level, so the next change still shows.
+            if new.is_none() || new == *old { continue }
             if old.is_some() && new.is_some() { moved = Some(alert) }
             *old = new;
         }
@@ -1525,6 +1526,7 @@ mod tests {
         // The first reading only sets the level.
         assert!(!s.set_levels(Some(40), Some(50), &mut tx));
         assert_eq!(s.alert(), None);
+        assert!(!s.set_levels(None, None, &mut tx));
         assert!(s.set_levels(Some(45), Some(50), &mut tx));
         assert_eq!((s.alert(), s.mode), (Some(Alert::Volume), Mode::Quick));
         assert!(s.poll(10.0, &mut tx));
