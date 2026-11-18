@@ -60,6 +60,7 @@ impl Island {
         self.t3.generation += 1;
         self.t3.data = None;
         self.t3.projects = None;
+        // Retried on each open until found: T3 may not be installed or running yet.
         if self.cfg.t3_devices.is_empty() && !self.cfg.t3_detected && !self.t3.detecting {
             if let Some(me) = self.me.clone() {
                 self.t3.detecting = true;
@@ -70,7 +71,8 @@ impl Island {
                         s.t3.detecting = false;
                         s.t3.status.clear();
                         let Some(device) = found else { return };
-                        s.save(|c| { c.t3_detected = true; if c.t3_devices.is_empty() { c.t3_devices.push(device) } });
+                        // Kept even if a device was added meanwhile: a dropped token would stay live in T3.
+                        s.save(|c| { c.t3_detected = true; c.t3_devices.push(device) });
                         s.t3_load();
                     });
                 });
