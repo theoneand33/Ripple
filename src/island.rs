@@ -31,7 +31,7 @@ pub const SPRING: Spring = Spring::new(0.5, 0.3);
 const HOVER_SCALE: f32 = 1.05;
 
 /// Status hues for the pill border and alerts.
-mod status {
+pub mod status {
     use rune::Color;
     fn hex(s: &str) -> Color { crate::config::parse_color(s).unwrap_or(Color::WHITE) }
     pub fn charge() -> Color { hex("#4cc38a") }
@@ -398,6 +398,9 @@ impl Island {
         else if self.bluetooth_alert_until.is_some() { Some(Alert::Bluetooth) }
         else { self.capture.map(|c| c.0) }
     }
+
+    /// Under 20% and not charging.
+    pub fn low_battery(&self) -> bool { !self.charging && self.percent.is_some_and(|p| p < 20) }
 
     fn percent_label(&self) -> String { self.percent.map_or(String::new(), |p| format!("{p}%")) }
 
@@ -1158,7 +1161,7 @@ fn border(s: &Island, radii: [f32; 4], hidden: bool) -> El {
     let color = if s.camera { status::camera() }
         else if s.microphone { status::mic() }
         else if s.charging || s.alert() == Some(Alert::Charging) { status::charge() }
-        else if s.percent.is_some_and(|p| p <= 20) || s.alert() == Some(Alert::Battery) { status::low() }
+        else if s.low_battery() || s.alert() == Some(Alert::Battery) { status::low() }
         else if s.alert() == Some(Alert::Bluetooth) { status::bluetooth() }
         else if cfg.hide_inactive || hidden { return ring }
         else { cfg.text().alpha(0.3 * cfg.text().a) };
@@ -1176,7 +1179,8 @@ fn glance(s: &Island, fg: Color) -> El {
         Some(alert) => icon(alert.icon(), 20.0).color(color),
         None => text(&s.time).key("time").font(style.features("'tnum' 1")).color(color),
     };
-    let percent = || text(s.percent_label()).key("percent").font(style).color(color);
+    let battery_color = if alert.is_none() && s.low_battery() { status::low() } else { color };
+    let percent = || text(s.percent_label()).key("percent").font(style).color(battery_color);
     let battery = || if s.charging {
         row().key("battery").gap(2.0).center_y().child(icon(&icons::ZAP, 14.0).color(color)).child(percent())
     } else { percent() };
