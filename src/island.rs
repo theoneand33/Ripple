@@ -383,6 +383,9 @@ impl Island {
     /// The compact view shows the track: while it plays, and for 3 seconds after a pause.
     pub fn shows_track(&self) -> bool { self.playing() || self.paused_until.is_some() }
 
+    /// Hide when inactive: resting with no track to show.
+    pub fn hidden(&self) -> bool { self.cfg.hide_inactive && self.mode == Mode::Still && !self.shows_track() }
+
     pub fn alert(&self) -> Option<Alert> {
         if self.charging_alert_until.is_some() { Some(Alert::Charging) }
         else if self.battery_alert_until.is_some() { Some(Alert::Battery) }
@@ -476,7 +479,9 @@ impl Island {
 
     /// Where the Island rests when nothing holds it open.
     pub fn rest(&self) -> Mode {
-        if self.cfg.standby { Mode::Quick } else if self.cfg.large_standby { Mode::Large } else { Mode::Still }
+        // Standby is on by default, so the opt-in settings win over it or they could never apply.
+        // Hiding wins over both, since it only works at Still.
+        if self.cfg.hide_inactive { Mode::Still } else if self.cfg.large_standby { Mode::Large } else if self.cfg.standby { Mode::Quick } else { Mode::Still }
     }
 
     /// Every mode change but `open_large_on` goes through here; Still means wherever the Island rests.
@@ -1010,7 +1015,7 @@ pub fn view(s: &Island, _: &mut Cx<Island>) -> El {
     let cfg = &s.cfg;
     let mut layer = Vec::new();
     let [left, top, w, h] = s.rect();
-    let hidden = cfg.hide_inactive && s.mode == Mode::Still;
+    let hidden = s.hidden();
     let (bg, fg) = if hidden { (Color::TRANSPARENT, Color::TRANSPARENT) } else { (cfg.bg(), cfg.text()) };
     let large = s.mode == Mode::Large;
     let radii = if cfg.win95() { [0.0; 4] }
@@ -1339,6 +1344,17 @@ mod tests {
         assert_eq!(island(Config::default()).mode, Mode::Quick);
         assert_eq!(island(Config { standby: false, ..Config::default() }).mode, Mode::Still);
         assert_eq!(island(Config { standby: false, large_standby: true, ..Config::default() }).mode, Mode::Large);
+        assert_eq!(island(Config { large_standby: true, ..Config::default() }).mode, Mode::Large);
+        assert_eq!(island(Config { hide_inactive: true, ..Config::default() }).mode, Mode::Still);
+        assert_eq!(island(Config { hide_inactive: true, large_standby: true, ..Config::default() }).mode, Mode::Still);
+    }
+
+    #[test]
+    fn hide_when_inactive_still_shows_a_playing_track() {
+        let mut s = island(Config { hide_inactive: true, ..Config::default() });
+        assert!(s.hidden());
+        s.set_track(Some(Track { name: "Song".into(), playing: true, ..Default::default() }), &mut Tx::default());
+        assert!(s.mode == Mode::Still && !s.hidden());
     }
 
     #[test]
