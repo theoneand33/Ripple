@@ -213,6 +213,8 @@ pub struct Config {
     pub t3_project: String,
     pub t3_model: String,
     pub t3_worktree: bool,
+    /// The local T3 Code was added once; a device the user removes stays removed.
+    pub t3_detected: bool,
     /// The first launch opens the instructions page once.
     pub new_user: bool,
 }
@@ -265,6 +267,7 @@ impl Default for Config {
             t3_project: String::new(),
             t3_model: String::new(),
             t3_worktree: false,
+            t3_detected: false,
             new_user: true,
         }
     }

@@ -373,6 +373,45 @@ impl Client {
     }
 }
 
+/// T3's data folder: `T3CODE_HOME`, else `~/.t3`.
+fn t3_home() -> Option<PathBuf> {
+    let raw = std::env::var("T3CODE_HOME").unwrap_or_default();
+    let raw = raw.trim();
+    match raw {
+        "" => rune::dirs::home().map(|h| h.join(".t3")),
+        "~" => rune::dirs::home(),
+        _ => match raw.strip_prefix("~/").or(raw.strip_prefix("~\\")) {
+            Some(rest) => rune::dirs::home().map(|h| h.join(rest)),
+            None => Some(PathBuf::from(raw)),
+        },
+    }
+}
+
+/// The origin the local T3 server last announced in `userdata/server-runtime.json`.
+fn local_origin(home: &std::path::Path) -> Option<String> {
+    let runtime: Value = serde_json::from_str(&std::fs::read_to_string(home.join("userdata").join("server-runtime.json")).ok()?).ok()?;
+    let origin = runtime["origin"].as_str()?.trim().trim_end_matches('/');
+    (origin.starts_with("http://") || origin.starts_with("https://")).then(|| origin.to_string())
+}
+
+/// The T3 Code installed on this machine, with a token minted by its own `t3` CLI.
+/// Machines on T3 Connect come along as that server's linked environments.
+/// None when T3 has never run here or the CLI is missing. Blocking.
+pub fn detect_local() -> Option<T3Device> {
+    let home = t3_home()?;
+    let url = local_origin(&home)?;
+    // The file outlives the server: mint no token for one that isn't running.
+    crate::net::agent().get(&url).call().ok()?;
+    let base_dir = home.to_string_lossy();
+    let args = ["auth", "session", "issue", "--token-only", "--label", "Ripple", "--ttl", "365d", "--base-dir", &base_dir];
+    let token = crate::system::output("t3", &args);
+    // npm installs the CLI as a `.cmd` shim on Windows.
+    #[cfg(windows)]
+    let token = token.or_else(|| crate::system::output("t3.cmd", &args));
+    let token = token.filter(|t| !t.is_empty() && !t.contains(char::is_whitespace))?;
+    Some(T3Device { name: "This computer".into(), url, token })
+}
+
 /// initialize, initialized, tools/call. `Ok(None)` means the token was refused (401).
 fn mcp_call(device: &T3Device, token: &str, name: &str, args: &Value) -> Result<Option<Value>, String> {
     let agent: ureq::Agent = ureq::Agent::config_builder()
@@ -440,6 +479,20 @@ mod tests {
         assert_eq!(id.len(), 36);
         assert_eq!(&id[14..15], "4");
         assert!(matches!(&id[19..20], "8" | "9" | "a" | "b"));
+    }
+
+    #[test]
+    fn the_local_server_origin_is_read_from_its_runtime_file() {
+        let home = std::env::temp_dir().join(format!("ripple-t3-home-{}", std::process::id()));
+        assert_eq!(local_origin(&home), None, "T3 never ran here");
+        std::fs::create_dir_all(home.join("userdata")).unwrap();
+        std::fs::write(home.join("userdata/server-runtime.json"), r#"{"port":3773,"origin":"http://127.0.0.1:3773/"}"#).unwrap();
+        assert_eq!(local_origin(&home).as_deref(), Some("http://127.0.0.1:3773"));
+        for bad in [r#"{"origin":"file:///x"}"#, r#"{"origin":"httpx://h"}"#, r#"{"port":3773}"#, "not json"] {
+            std::fs::write(home.join("userdata/server-runtime.json"), bad).unwrap();
+            assert_eq!(local_origin(&home), None, "{bad}");
+        }
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     #[test]

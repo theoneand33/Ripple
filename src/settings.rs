@@ -339,10 +339,10 @@ fn panel(s: &Settings, k: &Kit, layer: &mut Vec<El>, tab: Tab) -> Vec<El> {
             ]));
         }
         Tab::T3 => {
-            let mut t3 = vec![text("Token: run `t3 auth session issue --token-only` on that device.").font(cfg.font(12.0, 400.0)).color(fg.alpha(0.6))];
+            let mut t3 = vec![text("T3 Code on this computer is added by itself. For another device, run `t3 auth session issue --token-only` there.").font(cfg.font(12.0, 400.0)).color(fg.alpha(0.6))];
             for (i, d) in cfg.t3_devices.iter().enumerate() {
                 t3.push(setting(s, d.label(), IconButton::new(&icons::TRASH).label(format!("Remove {}", d.label()))
-                    .on_press(move |s: &mut Settings| s.save(|c| { if i < c.t3_devices.len() { c.t3_devices.remove(i); } })).build(k)));
+                    .on_press(move |s: &mut Settings| s.save(|c| { if i < c.t3_devices.len() { c.t3_devices.remove(i); } c.t3_detected = true; })).build(k)));
             }
             t3.push(TextInput::new(&s.t3_name).label("Device name").placeholder("Name (e.g. Laptop)").on_edit(|s: &mut Settings| &mut s.t3_name).build(k));
             t3.push(TextInput::new(&s.t3_url).label("Device URL").placeholder("http://127.0.0.1:3773").on_edit(|s: &mut Settings| &mut s.t3_url).build(k));
