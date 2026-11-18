@@ -20,6 +20,8 @@ pub struct T3 {
     generation: u64,
     /// A thread launch is in flight.
     starting: bool,
+    /// Looking for the local T3 Code.
+    detecting: bool,
     client: Arc<Client>,
 }
 
@@ -27,7 +29,7 @@ impl T3 {
     /// `dir` keeps the MCP sign-in tokens between launches.
     pub fn new(dir: Option<&Path>) -> T3 {
         let client = Arc::new(Client::new(dir.map(|d| d.join("t3-mcp-tokens.json"))));
-        T3 { data: None, projects: None, status: String::new(), message: TextEdit::default(), generation: 0, starting: false, client }
+        T3 { data: None, projects: None, status: String::new(), message: TextEdit::default(), generation: 0, starting: false, detecting: false, client }
     }
 }
 
@@ -58,6 +60,25 @@ impl Island {
         self.t3.generation += 1;
         self.t3.data = None;
         self.t3.projects = None;
+        // Retried on each open until found: T3 may not be installed or running yet.
+        if self.cfg.t3_devices.is_empty() && !self.cfg.t3_detected && !self.t3.detecting {
+            if let Some(me) = self.me.clone() {
+                self.t3.detecting = true;
+                self.t3.status = "Looking for T3 Code on this computer...".into();
+                std::thread::spawn(move || {
+                    let found = client::detect_local();
+                    me.update(move |s, _| {
+                        s.t3.detecting = false;
+                        s.t3.status.clear();
+                        let Some(device) = found else { return };
+                        // Kept even if a device was added meanwhile: a dropped token would stay live in T3.
+                        s.save(|c| { c.t3_detected = true; c.t3_devices.push(device) });
+                        s.t3_load();
+                    });
+                });
+            }
+            return;
+        }
         let (Some(device), Some(me)) = (self.t3_device().map(|d| d.1.clone()), self.me.clone()) else { return };
         self.t3.status = "Loading...".into();
         let (client, generation) = (self.t3.client.clone(), self.t3.generation);
@@ -134,7 +155,7 @@ pub fn view(s: &Island, layer: &mut Vec<El>) -> El {
     let fg = s.cfg.text();
     let root = col().key("t3").w_full().h_full().px(16.0).pt(18.0).pb(14.0).gap(8.0);
     let Some((device_index, _)) = s.t3_device() else {
-        return root.child(empty(s, "Add a T3 Code device in Settings"));
+        return root.child(empty(s, if s.t3.detecting { "Looking for T3 Code on this computer..." } else { "Add a T3 Code device in Settings" }));
     };
     let k = &s.cfg.kit();
     let links = s.t3.data.as_ref().map(|d| d.links.as_slice()).unwrap_or_default();
