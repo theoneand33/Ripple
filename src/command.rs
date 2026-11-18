@@ -25,29 +25,18 @@ pub fn tokenize_args(s: &str) -> Vec<String> {
 }
 
 /// Parses a Windows command string into (exe, args): `%ENV_VAR%` expands before splitting, and
-/// forward slashes in the exe path become backslashes. In arguments only drive paths
-/// (`/select,C:/x`) convert; URLs and `/switches` stay as typed.
+/// forward slashes become backslashes, except in URLs and a leading `/switch`.
 #[cfg_attr(not(any(windows, test)), allow(dead_code))]
 pub fn parse_command(input: &str) -> (String, Vec<String>) {
     let (exe, args) = split_command(&expand_env(input));
-    (exe.replace('/', "\\"), args.into_iter().map(drive_path).collect())
+    (exe.replace('/', "\\"), args.into_iter().map(arg_path).collect())
 }
 
-/// Backslashes in each `X:/...` path, up to `,;?#=` or `://`; not inside a URL (`https:`, `file:///C:/`).
-fn drive_path(arg: String) -> String {
-    let b = arg.as_bytes();
-    let mut out = b.to_vec();
-    let mut i = 0;
-    while i + 2 < b.len() {
-        let drive = b[i].is_ascii_alphabetic() && b[i + 1] == b':' && b[i + 2] == b'/' && (i == 0 || !(b[i - 1].is_ascii_alphanumeric() || b[i - 1] == b'/'));
-        if !drive { i += 1; continue }
-        i += 2;
-        while i < b.len() && !b",;?#=".contains(&b[i]) && !b[i..].starts_with(b"://") {
-            if b[i] == b'/' { out[i] = b'\\' }
-            i += 1;
-        }
-    }
-    String::from_utf8(out).expect("only ASCII bytes changed")
+/// Every `/` becomes `\`, except a leading `/switch` and a URL (from its scheme to the end).
+fn arg_path(arg: String) -> String {
+    let switch = usize::from(arg.starts_with('/') && arg[1..].starts_with(|c: char| c.is_ascii_alphanumeric() || c == '?'));
+    let url = arg.find("://").map_or(arg.len(), |i| arg[..i].char_indices().rev().find(|&(_, c)| !(c.is_ascii_alphanumeric() || "+.-".contains(c))).map_or(0, |(j, c)| j + c.len_utf8())).max(switch);
+    format!("{}{}{}", &arg[..switch], arg[switch..url].replace('/', "\\"), &arg[url..])
 }
 
 fn split_command(prepared: &str) -> (String, Vec<String>) {
@@ -115,6 +104,8 @@ mod tests {
         assert_eq!(parse_command("C:/a/app.exe --u=https://x /select,C:/b"), (r"C:\a\app.exe".into(), s(&["--u=https://x", r"/select,C:\b"])));
         assert_eq!(parse_command("x.exe C:/a/b file:///C:/c --p=d:/e"), ("x.exe".into(), s(&[r"C:\a\b", "file:///C:/c", r"--p=d:\e"])));
         assert_eq!(parse_command("x.exe --u=C:/x?next=https://a/b C:/a;D:/b"), ("x.exe".into(), s(&[r"--u=C:\x?next=https://a/b", r"C:\a;D:\b"])));
+        assert_eq!(parse_command("x.exe //nas/share docs/a.txt /A %RIPPLE_NO_SUCH_VAR%/b"), ("x.exe".into(), s(&[r"\\nas\share", r"docs\a.txt", "/A", r"%RIPPLE_NO_SUCH_VAR%\b"])));
+        assert_eq!(parse_command("x.exe é/a=ü://b/c"), ("x.exe".into(), s(&[r"é\a=ü://b/c"])));
         assert_eq!(parse_command(r#""C:/Program Files/a.exe" https://x"#), (r"C:\Program Files\a.exe".into(), s(&["https://x"])));
     }
 
