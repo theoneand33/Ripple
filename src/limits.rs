@@ -250,7 +250,9 @@ fn grok_windows(v: &Value) -> Vec<Window> {
 fn iso(s: &str) -> Option<i64> {
     let n = |r: std::ops::Range<usize>| s.get(r)?.parse::<i64>().ok();
     let (y, m, d) = (n(0..4)?, n(5..7)?, n(8..10)?);
-    if !(1..=12).contains(&m) || !(1..=31).contains(&d) { return None }
+    let leap = y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
+    let last = match m { 2 => 28 + leap as i64, 4 | 6 | 9 | 11 => 30, _ => 31 };
+    if !(1..=12).contains(&m) || !(1..=last).contains(&d) { return None }
     let secs = if s.len() > 10 { n(11..13)? * 3600 + n(14..16)? * 60 + n(17..19)? } else { 0 };
     let tz = s[10..].rfind(['+', '-']).filter(|_| s.len() > 19).map(|i| i + 10);
     let offset = tz.and_then(|i| Some((n(i + 1..i + 3)? * 3600 + n(i + 4..i + 6)? * 60) * if &s[i..=i] == "-" { -1 } else { 1 })).unwrap_or(0);
@@ -285,7 +287,8 @@ mod tests {
         assert_eq!(iso("2026-08-13T16:27:38.287Z"), Some(1_786_638_458));
         assert_eq!(iso("2026-08-13T18:27:38+02:00"), Some(1_786_638_458));
         assert_eq!(iso("2026-08-13T16:27:38.930537+00:00"), Some(1_786_638_458));
-        assert_eq!((iso("soon"), iso("2026-13-40")), (None, None));
+        assert_eq!((iso("soon"), iso("2026-13-40"), iso("2026-02-30"), iso("2025-02-29")), (None, None, None, None));
+        assert_eq!(iso("2028-02-29"), Some(1_835_395_200));
         assert_eq!((until(100, 90), until(4000, 0), until(90_000, 0)), ("now".into(), "1h 6m".into(), "1d 1h".into()));
     }
 
