@@ -407,8 +407,11 @@ fn local_origin(home: &std::path::Path) -> Option<String> {
 pub fn detect_local() -> Option<T3Device> {
     let home = t3_home()?;
     let url = local_origin(&home)?;
-    // The file outlives the server: mint no token for one that isn't running.
-    crate::net::agent().get(&url).call().ok()?;
+    // The file outlives the server, and another process may hold its port: mint a token only
+    // when this T3's own environment answers there.
+    let id = std::fs::read_to_string(home.join("userdata").join("environment-id")).ok()?;
+    let answer = request("GET", &format!("{url}/.well-known/t3/environment"), &[], None).ok()?;
+    if id.trim().is_empty() || answer["environmentId"].as_str() != Some(id.trim()) { return None }
     let base_dir = home.to_string_lossy();
     let args = ["auth", "session", "issue", "--token-only", "--label", "Ripple", "--ttl", "365d", "--base-dir", &base_dir];
     let token = crate::system::output("t3", &args);
