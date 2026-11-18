@@ -554,10 +554,19 @@ fn event(ics: &str) -> Option<String> {
     open.then_some(text)
 }
 
-/// An all-day event on `day`.
-fn new_event(uid: &str, (y, m, d): (i32, u32, u32), summary: &str, stamp: &str) -> String {
-    let next = rune::time::LocalTime::at_offset((days_from_civil(y, m, d) + 1) * 86_400_000, 0);
-    format!("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Ripple//EN\r\nBEGIN:VEVENT\r\nUID:{uid}\r\nDTSTAMP:{stamp}\r\nCREATED:{stamp}\r\nDTSTART;VALUE=DATE:{y:04}{m:02}{d:02}\r\nDTEND;VALUE=DATE:{:04}{:02}{:02}\r\nSUMMARY:{}\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n", next.year, next.month, next.day, escape_text(summary))
+/// An event on `day`: at the title's leading `HH:MM`, on this clock, else all day. `event` reads
+/// either back as the same text.
+fn new_event(uid: &str, (y, m, d): (i32, u32, u32), title: &str, stamp: &str) -> String {
+    let time = title.split_once(' ').filter(|(t, _)| t.len() == 5 && t.as_bytes()[2] == b':')
+        .and_then(|(t, rest)| Some((t[..2].parse::<u32>().ok().filter(|h| *h < 24)?, t[3..].parse::<u32>().ok().filter(|m| *m < 60)?, rest)));
+    let (when, summary) = match time {
+        Some((h, min, rest)) => (format!("DTSTART:{y:04}{m:02}{d:02}T{h:02}{min:02}00"), rest),
+        None => {
+            let next = rune::time::LocalTime::at_offset((days_from_civil(y, m, d) + 1) * 86_400_000, 0);
+            (format!("DTSTART;VALUE=DATE:{y:04}{m:02}{d:02}\r\nDTEND;VALUE=DATE:{:04}{:02}{:02}", next.year, next.month, next.day), title)
+        }
+    };
+    format!("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Ripple//EN\r\nBEGIN:VEVENT\r\nUID:{uid}\r\nDTSTAMP:{stamp}\r\nCREATED:{stamp}\r\n{when}\r\nSUMMARY:{}\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n", escape_text(summary))
 }
 
 /// Days since 1970-01-01, from Howard Hinnant's `days_from_civil`.
@@ -662,6 +671,10 @@ mod tests {
         let new = new_event("u", (2026, 12, 31), "Party; late", "20261118T000000Z");
         assert!(new.contains("DTSTART;VALUE=DATE:20261231\r\nDTEND;VALUE=DATE:20270101\r\n"));
         assert_eq!(event(&new).as_deref(), Some("2026-12-31 Party; late"), "an event round-trips to the same text");
+        let timed = new_event("u", (2026, 11, 19), "15:00 Dentist", "20261118T000000Z");
+        assert!(timed.contains("DTSTART:20261119T150000\r\nSUMMARY:Dentist\r\n"), "a leading time is the event's time, not its title");
+        assert_eq!(event(&timed).as_deref(), Some("2026-11-19 15:00 Dentist"));
+        assert_eq!(event(&new_event("u", (2026, 11, 19), "25:00 Odd", "s")).as_deref(), Some("2026-11-19 25:00 Odd"));
         assert_eq!(event_day("2026-02-03 9:00 Standup"), Some(((2026, 2, 3), "9:00 Standup")));
         assert_eq!((event_day("2026-13-01 x"), event_day("Standup")), (None, None));
         assert_eq!(days_from_civil(1970, 1, 1), 0);
