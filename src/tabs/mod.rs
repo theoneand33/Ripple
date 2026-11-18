@@ -75,8 +75,6 @@ pub fn entered(s: &mut Island) {
 /// Picks up a settings change another window made, for the tab showing.
 pub fn reloaded(s: &mut Island, old: &Config) {
     if s.mode == Mode::Large && s.tab == Tab::T3 && old.t3_devices != s.cfg.t3_devices { s.t3_load() }
-    let account = |c: &Config| (c.nextcloud.url.clone(), c.nextcloud.user.clone(), c.nextcloud.password.clone(), c.nextcloud.list.clone());
-    if s.mode == Mode::Large && matches!(s.tab, Tab::Notes | Tab::Tasks) && account(old) != account(&s.cfg) { entered(s) }
 }
 
 /// Left and Right switch tabs even while typing, as the Electron app's window-wide key

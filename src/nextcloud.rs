@@ -303,7 +303,15 @@ fn sync_tasks(c: &Client, list: &str, items: &[Item], pending: &[String], out: &
         }
         out.cleared.push(href.clone());
     }
+    // An open task with the same text, unclaimed, is that task (as with notes).
+    let listed = list_tasks(c, &calendar)?;
+    let mut claimed: Vec<&str> = items.iter().filter_map(|i| i.remote.as_ref().map(|r| r.id.as_str())).collect();
     for item in items.iter().filter(|i| i.remote.is_none() && !i.text.trim().is_empty()) {
+        if let Some(t) = listed.iter().find(|t| t.text == item.text && !claimed.contains(&t.id.as_str())) {
+            claimed.push(&t.id);
+            out.pushed.push((item.key, t.clone()));
+            continue;
+        }
         // Named by the item's key, so a retry after a lost answer finds it already there (412).
         let uid = format!("ripple-{:016x}", item.key);
         let href = format!("{}{uid}.ics", out.scope);
@@ -311,17 +319,18 @@ fn sync_tasks(c: &Client, list: &str, items: &[Item], pending: &[String], out: &
         if !ok(status) && status != 412 { return Err(failed(status)) }
         out.pushed.push((item.key, Remote { id: href, etag, text: item.text.clone() }));
     }
-    let (status, _, res) = c.call("REPORT", &c.at(&calendar), &[XML, ("depth", "1")], OPEN_TASKS)?;
-    if status != 207 { return Err(failed(status)) }
-    let mut server = Vec::new();
-    for response in elements(&res, "response") {
-        let first = |name| elements(response, name).first().map(|v| unescape(v)).unwrap_or_default();
-        if let (Some(id), Some(text)) = (server_path(first("href")), open_task(&first("calendar-data"))) {
-            server.push(Remote { id, etag: first("getetag"), text });
-        }
-    }
-    out.server = Some(server);
+    out.server = Some(list_tasks(c, &calendar)?);
     Ok(())
+}
+
+/// Every open task in the list.
+fn list_tasks(c: &Client, calendar: &str) -> Result<Vec<Remote>, String> {
+    let (status, _, res) = c.call("REPORT", &c.at(calendar), &[XML, ("depth", "1")], OPEN_TASKS)?;
+    if status != 207 { return Err(failed(status)) }
+    Ok(elements(&res, "response").into_iter().filter_map(|response| {
+        let first = |name| elements(response, name).first().map(|v| unescape(v)).unwrap_or_default();
+        Some(Remote { id: server_path(first("href"))?, etag: first("getetag"), text: open_task(&first("calendar-data"))? })
+    }).collect())
 }
 
 /// The list named `want` (by name or path), else the first that holds only tasks, else the first that holds tasks.
@@ -578,16 +587,21 @@ mod tests {
             }
         }, |_| String::new());
         let nc = Nextcloud { url: base, user: "me@x".into(), password: "pw".into(), ..Nextcloud::default() };
-        let items = [item("New one", 0xab, None), item("Synced", 2, Some(("/remote.php/dav/calendars/me%40x/todo/a.ics", "\"1\"", "Synced")))];
+        // "Water & plants" is already there, unclaimed: it takes that task rather than uploading a copy.
+        let items = [item("New one", 0xab, None), item("Synced", 2, Some(("/remote.php/dav/calendars/me%40x/todo/b.ics", "\"1\"", "Synced"))), item("Water & plants", 3, None)];
         // An href on another host is dropped, never sent the password.
         let out = sync(&nc, Kind::Tasks, &items, &["/remote.php/dav/calendars/me%40x/todo/done.ics".into(), "https://evil.example/x.ics".into()]);
         assert_eq!(out.error, None);
         assert_eq!(out.cleared, ["/remote.php/dav/calendars/me%40x/todo/done.ics", "https://evil.example/x.ics"]);
-        assert_eq!(out.pushed, [(0xab, remote("/remote.php/dav/calendars/me%40x/todo/ripple-00000000000000ab.ics", "\"t\"", "New one"))]);
+        assert_eq!(out.pushed, [
+            (0xab, remote("/remote.php/dav/calendars/me%40x/todo/ripple-00000000000000ab.ics", "\"t\"", "New one")),
+            (3, remote("/remote.php/dav/calendars/me%40x/todo/a.ics", "\"1\"", "Water & plants")),
+        ]);
         assert_eq!(out.server.unwrap(), [remote("/remote.php/dav/calendars/me%40x/todo/a.ics", "\"1\"", "Water & plants")]);
         let puts = puts.lock().unwrap();
         assert_eq!((puts[0].0.as_str(), puts[0].1.as_deref()), ("/remote.php/dav/calendars/me%40x/todo/done.ics", Some("\"t\"")));
         assert!(puts[0].2.contains("STATUS:COMPLETED"));
         assert!(puts[1].2.contains("SUMMARY:New one") && puts[1].2.contains("UID:ripple-00000000000000ab"));
+        assert_eq!(puts.len(), 2, "the claimed task was not uploaded");
     }
 }
