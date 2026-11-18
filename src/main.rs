@@ -88,6 +88,9 @@ fn island_spec() -> AppSpec<Island> {
         scenes: &[
             ("quick", |s| { s.cfg.standby = true; s.mode = Mode::Quick }),
             ("charging", |s| { s.cfg.standby = true; s.mode = Mode::Quick; (s.percent, s.charging) = (Some(80), true) }),
+            ("volume", |s| { let tx = &mut rune::Tx::default(); s.set_levels(Some(40), None, tx); s.set_levels(Some(70), None, tx); }),
+            ("brightness", |s| { let tx = &mut rune::Tx::default(); s.set_levels(None, Some(40), tx); s.set_levels(None, Some(85), tx); }),
+            ("caps-lock", |s| { s.set_caps_lock(true); }),
             ("large", |s| s.mode = Mode::Large),
             ("search", |s| { s.mode = Mode::Large; s.set_tab(Tab::Search) }),
             ("workflows", |s| { s.mode = Mode::Large; s.set_tab(Tab::Workflows) }),

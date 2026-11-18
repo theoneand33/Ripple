@@ -85,6 +85,31 @@ pub fn weather(status: &str) -> &'static Icon {
     else { &SUN }
 }
 
+stroke!(VOLUME, "volume-2", r#"<path d="M11 4.702a.705.705 0 0 0-1.203-.498L6.413 7.587A1.4 1.4 0 0 1 5.416 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.416a1.4 1.4 0 0 1 .997.413l3.383 3.384A.705.705 0 0 0 11 19.298z"/><path d="M16 9a5 5 0 0 1 0 6"/><path d="M19.364 18.364a9 9 0 0 0 0-12.728"/>"#);
+stroke!(VOLUME_X, "volume-x", r#"<path d="M11 4.702a.705.705 0 0 0-1.203-.498L6.413 7.587A1.4 1.4 0 0 1 5.416 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.416a1.4 1.4 0 0 1 .997.413l3.383 3.384A.705.705 0 0 0 11 19.298z"/><line x1="22" x2="16" y1="9" y2="15"/><line x1="16" x2="22" y1="9" y2="15"/>"#);
+
+stroke!(CAPS_LOCK, "arrow-big-up-dash", r#"<path d="M9 19h6"/><path d="M9 15v-3H5l7-7 7 7h-4v3H9z"/>"#);
+
+/// A ring filled clockwise from the top to `percent`, over a faint full track.
+pub fn ring(percent: u8) -> &'static Icon {
+    // Rune caches icons by address: one static per percent, built once.
+    static RINGS: std::sync::OnceLock<Vec<Icon>> = std::sync::OnceLock::new();
+    let rings = RINGS.get_or_init(|| (0..=100u8).map(|p| {
+        let track = r#"<circle cx="12" cy="12" r="10.5" stroke-opacity="0.25"/>"#;
+        let arc = match p {
+            0 => String::new(),
+            100 => r#"<circle cx="12" cy="12" r="10.5"/>"#.into(),
+            _ => {
+                let a = f32::from(p) / 100.0 * std::f32::consts::TAU;
+                format!(r#"<path d="M12 1.5A10.5 10.5 0 {} 1 {:.3} {:.3}"/>"#, u8::from(p > 50), 12.0 + 10.5 * a.sin(), 12.0 - 10.5 * a.cos())
+            }
+        };
+        let body = format!(r#"<g fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">{track}{arc}</g>"#);
+        Icon { name: "ring", view: 24.0, body: Box::leak(body.into_boxed_str()) }
+    }).collect());
+    &rings[usize::from(percent.min(100))]
+}
+
 pub fn tab(tab: Tab) -> &'static Icon {
     match tab {
         Tab::Search => &SEARCH,
