@@ -395,7 +395,7 @@ fn home(s: &Settings, k: &Kit, layer: &mut Vec<El>) -> Vec<El> {
     let mut tabs = vec![
         text("Drag to reorder, click the eye to hide").font(cfg.font(12.0, 400.0)).color(fg.alpha(0.5)),
         setting(s, "Always open on the starred tab", switch(k, "Always open on the starred tab", cfg.open_default_tab, |c| c.open_default_tab = !c.open_default_tab).a11y_hidden()),
-        setting(s, &format!("Stay open after a tab change ({:.1}s)", cfg.tab_linger), slider(s, "tab-linger", "Stay open after a tab change", (0.0, 10.0, 0.5), |c| c.tab_linger, |c, v| c.tab_linger = v)),
+        setting(s, &format!("Stay open after a tab change ({:.1}s)", cfg.tab_linger), slider(s, "tab-linger", "Stay open after a tab change", (0.0, 10.0, 0.5), |c| c.tab_linger, |c, v| c.tab_linger = v)).key("tab-linger-row"),
     ];
     let last = cfg.tab_order.len().saturating_sub(1);
     for (i, &tab) in cfg.tab_order.iter().enumerate() {
@@ -449,8 +449,8 @@ fn home(s: &Settings, k: &Kit, layer: &mut Vec<El>) -> Vec<El> {
         });
     style.push(col().key("position").w_full().gap(8.0).padding(14.0).radius(16.0).fill(fg.alpha(0.03)).border(1.0, fg.alpha(0.08)).child(position.build(k)));
     if cfg.position_mode == "free" {
-        style.push(setting(s, &format!("Position X ({:.1}%)", cfg.island_x), slider(s, "island-x", "Position X", (0.0, 100.0, 0.1), |c| c.island_x, |c, v| c.island_x = v)));
-        style.push(setting(s, &format!("Position Y ({}px)", cfg.island_y.round()), slider(s, "island-y", "Position Y", (0.0, 500.0, 1.0), |c| c.island_y, |c, v| c.island_y = v)));
+        style.push(setting(s, &format!("Position X ({:.1}%)", cfg.island_x), slider(s, "island-x", "Position X", (0.0, 100.0, 0.1), |c| c.island_x, |c, v| c.island_x = v)).key("island-x-row"));
+        style.push(setting(s, &format!("Position Y ({}px)", cfg.island_y.round()), slider(s, "island-y", "Position Y", (0.0, 500.0, 1.0), |c| c.island_y, |c, v| c.island_y = v)).key("island-y-row"));
     }
     style.push(setting(s, "Island border", switch(k, "Island border", cfg.island_border, |c| c.island_border = !c.island_border).a11y_hidden()));
     // Only the Wayland layer-shell overlay can be pushed below a panel.
@@ -558,5 +558,20 @@ mod tests {
         rt.frame(1.0 / 60.0);
         use Tab::*;
         assert_eq!(store.get().tab_order, [Workflows, Overview, Search, Assistant, Clipboard, Tasks, T3, Notes, Stremflix, Shelf, System, Calendar, Limits]);
+    }
+
+    #[test]
+    fn a_dragged_slider_saves_on_release() {
+        let store = Store::memory(Config::default());
+        let s = Settings::new(store.clone(), None, &[]);
+        let mut rt = rune::Runtime::new(s, view, (520.0, 2600.0), rune::Env { system_dark: true, scale: 1.0 });
+        rt.frame(0.0);
+        // The row's label shows the value, so a drag that changed it must not lose its release.
+        let (x, y) = rt.find("tab-linger").unwrap();
+        rt.pointer_down(x, y);
+        for step in 1..=6 { rt.pointer_move(x + step as f32 * 10.0, y); rt.frame(1.0 / 60.0); }
+        rt.pointer_up(x + 60.0, y);
+        rt.frame(1.0 / 60.0);
+        assert!(store.get().tab_linger > 1.0, "saved {}", store.get().tab_linger);
     }
 }
