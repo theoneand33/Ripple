@@ -163,6 +163,12 @@ fn island_spec() -> AppSpec<Island> {
                 s.set_track(Some(system::Track { name: "Song".into(), artist: "Artist".into(), playing: true, ..Default::default() }), &mut tx);
             }),
             ("camera", |s| { let mut tx = rune::Tx::default(); s.set_capture(Some(true), None, &mut tx); }),
+            ("capture-both", |s| {
+                let mut tx = rune::Tx::default();
+                s.set_capture(Some(true), Some(true), &mut tx);
+                s.poll(4.0, &mut tx); // the camera alert ends; the mic alert takes its turn
+                s.poll(8.0, &mut tx); // both icons stay
+            }),
             ("bluetooth-off", |s| { let mut tx = rune::Tx::default(); s.set_bluetooth(true, &mut tx); s.set_bluetooth(false, &mut tx); s.set_bluetooth(false, &mut tx); }),
             ("notch", |s| { s.cfg.notch_mode = true; s.placement = island::Placement::of(&s.cfg, (1920.0, 1080.0)) }),
             ("notch-large", |s| { s.cfg.notch_mode = true; s.placement = island::Placement::of(&s.cfg, (1920.0, 1080.0)); s.mode = Mode::Large }),
