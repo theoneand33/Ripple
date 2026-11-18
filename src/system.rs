@@ -567,9 +567,24 @@ pub fn caps_lock() -> Option<bool> {
     #[cfg(windows)]
     {
         #[link(name = "user32")]
-        unsafe extern "system" { fn GetKeyState(key: i32) -> i16; }
-        // SAFETY: a pure query. 0x14 is VK_CAPITAL; the low bit is its toggle.
-        Some(unsafe { GetKeyState(0x14) } & 1 != 0)
+        unsafe extern "system" {
+            fn GetKeyState(key: i32) -> i16;
+            fn GetForegroundWindow() -> isize;
+            fn GetWindowThreadProcessId(window: isize, process: *mut u32) -> u32;
+            fn AttachThreadInput(from: u32, to: u32, attach: i32) -> i32;
+        }
+        #[link(name = "kernel32")]
+        unsafe extern "system" { fn GetCurrentThreadId() -> u32; }
+        // GetKeyState reads this thread's own input state, which a poller that pumps no messages
+        // never updates; attaching to the focused window's thread shares its key state for the read.
+        // SAFETY: plain Win32 queries; a null window gives thread 0, which is skipped.
+        unsafe {
+            let (me, focused) = (GetCurrentThreadId(), GetWindowThreadProcessId(GetForegroundWindow(), std::ptr::null_mut()));
+            let attached = focused != 0 && focused != me && AttachThreadInput(me, focused, 1) != 0;
+            let on = GetKeyState(0x14) & 1 != 0; // 0x14 is VK_CAPITAL; the low bit is its toggle
+            if attached { AttachThreadInput(me, focused, 0); }
+            Some(on)
+        }
     }
 }
 
