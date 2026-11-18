@@ -37,7 +37,7 @@ pub fn all(extra_dirs: &[String], cliproxy_dir: &str) -> Vec<Usage> {
     let Some(home) = rune::dirs::home() else { return Vec::new() };
     let handles: Vec<_> = accounts(&home, extra_dirs, cliproxy_dir).into_iter()
         .map(|a| (a.name, std::thread::spawn(a.fetch))).collect();
-    handles.into_iter().filter_map(|(name, h)| Some(Usage { name, windows: h.join().ok()? })).collect()
+    handles.into_iter().map(|(name, h)| Usage { name, windows: h.join().unwrap_or_else(|_| Err("Couldn't read its limits".into())) }).collect()
 }
 
 fn accounts(home: &Path, extra_dirs: &[String], cliproxy_dir: &str) -> Vec<Account> {
