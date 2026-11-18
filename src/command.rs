@@ -25,11 +25,24 @@ pub fn tokenize_args(s: &str) -> Vec<String> {
 }
 
 /// Parses a Windows command string into (exe, args): `%ENV_VAR%` expands before splitting, and
-/// forward slashes in the exe path become backslashes. Arguments keep theirs (URLs, `/switches`).
+/// forward slashes in the exe path become backslashes. In arguments only drive paths
+/// (`/select,C:/x`) convert; URLs and `/switches` stay as typed.
 #[cfg_attr(not(any(windows, test)), allow(dead_code))]
 pub fn parse_command(input: &str) -> (String, Vec<String>) {
     let (exe, args) = split_command(&expand_env(input));
-    (exe.replace('/', "\\"), args)
+    (exe.replace('/', "\\"), args.into_iter().map(drive_path).collect())
+}
+
+/// Backslashes from the first `X:/` on, unless it is inside a URL (`https:`, `file:///C:/`).
+fn drive_path(arg: String) -> String {
+    let b = arg.as_bytes();
+    let drive = (0..b.len().saturating_sub(2)).find(|&i| {
+        b[i].is_ascii_alphabetic() && b[i + 1] == b':' && b[i + 2] == b'/' && (i == 0 || !(b[i - 1].is_ascii_alphanumeric() || b[i - 1] == b'/'))
+    });
+    match drive {
+        Some(i) => format!("{}{}", &arg[..i], arg[i..].replace('/', "\\")),
+        None => arg,
+    }
 }
 
 fn split_command(prepared: &str) -> (String, Vec<String>) {
@@ -94,7 +107,8 @@ mod tests {
         assert_eq!(parse_command("C:/Program Files/App/app.exe -v"), (r"C:\Program Files\App\app.exe".into(), s(&["-v"])));
         assert_eq!(parse_command("wt new-tab"), ("wt".into(), s(&["new-tab"])));
         assert_eq!(parse_command("cmd"), ("cmd".into(), vec![]));
-        assert_eq!(parse_command("C:/a/app.exe --u=https://x /select,C:/b"), (r"C:\a\app.exe".into(), s(&["--u=https://x", "/select,C:/b"])));
+        assert_eq!(parse_command("C:/a/app.exe --u=https://x /select,C:/b"), (r"C:\a\app.exe".into(), s(&["--u=https://x", r"/select,C:\b"])));
+        assert_eq!(parse_command("x.exe C:/a/b file:///C:/c --p=d:/e"), ("x.exe".into(), s(&[r"C:\a\b", "file:///C:/c", r"--p=d:\e"])));
         assert_eq!(parse_command(r#""C:/Program Files/a.exe" https://x"#), (r"C:\Program Files\a.exe".into(), s(&["https://x"])));
     }
 
