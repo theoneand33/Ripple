@@ -65,6 +65,8 @@ pub fn entered(s: &mut Island) {
         Tab::T3 => s.t3_load(),
         Tab::Stremflix => s.stremflix_load(),
         Tab::Limits => s.limits_load(),
+        Tab::Notes => s.nextcloud_sync(crate::nextcloud::Kind::Notes),
+        Tab::Tasks => s.nextcloud_sync(crate::nextcloud::Kind::Tasks),
         Tab::Calendar => s.calendar_offset = 0,
         _ => {}
     }

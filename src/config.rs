@@ -150,6 +150,74 @@ impl T3Device {
     }
 }
 
+/// A note or a task, and what Nextcloud had for it at the last sync.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(from = "ItemFile")]
+pub struct Item {
+    pub text: String,
+    /// Tells items apart while a sync runs in the background.
+    pub key: u64,
+    pub remote: Option<Remote>,
+}
+
+/// An item's copy on Nextcloud: a note's id or a task's CalDAV path, its ETag, and its text then.
+#[derive(Clone, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct Remote {
+    pub id: String,
+    pub etag: String,
+    pub text: String,
+}
+
+/// Notes and tasks were plain strings before Nextcloud sync.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum ItemFile {
+    Text(String),
+    Item { text: String, #[serde(default)] key: u64, #[serde(default)] remote: Option<Remote> },
+}
+
+impl From<ItemFile> for Item {
+    fn from(f: ItemFile) -> Item {
+        match f {
+            ItemFile::Text(text) => Item::new(text),
+            ItemFile::Item { text, key, remote } => Item { key: if key == 0 { Item::new_key() } else { key }, text, remote },
+        }
+    }
+}
+
+impl Item {
+    pub fn new(text: impl Into<String>) -> Item { Item { text: text.into(), key: Item::new_key(), remote: None } }
+
+    fn new_key() -> u64 {
+        getrandom::u64().ok().filter(|k| *k != 0)
+            .unwrap_or_else(|| std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(1, |d| d.as_nanos() as u64 | 1))
+    }
+}
+
+/// The Nextcloud account Notes and Tasks sync with.
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Nextcloud {
+    /// The server, e.g. `https://cloud.example.com`; empty turns sync off.
+    pub url: String,
+    pub user: String,
+    /// An app password, from Nextcloud's Settings → Security.
+    pub password: String,
+    /// The Tasks list's name; empty picks the first list that holds tasks.
+    pub list: String,
+    /// The `user@url` the items' remotes belong to; another account starts afresh.
+    pub synced_with: String,
+    /// Synced notes deleted here, by id, that Nextcloud still has.
+    pub deleted_notes: Vec<String>,
+    /// Synced tasks ticked off here, by path, that Nextcloud doesn't know are done.
+    pub done_tasks: Vec<String>,
+}
+
+impl Nextcloud {
+    pub fn account(&self) -> String { format!("{}@{}", self.user.trim(), self.url.trim().trim_end_matches('/')) }
+    pub fn enabled(&self) -> bool { !self.url.trim().is_empty() && !self.user.trim().is_empty() }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -194,9 +262,10 @@ pub struct Config {
     pub display: String,
     pub quick_apps: Vec<QuickApp>,
     pub workflows: Vec<Workflow>,
-    pub tasks: Vec<String>,
+    pub tasks: Vec<Item>,
     /// Each note's first line is its title.
-    pub notes: Vec<String>,
+    pub notes: Vec<Item>,
+    pub nextcloud: Nextcloud,
     /// Files dropped on the Island, newest first.
     pub shelf: Vec<std::path::PathBuf>,
     pub ai_provider: String,
@@ -255,6 +324,7 @@ impl Default for Config {
             workflows: Vec::new(),
             tasks: Vec::new(),
             notes: Vec::new(),
+            nextcloud: Nextcloud::default(),
             shelf: Vec::new(),
             ai_provider: "groq".into(),
             ai_model: PROVIDERS[0].model.into(),
@@ -487,5 +557,15 @@ mod tests {
         let cfg: Config = serde_json::from_str(r#"{"standby": false}"#).unwrap();
         assert!(!cfg.standby && cfg.battery_alerts && cfg.default_tab == Tab::Overview);
         assert!(serde_json::to_string(&Config::default()).unwrap().contains(r#""default_tab":2"#), "tabs save as their numbers");
+    }
+
+    #[test]
+    fn plain_string_notes_load_as_items_and_items_round_trip() {
+        let cfg: Config = serde_json::from_str(r#"{"notes": ["Old"], "tasks": [{"text": "T", "key": 7}]}"#).unwrap();
+        assert_eq!((cfg.notes[0].text.as_str(), cfg.notes[0].remote.is_none()), ("Old", true));
+        assert_ne!(cfg.notes[0].key, 0);
+        assert_eq!((cfg.tasks[0].text.as_str(), cfg.tasks[0].key), ("T", 7));
+        let again: Config = serde_json::from_str(&serde_json::to_string(&cfg).unwrap()).unwrap();
+        assert_eq!(again, cfg);
     }
 }
