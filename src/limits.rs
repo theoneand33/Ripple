@@ -202,8 +202,8 @@ fn copilot(name: String, token: &str) -> Account {
             ("editor-plugin-version", "copilot-chat/0.26.7"),
             ("x-github-api-version", "2025-04-01"),
         ]).and_then(|v| match copilot_windows(&v) {
-            // Every quota unlimited: recognised, with nothing to show.
-            w if w.is_empty() && v["quota_snapshots"].is_object() => Ok(w),
+            // A known quota marked unlimited and none limited: recognised, with nothing to show.
+            w if w.is_empty() && ["premium_interactions", "chat"].iter().any(|k| v["quota_snapshots"][k]["unlimited"].as_bool() == Some(true)) => Ok(w),
             w => found(w),
         })
     }) }
