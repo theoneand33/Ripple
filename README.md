@@ -32,11 +32,12 @@ https://github.com/user-attachments/assets/a7b9ed8a-97b5-4603-bad7-6f4c4bef1f5d
 - Overview shows the time, weather, and battery. While music plays, it also shows the current track with playback controls. Long titles scroll with soft blurred edges, and the track stays on screen for 3 seconds after you pause.
 - AI Assistant answers questions using Groq.
 - Clipboard keeps your clipboard history.
-- Tasks is a simple to-do list.
+- Tasks is a simple to-do list. It can sync with Nextcloud Tasks (CalDAV); ticking a task marks it done there.
 - Calendar shows a month with today marked. Page through months, and press Today to jump back.
-- Notes keeps notes in a list beside an editor. A note's first line is its title.
+- Notes keeps notes in a list beside an editor. A note's first line is its title. Notes can sync with Nextcloud Notes. Set the account in the tab's settings page.
 - Stremflix shows Continue Watching from [Stremflix-rs](https://github.com/theoneand33/stremflix-rs) when it is open. Click a title to resume it in Stremflix-rs. Set `STREMFLIX_RS_API` if Stremflix-rs serves its API on another address.
 - System shows CPU, memory, storage, network and battery use.
+- AI Limits shows how much of each coding agent's plan is used and when it resets: Claude Code, Codex, GitHub Copilot, OpenCode Go and Grok Build. It reads the sign-in each CLI already saved and lists only the agents signed in on this computer. For more accounts, add Claude Code or Codex config folders (one per account) in its settings; every Claude and Codex account in CLIProxyAPI's auth folder (`~/.cli-proxy-api` by default) shows too.
 - Shelf stashes files: drag a file over the Island and it opens the Shelf to drop it in. Drag files back out to use them. Both directions work on macOS, Windows, X11, KDE Plasma and other layer-shell compositors, and GNOME (where the Island runs under XWayland).
 - T3 Code starts an agent thread on a project on one of your T3 devices. You choose the model, the worktree, and the linked environment.
 
@@ -98,7 +99,7 @@ Large Mode opens when you click the Island. It shows the full interface with eve
 - Windows: the Visual Studio C++ build tools
 - macOS: Xcode Command Line Tools
 
-At runtime on Linux, now playing and media keys use `playerctl`, Bluetooth uses `bluetoothctl`, the microphone check uses `pactl` and the camera check uses `fuser`. Ripple runs on X11, or on XWayland in a Wayland session.
+At runtime on Linux, now playing and media keys use `playerctl`, Bluetooth uses `bluetoothctl`, the microphone check uses `pactl` and the camera check uses `fuser`. Ripple runs on X11, or on XWayland in a Wayland session. On Wayland, closing the Island hands focus back through `busctl`: on KDE Plasma by a KWin script, and on GNOME only when the [Window Calls](https://github.com/ickyicky/window-calls) extension is installed.
 
 ### Run
 

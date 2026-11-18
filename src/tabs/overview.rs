@@ -3,7 +3,7 @@
 use rune::{El, Transition, col, el, icon, row, text};
 
 use crate::icons;
-use crate::island::{Island, control, cover, estimate_width, marquee};
+use crate::island::{Island, status, control, cover, estimate_width, marquee};
 use crate::system::MediaCommand;
 
 pub fn view(s: &Island) -> El {
@@ -16,7 +16,7 @@ pub fn view(s: &Island) -> El {
     if !s.cfg.location.trim().is_empty() { root = root.child(weather) }
     if let Some(percent) = s.percent {
         let mut battery = row().key("battery").pin(None, Some(20.0), Some(24.0), None).px(8.0).h(24.0).gap(2.0).center_y()
-            .radius(s.cfg.radius(8.0)).fill(fg);
+            .radius(s.cfg.radius(8.0)).fill(if s.low_battery() { status::low() } else { fg });
         if s.charging { battery = battery.child(icon(&icons::ZAP, 14.0).color(bg)) }
         root = root.child(battery.child(text(format!("{percent}%")).font(s.cfg.font(13.0, 500.0).features("'tnum' 1")).color(bg)));
     }

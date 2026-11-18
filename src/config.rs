@@ -39,6 +39,7 @@ tabs! {
     Shelf = 11,
     System = 12,
     Calendar = 13,
+    Limits = 14,
 }
 
 impl Tab {
@@ -57,6 +58,7 @@ impl Tab {
             Tab::Shelf => "Shelf",
             Tab::System => "System",
             Tab::Calendar => "Calendar",
+            Tab::Limits => "AI Limits",
         }
     }
 }
@@ -148,6 +150,74 @@ impl T3Device {
     }
 }
 
+/// A note or a task, and what Nextcloud had for it at the last sync.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(from = "ItemFile")]
+pub struct Item {
+    pub text: String,
+    /// Tells items apart while a sync runs in the background.
+    pub key: u64,
+    pub remote: Option<Remote>,
+}
+
+/// An item's copy on Nextcloud: a note's id or a task's CalDAV path, its ETag, and its text then.
+#[derive(Clone, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct Remote {
+    pub id: String,
+    pub etag: String,
+    pub text: String,
+}
+
+/// Notes and tasks were plain strings before Nextcloud sync.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum ItemFile {
+    Text(String),
+    Item { text: String, #[serde(default)] key: u64, #[serde(default)] remote: Option<Remote> },
+}
+
+impl From<ItemFile> for Item {
+    fn from(f: ItemFile) -> Item {
+        match f {
+            ItemFile::Text(text) => Item::new(text),
+            ItemFile::Item { text, key, remote } => Item { key: if key == 0 { Item::new_key() } else { key }, text, remote },
+        }
+    }
+}
+
+impl Item {
+    pub fn new(text: impl Into<String>) -> Item { Item { text: text.into(), key: Item::new_key(), remote: None } }
+
+    fn new_key() -> u64 {
+        getrandom::u64().ok().filter(|k| *k != 0)
+            .unwrap_or_else(|| std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(1, |d| d.as_nanos() as u64 | 1))
+    }
+}
+
+/// The Nextcloud account Notes and Tasks sync with.
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Nextcloud {
+    /// The server, e.g. `https://cloud.example.com`; empty turns sync off.
+    pub url: String,
+    pub user: String,
+    /// An app password, from Nextcloud's Settings → Security.
+    pub password: String,
+    /// The Tasks list's name; empty picks the first list that holds tasks.
+    pub list: String,
+    /// The `user@url` the items' remotes belong to; another account starts afresh.
+    pub synced_with: String,
+    /// Synced notes deleted here, by id, that Nextcloud still has.
+    pub deleted_notes: Vec<String>,
+    /// Synced tasks ticked off here, by path, that Nextcloud doesn't know are done.
+    pub done_tasks: Vec<String>,
+}
+
+impl Nextcloud {
+    pub fn account(&self) -> String { format!("{}@{}", self.user.trim(), self.url.trim().trim_end_matches('/')) }
+    pub fn enabled(&self) -> bool { !self.url.trim().is_empty() && !self.user.trim().is_empty() }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -192,21 +262,28 @@ pub struct Config {
     pub display: String,
     pub quick_apps: Vec<QuickApp>,
     pub workflows: Vec<Workflow>,
-    pub tasks: Vec<String>,
+    pub tasks: Vec<Item>,
     /// Each note's first line is its title.
-    pub notes: Vec<String>,
+    pub notes: Vec<Item>,
+    pub nextcloud: Nextcloud,
     /// Files dropped on the Island, newest first.
     pub shelf: Vec<std::path::PathBuf>,
     pub ai_provider: String,
     pub ai_model: String,
     pub api_key: String,
     pub t3_devices: Vec<T3Device>,
+    /// AI Limits: more Claude Code or Codex config folders, one per account.
+    pub agent_dirs: Vec<String>,
+    /// AI Limits: CLIProxyAPI's auth folder; empty means its default, `~/.cli-proxy-api`.
+    pub cliproxy_dir: String,
     pub t3_device: usize,
     /// "" = the device itself, otherwise the id of one of its linked environments.
     pub t3_env: String,
     pub t3_project: String,
     pub t3_model: String,
     pub t3_worktree: bool,
+    /// The local T3 Code was added once; a device the user removes stays removed.
+    pub t3_detected: bool,
     /// The first launch opens the instructions page once.
     pub new_user: bool,
 }
@@ -247,16 +324,20 @@ impl Default for Config {
             workflows: Vec::new(),
             tasks: Vec::new(),
             notes: Vec::new(),
+            nextcloud: Nextcloud::default(),
             shelf: Vec::new(),
             ai_provider: "groq".into(),
             ai_model: PROVIDERS[0].model.into(),
             api_key: String::new(),
             t3_devices: Vec::new(),
+            agent_dirs: Vec::new(),
+            cliproxy_dir: String::new(),
             t3_device: 0,
             t3_env: String::new(),
             t3_project: String::new(),
             t3_model: String::new(),
             t3_worktree: false,
+            t3_detected: false,
             new_user: true,
         }
     }
@@ -445,7 +526,7 @@ mod tests {
     fn saved_orders_drop_retired_tabs_and_gain_new_ones() {
         use Tab::*;
         let cfg = serde_json::from_str::<Config>(r#"{"tab_order": [7, 2, 3, 0], "hidden_tabs": [3, 0], "default_tab": 7}"#).unwrap().normalized();
-        assert_eq!(cfg.tab_order, [Overview, Search, Workflows, Assistant, Clipboard, Tasks, T3, Notes, Stremflix, Shelf, System, Calendar]);
+        assert_eq!(cfg.tab_order, [Overview, Search, Workflows, Assistant, Clipboard, Tasks, T3, Notes, Stremflix, Shelf, System, Calendar, Limits]);
         assert_eq!(cfg.hidden_tabs, [Search]);
         assert_eq!(cfg.first_tab(), Overview);
     }
@@ -454,9 +535,9 @@ mod tests {
     fn the_last_visible_tab_cannot_be_hidden() {
         let mut cfg = Config::default();
         for t in Tab::ALL { cfg.toggle_tab(t) }
-        assert_eq!(cfg.visible_tabs(), [Tab::Calendar]);
+        assert_eq!(cfg.visible_tabs(), [Tab::Limits]);
         cfg.toggle_tab(Tab::Search);
-        assert_eq!(cfg.visible_tabs(), [Tab::Search, Tab::Calendar]);
+        assert_eq!(cfg.visible_tabs(), [Tab::Search, Tab::Limits]);
     }
 
     #[cfg(unix)]
@@ -476,5 +557,15 @@ mod tests {
         let cfg: Config = serde_json::from_str(r#"{"standby": false}"#).unwrap();
         assert!(!cfg.standby && cfg.battery_alerts && cfg.default_tab == Tab::Overview);
         assert!(serde_json::to_string(&Config::default()).unwrap().contains(r#""default_tab":2"#), "tabs save as their numbers");
+    }
+
+    #[test]
+    fn plain_string_notes_load_as_items_and_items_round_trip() {
+        let cfg: Config = serde_json::from_str(r#"{"notes": ["Old"], "tasks": [{"text": "T", "key": 7}]}"#).unwrap();
+        assert_eq!((cfg.notes[0].text.as_str(), cfg.notes[0].remote.is_none()), ("Old", true));
+        assert_ne!(cfg.notes[0].key, 0);
+        assert_eq!((cfg.tasks[0].text.as_str(), cfg.tasks[0].key), ("T", 7));
+        let again: Config = serde_json::from_str(&serde_json::to_string(&cfg).unwrap()).unwrap();
+        assert_eq!(again, cfg);
     }
 }

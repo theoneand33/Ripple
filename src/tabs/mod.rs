@@ -4,6 +4,7 @@
 mod assistant;
 mod calendar;
 mod clipboard;
+mod limits;
 mod monitor;
 mod notes;
 mod overview;
@@ -39,6 +40,7 @@ pub fn view(s: &Island, layer: &mut Vec<El>) -> El {
         Tab::Stremflix => stremflix::view(s),
         Tab::Shelf => shelf::view(s),
         Tab::System => monitor::view(s),
+        Tab::Limits => limits::view(s),
         Tab::Calendar => calendar::view(s),
     }
 }
@@ -50,6 +52,7 @@ pub fn size(tab: Tab) -> (f32, f32) {
         Tab::Workflows => (520.0, 250.0),
         Tab::Notes | Tab::Stremflix => (520.0, 290.0),
         Tab::Shelf | Tab::System => (520.0, 230.0),
+        Tab::Limits => (520.0, 290.0),
         Tab::Tasks | Tab::T3 => (420.0, 290.0),
         Tab::Calendar => (420.0, 280.0),
         Tab::Overview | Tab::Assistant | Tab::Clipboard => (420.0, 230.0),
@@ -61,6 +64,9 @@ pub fn entered(s: &mut Island) {
     match s.tab {
         Tab::T3 => s.t3_load(),
         Tab::Stremflix => s.stremflix_load(),
+        Tab::Limits => s.limits_load(),
+        Tab::Notes => s.nextcloud_sync(crate::nextcloud::Kind::Notes),
+        Tab::Tasks => s.nextcloud_sync(crate::nextcloud::Kind::Tasks),
         Tab::Calendar => s.calendar_offset = 0,
         _ => {}
     }

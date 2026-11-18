@@ -8,7 +8,7 @@ use std::sync::mpsc::Sender;
 use rune::time::LocalTime;
 use rune::{
     AppHandle, Color, Curve, Cx, DisplayTarget, Drag, Easing, Edge, Effect, GesturePhase, El, Image, ImageCache, Key, KeyEvent, LoopSpec, OverlayHandle, OverlayPlacement,
-    Phase, Shadow, Spring, SurfaceFit, TextEdit, Transition, Tx, Vec2, Waker, WheelEvent, WindowHandle, el, icon, row, text,
+    Phase, Shadow, Spring, SurfaceFit, TextEdit, Transition, Tx, Vec2, Waker, WheelEvent, WindowHandle, col, el, icon, row, text,
 };
 
 use crate::config::{Config, Store, Tab};
@@ -31,7 +31,7 @@ pub const SPRING: Spring = Spring::new(0.5, 0.3);
 const HOVER_SCALE: f32 = 1.05;
 
 /// Status hues for the pill border and alerts.
-mod status {
+pub mod status {
     use rune::Color;
     fn hex(s: &str) -> Color { crate::config::parse_color(s).unwrap_or(Color::WHITE) }
     pub fn charge() -> Color { hex("#4cc38a") }
@@ -231,9 +231,15 @@ pub struct Island {
     /// The Calendar tab's month, as months from this one.
     pub calendar_offset: i32,
     pub notes: tabs::Notes,
+    /// Nextcloud sync of Notes and Tasks, by `nextcloud::Kind`.
+    pub nextcloud: [crate::nextcloud::SyncState; 2],
     pub stremflix: tabs::Stremflix,
     /// The System tab's figures; None until the first sample.
     pub stats: Option<system::Stats>,
+    /// The AI Limits tab's agents; None until the first answer.
+    pub limits: Option<Vec<crate::limits::Usage>>,
+    /// Bumped on every load, so an earlier answer is dropped.
+    pub limits_generation: u64,
     /// A file drag is over the Island.
     pub dropping: bool,
     /// A drag started elsewhere on the desktop opened the Shelf; it rests when the drag ends.
@@ -260,8 +266,10 @@ pub struct Island {
     /// The way the last tab change went: 1 to the next tab, -1 to the previous.
     pub tab_dir: i32,
     swipe_lock_until: f64,
-    /// The tab changed in this Large session: leaving waits `cfg.tab_linger` before closing.
+    /// The tab just changed; the next poll stamps `linger_until` from it.
     tab_changed: bool,
+    /// Until when leaving waits after the last tab change (`cfg.tab_linger` from the change).
+    linger_until: Option<f64>,
     /// When a lingering Island closes, unless the pointer comes back first.
     close_at: Option<f64>,
     next_second: f64,
@@ -321,8 +329,11 @@ impl Island {
             task: TextEdit::default(),
             calendar_offset: 0,
             notes: tabs::Notes::new(&cfg),
+            nextcloud: Default::default(),
             stremflix: tabs::Stremflix::default(),
             stats: None,
+            limits: None,
+            limits_generation: 0,
             dropping: false,
             desktop_drag: false,
             t3: tabs::T3::new(store.dir().as_deref()),
@@ -342,6 +353,7 @@ impl Island {
             tab_dir: 1,
             swipe_lock_until: 0.0,
             tab_changed: false,
+            linger_until: None,
             close_at: None,
             next_second: 0.0,
             next_clipboard: 0.0,
@@ -383,12 +395,18 @@ impl Island {
     /// The compact view shows the track: while it plays, and for 3 seconds after a pause.
     pub fn shows_track(&self) -> bool { self.playing() || self.paused_until.is_some() }
 
+    /// Hide when inactive: resting with no track to show.
+    pub fn hidden(&self) -> bool { self.cfg.hide_inactive && self.mode == Mode::Still && !self.shows_track() }
+
     pub fn alert(&self) -> Option<Alert> {
         if self.charging_alert_until.is_some() { Some(Alert::Charging) }
         else if self.battery_alert_until.is_some() { Some(Alert::Battery) }
         else if self.bluetooth_alert_until.is_some() { Some(Alert::Bluetooth) }
         else { self.capture.map(|c| c.0) }
     }
+
+    /// Under 20% and not charging.
+    pub fn low_battery(&self) -> bool { !self.charging && self.percent.is_some_and(|p| p < 20) }
 
     fn percent_label(&self) -> String { self.percent.map_or(String::new(), |p| format!("{p}%")) }
 
@@ -476,7 +494,9 @@ impl Island {
 
     /// Where the Island rests when nothing holds it open.
     pub fn rest(&self) -> Mode {
-        if self.cfg.standby { Mode::Quick } else if self.cfg.large_standby { Mode::Large } else { Mode::Still }
+        // Standby is on by default, so the opt-in settings win over it or they could never apply.
+        // Hiding wins over both, since it only works at Still.
+        if self.cfg.hide_inactive { Mode::Still } else if self.cfg.large_standby { Mode::Large } else if self.cfg.standby { Mode::Quick } else { Mode::Still }
     }
 
     /// Every mode change but `open_large_on` goes through here; Still means wherever the Island rests.
@@ -484,13 +504,13 @@ impl Island {
         let was = self.mode;
         self.mode = if mode == Mode::Still { self.rest() } else { mode };
         if self.mode == Mode::Large && was != Mode::Large { self.calendar_offset = 0 }
-        if self.mode == Mode::Large && was != Mode::Large && self.cfg.open_default_tab {
-            self.tab = self.cfg.first_tab();
+        if self.mode == Mode::Large && was != Mode::Large {
+            if self.cfg.open_default_tab { self.tab = self.cfg.first_tab() }
             self.entered_tab();
         }
         // Resting closes an open select even when the Island rests in Large.
         if mode == Mode::Still || self.mode != Mode::Large { self.open_select = None }
-        if self.mode != Mode::Large { self.tab_changed = false; self.close_at = None }
+        if self.mode != Mode::Large { self.tab_changed = false; self.linger_until = None; self.close_at = None }
     }
 
     /// Opens Large straight on `tab`, as a change from the tab shown last; the starred tab doesn't apply.
@@ -514,6 +534,10 @@ impl Island {
             // Each show makes a new layer surface, so this is asked again on every entry.
             if let Some(me) = &self.me { me.allow_keys() }
             if !self.focused && matches!(self.me, Some(Host::Window(_))) { self.prior = platform::focused_window() }
+            #[cfg(target_os = "linux")]
+            if !self.focused && self.prior.is_none() && let Some(me @ Host::Window(_)) = self.me.clone() {
+                std::thread::spawn(move || if let Some(w) = platform::gnome_focused_window() { me.update(move |s, _| s.prior = Some(w)) });
+            }
             if self.mode == Mode::Still && self.cfg.show_info_idle && !self.playing() { self.set_mode(Mode::Large) }
             else if self.mode != Mode::Large { self.set_mode(Mode::Quick) }
         } else if !self.hovered {
@@ -528,8 +552,7 @@ impl Island {
         if self.hovered { return false }
         let now = tx.clock();
         let left = std::mem::take(&mut self.left);
-        if left && self.tab_changed && self.mode == Mode::Large {
-            let at = now + f64::from(self.cfg.tab_linger);
+        if left && self.mode == Mode::Large && let Some(at) = self.linger_until && now < at {
             self.close_at = Some(at);
             tx.wake_at(at);
             return false;
@@ -558,6 +581,8 @@ impl Island {
     fn give_focus_back(&mut self) {
         if !self.focused { return }
         if let Some(window) = self.prior { platform::focus_window(window) }
+        #[cfg(target_os = "linux")]
+        if self.prior.is_none() { platform::focus_previous() }
         // Given away; the focus event may lag, and a second close mustn't steal it back.
         self.focused = false;
     }
@@ -857,6 +882,11 @@ impl Island {
             changed |= before != (self.time.clone(), self.date.clone());
             self.next_second = now + 1.0;
             tx.wake_at(self.next_second);
+            // A note uploads once typing in it pauses.
+            if self.notes.edited.is_some_and(|t| t.elapsed().as_secs() >= 2) {
+                self.notes.edited = None;
+                self.nextcloud_sync(crate::nextcloud::Kind::Notes);
+            }
         }
         if now >= self.next_clipboard && !rune::is_headless() {
             self.next_clipboard = now + 2.0;
@@ -877,6 +907,12 @@ impl Island {
         if alert_ended {
             self.set_mode(Mode::Still);
             changed = true;
+        }
+        if std::mem::take(&mut self.tab_changed) {
+            let at = now + f64::from(self.cfg.tab_linger);
+            self.linger_until = Some(at);
+            // A tab change after the pointer left pushes the pending close out too.
+            if self.close_at.is_some() { self.close_at = Some(at) }
         }
         changed |= self.leave(tx);
         changed |= due(&mut self.paused_until);
@@ -932,6 +968,8 @@ impl Island {
         if rune::is_headless() || self.weather_kick.is_some() { return }
         let Some(me) = self.me.clone() else { return };
         if self.cfg.new_user { self.intro_at = Some(3.0) }
+        // Starting in Large: the tab showing loads now, as it would on opening.
+        self.entered_tab();
         self.load_background();
         if self.cfg.auto_launch { std::thread::spawn(|| system::set_auto_launch(true)); }
 
@@ -1010,7 +1048,7 @@ pub fn view(s: &Island, _: &mut Cx<Island>) -> El {
     let cfg = &s.cfg;
     let mut layer = Vec::new();
     let [left, top, w, h] = s.rect();
-    let hidden = cfg.hide_inactive && s.mode == Mode::Still;
+    let hidden = s.hidden();
     let (bg, fg) = if hidden { (Color::TRANSPARENT, Color::TRANSPARENT) } else { (cfg.bg(), cfg.text()) };
     let large = s.mode == Mode::Large;
     let radii = if cfg.win95() { [0.0; 4] }
@@ -1145,7 +1183,7 @@ fn border(s: &Island, radii: [f32; 4], hidden: bool) -> El {
     let color = if s.camera { status::camera() }
         else if s.microphone { status::mic() }
         else if s.charging || s.alert() == Some(Alert::Charging) { status::charge() }
-        else if s.percent.is_some_and(|p| p <= 20) || s.alert() == Some(Alert::Battery) { status::low() }
+        else if s.low_battery() || s.alert() == Some(Alert::Battery) { status::low() }
         else if s.alert() == Some(Alert::Bluetooth) { status::bluetooth() }
         else if cfg.hide_inactive || hidden { return ring }
         else { cfg.text().alpha(0.3 * cfg.text().a) };
@@ -1163,7 +1201,8 @@ fn glance(s: &Island, fg: Color) -> El {
         Some(alert) => icon(alert.icon(), 20.0).color(color),
         None => text(&s.time).key("time").font(style.features("'tnum' 1")).color(color),
     };
-    let percent = || text(s.percent_label()).key("percent").font(style).color(color);
+    let battery_color = if alert.is_none() && s.low_battery() { status::low() } else { color };
+    let percent = || text(s.percent_label()).key("percent").font(style).color(battery_color);
     let battery = || if s.charging {
         row().key("battery").gap(2.0).center_y().child(icon(&icons::ZAP, 14.0).color(color)).child(percent())
     } else { percent() };
@@ -1178,25 +1217,33 @@ fn glance(s: &Island, fg: Color) -> El {
         },
     };
     let pad = if cfg.notch_mode { 12.0 } else { 16.0 };
-    row().key(alert.map_or("glance", Alert::key)).w_full().h_full().px(pad).center_y().justify_between()
-        .transition(Transition::blur_replace())
-        .child(left).child(right)
+    let row = row().key(alert.map_or("glance", Alert::key)).w_full().h_full().px(pad).center_y()
+        .transition(Transition::blur_replace());
+    // Mini notch centers the time when there is nothing to show beside it.
+    if cfg.notch_mode && cfg.notch_mini && alert.is_none() && s.weather.temp.is_none() && s.percent.is_none() {
+        return row.justify_center().child(left);
+    }
+    row.justify_between().child(left).child(right)
 }
 
-/// A privacy dot at the compact Island's right end while the camera or microphone is in use,
-/// once that one's alert has had its turn. Like the border, it shows even when the Island hides.
+/// Privacy icons at the compact Island's right end while the camera or microphone is in use,
+/// once their alert has had its turn; both stack when both are on. Like the border, they show even when the Island hides.
 fn capture_dot(s: &Island) -> Option<El> {
-    let (color, label) = match (s.camera, s.microphone) {
-        (true, true) => (status::camera(), "Camera and microphone in use"),
-        (true, false) => (status::camera(), "Camera in use"),
-        (false, true) => (status::mic(), "Microphone in use"),
+    let label = match (s.camera, s.microphone) {
+        (true, true) => "Camera and microphone in use",
+        (true, false) => "Camera in use",
+        (false, true) => "Microphone in use",
         (false, false) => return None,
     };
     if matches!(s.alert(), Some(Alert::Camera | Alert::Microphone)) { return None }
-    const SIZE: f32 = 6.0;
-    Some(el().key("capture-dot").role("img").label(label).inert()
-        .pin(None, Some((s.size().1 - SIZE) / 2.0), Some(3.0), None).size(SIZE, SIZE)
-        .radius(SIZE / 2.0).fill(color).transition(Transition::opacity()))
+    const SIZE: f32 = 9.0;
+    const GAP: f32 = 2.0;
+    let mut stack = col().key("capture-dot").role("img").label(label).inert().gap(GAP);
+    for (alert, on) in [(Alert::Camera, s.camera), (Alert::Microphone, s.microphone)] {
+        if on { stack = stack.child(icon(alert.icon(), SIZE).color(alert.color()).a11y_hidden()) }
+    }
+    let h = if s.camera && s.microphone { 2.0 * SIZE + GAP } else { SIZE };
+    Some(stack.pin(None, Some((s.size().1 - h) / 2.0), Some(4.0), None).transition(Transition::opacity()))
 }
 
 /// A clipped line; one wider than the `width` the caller gives it scrolls sideways as one
@@ -1339,6 +1386,17 @@ mod tests {
         assert_eq!(island(Config::default()).mode, Mode::Quick);
         assert_eq!(island(Config { standby: false, ..Config::default() }).mode, Mode::Still);
         assert_eq!(island(Config { standby: false, large_standby: true, ..Config::default() }).mode, Mode::Large);
+        assert_eq!(island(Config { large_standby: true, ..Config::default() }).mode, Mode::Large);
+        assert_eq!(island(Config { hide_inactive: true, ..Config::default() }).mode, Mode::Still);
+        assert_eq!(island(Config { hide_inactive: true, large_standby: true, ..Config::default() }).mode, Mode::Still);
+    }
+
+    #[test]
+    fn hide_when_inactive_still_shows_a_playing_track() {
+        let mut s = island(Config { hide_inactive: true, ..Config::default() });
+        assert!(s.hidden());
+        s.set_track(Some(Track { name: "Song".into(), playing: true, ..Default::default() }), &mut Tx::default());
+        assert!(s.mode == Mode::Still && !s.hidden());
     }
 
     #[test]
@@ -1559,7 +1617,7 @@ mod tests {
 
     #[test]
     fn the_wheel_scrolls_a_long_task_list() {
-        let mut s = island(Config { tasks: (0..30).map(|i| format!("task {i}")).collect(), ..Config::default() });
+        let mut s = island(Config { tasks: (0..30).map(|i| crate::config::Item::new(format!("task {i}"))).collect(), ..Config::default() });
         s.mode = Mode::Large;
         s.set_tab(Tab::Tasks);
         let [left, top, w, h] = s.rect();
@@ -1570,6 +1628,23 @@ mod tests {
         for _ in 0..30 { rt.frame(1.0 / 60.0); }
         let after = rt.find("task-task 0-0").unwrap().1;
         assert!(after < before - 50.0, "task-0 stayed at {before} -> {after}");
+    }
+
+    #[test]
+    fn a_swipe_over_a_scrolling_list_changes_tab() {
+        let mut s = island(Config { tasks: (0..30).map(|i| crate::config::Item::new(format!("task {i}"))).collect(), ..Config::default() });
+        s.mode = Mode::Large;
+        s.set_tab(Tab::Tasks);
+        let before = s.tab;
+        let [left, top, w, h] = s.rect();
+        let mut rt = rune::Runtime::new(s, view, CANVAS, rune::Env { system_dark: true, scale: 1.0 });
+        for _ in 0..60 { rt.frame(1.0 / 60.0); }
+        for i in 0..10 {
+            let phase = match i { 0 => rune::GesturePhase::Began, 9 => rune::GesturePhase::Ended, _ => rune::GesturePhase::Moved };
+            rt.wheel_event(WheelEvent::new(-10.0, 0.0).at(left + w / 2.0, top + h / 2.0).precise(true).phase(phase));
+            rt.frame(1.0 / 60.0);
+        }
+        assert_ne!(rt.state.tab, before);
     }
 
 }

@@ -49,7 +49,7 @@ pub fn view(s: &Island) -> El {
 }
 
 /// A ring of dashes, lit clockwise from the top up to `percent`.
-fn gauge(s: &Island, percent: f32, high_good: bool) -> El {
+pub(super) fn gauge(s: &Island, percent: f32, high_good: bool) -> El {
     const SIZE: f32 = 44.0;
     const DASHES: usize = 24;
     let fg = s.cfg.text();

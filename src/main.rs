@@ -4,10 +4,12 @@ mod command;
 mod config;
 mod icons;
 mod island;
+mod limits;
 #[cfg(target_os = "macos")]
 mod mac;
 mod migrate;
 mod net;
+mod nextcloud;
 mod platform;
 mod settings;
 mod stremflix;
@@ -92,17 +94,23 @@ fn island_spec() -> AppSpec<Island> {
             ("assistant", |s| { s.mode = Mode::Large; s.set_tab(Tab::Assistant); s.ai.asked = true; s.ai.answer = Some("**Rust** is a systems language.\n\n```rust\nfn main() {}\n```".into()) }),
             ("clipboard", |s| { s.mode = Mode::Large; s.set_tab(Tab::Clipboard); s.clipboard.push("Hello from Ripple"); }),
             ("tasks", |s| { s.mode = Mode::Large; s.set_tab(Tab::Tasks) }),
+            ("tasks-sync-error", |s| {
+                s.mode = Mode::Large;
+                s.set_tab(Tab::Tasks);
+                s.cfg.tasks = vec![config::Item::new("Water the plants")];
+                s.nextcloud[nextcloud::Kind::Tasks as usize].error = Some("Nextcloud refused the user or app password".into());
+            }),
             ("calendar", |s| { s.mode = Mode::Large; s.set_tab(Tab::Calendar) }),
             ("calendar-paged", |s| { s.mode = Mode::Large; s.set_tab(Tab::Calendar); s.calendar_offset = 1 }),
             ("t3", |s| { s.mode = Mode::Large; s.set_tab(Tab::T3) }),
             ("notes", |s| {
                 s.mode = Mode::Large;
                 s.set_tab(Tab::Notes);
-                s.cfg.notes = vec![
-                    "PR review queue\nGitHub\n• PR #482 — notch profile switcher polish\n• PR #491 — Screen Time category colors\n\nLeave blocking comments only; merge green builds.".into(),
-                    "Sprint board\nIn progress • MN-214 — Code hosting".into(),
-                    "Merge checklist\nBefore merge: CI green, changelog".into(),
-                ];
+                s.cfg.notes = [
+                    "PR review queue\nGitHub\n• PR #482 — notch profile switcher polish\n• PR #491 — Screen Time category colors\n\nLeave blocking comments only; merge green builds.",
+                    "Sprint board\nIn progress • MN-214 — Code hosting",
+                    "Merge checklist\nBefore merge: CI green, changelog",
+                ].map(config::Item::new).into();
                 s.open_note(0);
             }),
             ("stremflix", |s| {
@@ -117,6 +125,18 @@ fn island_spec() -> AppSpec<Island> {
                 s.percent = Some(57);
                 const GB: u64 = 1 << 30;
                 s.stats = Some(system::Stats { cpu: 7.0, mem_used: 29 * GB, mem_total: 48 * GB, disk_free: 810 * GB, disk_total: 990 * GB, down: 15_200, up: 3_100 });
+            }),
+            ("limits", |s| {
+                s.mode = Mode::Large;
+                s.set_tab(Tab::Limits);
+                let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
+                let w = |label: &str, used, hours: i64| limits::Window { label: label.into(), used, resets: Some(now + hours * 3600) };
+                s.limits = Some(vec![
+                    limits::Usage { name: "Claude Code".into(), windows: Ok(vec![w("5 hours", 42.0, 3), w("Week", 71.0, 100)]) },
+                    limits::Usage { name: "Codex · me@example.com".into(), windows: Ok(vec![w("5 hours", 8.0, 4), w("Week", 93.0, 30)]) },
+                    limits::Usage { name: "OpenCode Go".into(), windows: Ok(vec![w("5 hours", 12.0, 2), w("Week", 55.0, 50), w("Month", 30.0, 400)]) },
+                    limits::Usage { name: "Grok Build".into(), windows: Err("Token expired: run its CLI once to refresh".into()) },
+                ]);
             }),
             ("shelf-drop", |s| { s.mode = Mode::Large; s.set_tab(Tab::Shelf); s.dropping = true }),
             ("shelf", |s| { s.mode = Mode::Large; s.set_tab(Tab::Shelf); s.cfg.shelf = vec!["/home/me/Report final.pdf".into(), "/home/me/photo.png".into()] }),
@@ -150,10 +170,17 @@ fn island_spec() -> AppSpec<Island> {
                 s.set_track(Some(system::Track { name: "Song".into(), artist: "Artist".into(), playing: true, ..Default::default() }), &mut tx);
             }),
             ("camera", |s| { let mut tx = rune::Tx::default(); s.set_capture(Some(true), None, &mut tx); }),
+            ("capture-both", |s| {
+                let mut tx = rune::Tx::default();
+                s.set_capture(Some(true), Some(true), &mut tx);
+                s.poll(4.0, &mut tx); // the camera alert ends; the mic alert takes its turn
+                s.poll(8.0, &mut tx); // both icons stay
+            }),
             ("bluetooth-off", |s| { let mut tx = rune::Tx::default(); s.set_bluetooth(true, &mut tx); s.set_bluetooth(false, &mut tx); s.set_bluetooth(false, &mut tx); }),
             ("notch", |s| { s.cfg.notch_mode = true; s.placement = island::Placement::of(&s.cfg, (1920.0, 1080.0)) }),
             ("notch-large", |s| { s.cfg.notch_mode = true; s.placement = island::Placement::of(&s.cfg, (1920.0, 1080.0)); s.mode = Mode::Large }),
             ("mini-notch", |s| { s.cfg.notch_mode = true; s.cfg.notch_mini = true; s.placement = island::Placement::of(&s.cfg, (1920.0, 1080.0)) }),
+            ("mini-notch-single", |s| { s.cfg.notch_mode = true; s.cfg.notch_mini = true; s.cfg.show_info_idle = true; s.weather.temp = None; s.percent = None; s.placement = island::Placement::of(&s.cfg, (1920.0, 1080.0)) }),
             ("win95", |s| { s.cfg.set_theme("win95"); s.mode = Mode::Large }),
             ("glass", |s| { s.cfg.set_theme("glass"); s.cfg.show_info_idle = true }),
             ("glass-large", |s| { s.cfg.set_theme("glass"); s.mode = Mode::Large }),
@@ -167,7 +194,7 @@ fn settings_spec() -> AppSpec<Settings> {
         min_size: Some((420.0, 400.0)),
         fonts: FONTS,
         families: FAMILIES,
-        scenes: &[("panel-ai", |s| s.page = Some(Tab::Assistant))],
+        scenes: &[("panel-ai", |s| s.page = Some(Tab::Assistant)), ("panel-limits", |s| s.page = Some(Tab::Limits)), ("panel-tasks", |s| s.page = Some(Tab::Tasks))],
         ..AppSpec::new("Ripple Settings", (520.0, 720.0), || unreachable!("state comes from WindowSpec::state"), settings::view)
     }
 }

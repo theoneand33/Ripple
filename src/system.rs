@@ -45,7 +45,7 @@ fn command(program: &str) -> Command {
 const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Trimmed stdout, or None when the program is missing, failed or ran past `TIMEOUT`.
-fn output(program: &str, args: &[&str]) -> Option<String> {
+pub(crate) fn output(program: &str, args: &[&str]) -> Option<String> {
     use std::io::Read;
     let mut child = command(program).args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().ok()?;
     // Read stdout on its own thread: a full pipe would otherwise block the child forever.
@@ -138,6 +138,19 @@ pub enum MediaCommand {
 /// One `playerctl -a` line per player: `instance||status||title||artist||album||artUrl||position||length`.
 const PLAYERCTL_FORMAT: &str = "{{playerInstance}}||{{status}}||{{title}}||{{artist}}||{{album}}||{{mpris:artUrl}}||{{position}}||{{mpris:length}}";
 
+/// `playerctl -a` output for every player. One player that can't be reached (a browser tab or
+/// KDE Connect device that just went away) makes `-a` exit 1 and stop, hiding the one that plays:
+/// then ask each player alone.
+#[cfg(target_os = "linux")]
+fn playerctl_all() -> Option<String> {
+    output("playerctl", &["-a", "metadata", "--format", PLAYERCTL_FORMAT]).or_else(|| {
+        let lines: Vec<String> = output("playerctl", &["-l"])?.lines()
+            .filter_map(|name| output("playerctl", &["-p", name.trim(), "metadata", "--format", PLAYERCTL_FORMAT]))
+            .collect();
+        (!lines.is_empty()).then(|| lines.join("\n"))
+    })
+}
+
 /// The player to show from `playerctl -a` output: the first one playing, else the first paused
 /// one, else any with a title. `playerctl` alone takes the first player, often an idle tab.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
@@ -150,7 +163,7 @@ fn pick_player(out: &str) -> Option<Vec<&str>> {
 
 #[cfg(target_os = "linux")]
 pub fn media() -> Option<Track> {
-    let out = output("playerctl", &["-a", "metadata", "--format", PLAYERCTL_FORMAT])?;
+    let out = playerctl_all()?;
     let p = pick_player(&out)?;
     let status = p[1].to_lowercase();
     let micros = |i: usize| p.get(i).and_then(|v| v.trim().parse::<f64>().ok()).map(|v| v / 1e6);
@@ -279,7 +292,7 @@ pub fn media_control(cmd: MediaCommand) {
     {
         let arg = match cmd { MediaCommand::PlayPause => "play-pause", MediaCommand::Next => "next", MediaCommand::Previous => "previous" };
         // Control the player the Island shows, not playerctl's first one.
-        let shown = output("playerctl", &["-a", "metadata", "--format", PLAYERCTL_FORMAT])
+        let shown = playerctl_all()
             .and_then(|out| pick_player(&out).map(|p| p[0].to_string()));
         match shown {
             Some(name) => output("playerctl", &["-p", &name, arg]),

@@ -36,6 +36,12 @@ pub struct Settings {
     t3_token: TextEdit,
     workflow_name: TextEdit,
     workflow_urls: TextEdit,
+    agent_dirs: TextEdit,
+    cliproxy_dir: TextEdit,
+    nc_url: TextEdit,
+    nc_user: TextEdit,
+    nc_password: TextEdit,
+    nc_list: TextEdit,
 }
 
 impl Settings {
@@ -58,6 +64,12 @@ impl Settings {
             t3_token: TextEdit::new("").secure(),
             workflow_name: edit(""),
             workflow_urls: edit(""),
+            agent_dirs: edit(&cfg.agent_dirs.join("\n")),
+            cliproxy_dir: edit(&cfg.cliproxy_dir),
+            nc_url: edit(&cfg.nextcloud.url),
+            nc_user: edit(&cfg.nextcloud.user),
+            nc_password: TextEdit::new("").secure(),
+            nc_list: edit(&cfg.nextcloud.list),
             screens: screens.iter().map(|s| s.name.clone()).collect(),
             open: None,
             dragging: None,
@@ -225,8 +237,8 @@ fn drag_tab(s: &mut Settings, from: usize, d: &mut Drag, tx: &mut Tx) {
 /// Whether a tab has its own settings page: one `panel` has sections for.
 fn has_panel(tab: Tab) -> bool {
     match tab {
-        Tab::Search | Tab::Workflows | Tab::Overview | Tab::Assistant | Tab::T3 => true,
-        Tab::Clipboard | Tab::Tasks | Tab::Notes | Tab::Stremflix | Tab::Shelf | Tab::System | Tab::Calendar => false,
+        Tab::Search | Tab::Workflows | Tab::Overview | Tab::Assistant | Tab::T3 | Tab::Limits | Tab::Tasks | Tab::Notes => true,
+        Tab::Clipboard | Tab::Stremflix | Tab::Shelf | Tab::System | Tab::Calendar => false,
     }
 }
 
@@ -335,10 +347,10 @@ fn panel(s: &Settings, k: &Kit, layer: &mut Vec<El>, tab: Tab) -> Vec<El> {
             ]));
         }
         Tab::T3 => {
-            let mut t3 = vec![text("Token: run `t3 auth session issue --token-only` on that device.").font(cfg.font(12.0, 400.0)).color(fg.alpha(0.6))];
+            let mut t3 = vec![text("T3 Code on this computer is added by itself; removing it here doesn't end its session, so revoke it in T3's Sharing & access. For another device, run `t3 auth session issue --token-only` there.").font(cfg.font(12.0, 400.0)).color(fg.alpha(0.6))];
             for (i, d) in cfg.t3_devices.iter().enumerate() {
                 t3.push(setting(s, d.label(), IconButton::new(&icons::TRASH).label(format!("Remove {}", d.label()))
-                    .on_press(move |s: &mut Settings| s.save(|c| { if i < c.t3_devices.len() { c.t3_devices.remove(i); } })).build(k)));
+                    .on_press(move |s: &mut Settings| s.save(|c| { if i < c.t3_devices.len() && c.t3_devices.remove(i).name == crate::t3::LOCAL_NAME { c.t3_detected = true } })).build(k)));
             }
             t3.push(TextInput::new(&s.t3_name).label("Device name").placeholder("Name (e.g. Laptop)").on_edit(|s: &mut Settings| &mut s.t3_name).build(k));
             t3.push(TextInput::new(&s.t3_url).label("Device URL").placeholder("http://127.0.0.1:3773").on_edit(|s: &mut Settings| &mut s.t3_url).build(k));
@@ -346,7 +358,40 @@ fn panel(s: &Settings, k: &Kit, layer: &mut Vec<El>, tab: Tab) -> Vec<El> {
             t3.push(row().child(Button::new("Add device").variant(ButtonVariant::Contrast).disabled(!s.t3_addable()).on_press(Settings::add_t3_device).build(k)));
             sections.push(section(s, "t3", "T3 Code devices", t3));
         }
-        Tab::Clipboard | Tab::Tasks | Tab::Notes | Tab::Stremflix | Tab::Shelf | Tab::System | Tab::Calendar => {}
+        Tab::Limits => {
+            sections.push(section(s, "limits", "Accounts", vec![
+                text("Each CLI's own sign-in is found by itself. Add more accounts here.").font(cfg.font(12.0, 400.0)).color(fg.alpha(0.6)),
+                text("More Claude Code or Codex config folders, one per line").font(cfg.font(14.0, 500.0)).color(fg.alpha(0.8)).mt(10.0),
+                TextArea::new(&s.agent_dirs).label("Claude Code or Codex config folders").placeholder("~/.claude-work").rows(3)
+                    .on_edit(|s: &mut Settings| &mut s.agent_dirs)
+                    .on_change(|s: &mut Settings, _| { let v = s.agent_dirs.text.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_string).collect(); s.save(|c| c.agent_dirs = v) }).build(k),
+                text("CLIProxyAPI auth folder").font(cfg.font(14.0, 500.0)).color(fg.alpha(0.8)).mt(10.0),
+                TextInput::new(&s.cliproxy_dir).label("CLIProxyAPI auth folder").placeholder("~/.cli-proxy-api")
+                    .on_edit(|s: &mut Settings| &mut s.cliproxy_dir).on_change(|s: &mut Settings, _| { let v = s.cliproxy_dir.text.trim().to_string(); s.save(|c| c.cliproxy_dir = v) }).build(k),
+            ]));
+        }
+        Tab::Tasks | Tab::Notes => {
+            let label = |t: &str| text(t.to_string()).font(cfg.font(14.0, 500.0)).color(fg.alpha(0.8)).mt(10.0);
+            let mut rows = vec![
+                text("Notes and Tasks sync with this account. Make an app password in Nextcloud under Settings → Security.").font(cfg.font(12.0, 400.0)).color(fg.alpha(0.6)).wrap(),
+                label("Server"),
+                TextInput::new(&s.nc_url).label("Nextcloud server").placeholder("https://cloud.example.com")
+                    .on_edit(|s: &mut Settings| &mut s.nc_url).on_change(|s: &mut Settings, _| { let v = s.nc_url.text.trim().to_string(); s.save(|c| c.nextcloud.url = v) }).build(k),
+                label("User"),
+                TextInput::new(&s.nc_user).label("Nextcloud user").placeholder("User name")
+                    .on_edit(|s: &mut Settings| &mut s.nc_user).on_change(|s: &mut Settings, _| { let v = s.nc_user.text.trim().to_string(); s.save(|c| c.nextcloud.user = v) }).build(k),
+                label("App password"),
+                TextInput::new(&s.nc_password).label("Nextcloud app password").secure().placeholder(if cfg.nextcloud.password.is_empty() { "App password" } else { "Saved" })
+                    .on_edit(|s: &mut Settings| &mut s.nc_password).on_change(|s: &mut Settings, _| { let v = s.nc_password.text.clone(); s.save(|c| c.nextcloud.password = v) }).build(k),
+            ];
+            if tab == Tab::Tasks {
+                rows.push(label("Tasks list"));
+                rows.push(TextInput::new(&s.nc_list).label("Nextcloud tasks list").placeholder("The first list with tasks")
+                    .on_edit(|s: &mut Settings| &mut s.nc_list).on_change(|s: &mut Settings, _| { let v = s.nc_list.text.trim().to_string(); s.save(|c| c.nextcloud.list = v) }).build(k));
+            }
+            sections.push(section(s, "nextcloud", "Nextcloud", rows));
+        }
+        Tab::Clipboard | Tab::Stremflix | Tab::Shelf | Tab::System | Tab::Calendar => {}
     }
     sections
 }
@@ -379,7 +424,7 @@ fn home(s: &Settings, k: &Kit, layer: &mut Vec<El>) -> Vec<El> {
     let mut tabs = vec![
         text("Drag to reorder, click the eye to hide").font(cfg.font(12.0, 400.0)).color(fg.alpha(0.5)),
         setting(s, "Always open on the starred tab", switch(k, "Always open on the starred tab", cfg.open_default_tab, |c| c.open_default_tab = !c.open_default_tab).a11y_hidden()),
-        setting(s, &format!("Stay open after a tab change ({:.1}s)", cfg.tab_linger), slider(s, "tab-linger", "Stay open after a tab change", (0.0, 10.0, 0.5), |c| c.tab_linger, |c, v| c.tab_linger = v)),
+        setting(s, &format!("Stay open after a tab change ({:.1}s)", cfg.tab_linger), slider(s, "tab-linger", "Stay open after a tab change", (0.0, 10.0, 0.5), |c| c.tab_linger, |c, v| c.tab_linger = v)).key("tab-linger-row"),
     ];
     let last = cfg.tab_order.len().saturating_sub(1);
     for (i, &tab) in cfg.tab_order.iter().enumerate() {
@@ -433,8 +478,8 @@ fn home(s: &Settings, k: &Kit, layer: &mut Vec<El>) -> Vec<El> {
         });
     style.push(col().key("position").w_full().gap(8.0).padding(14.0).radius(16.0).fill(fg.alpha(0.03)).border(1.0, fg.alpha(0.08)).child(position.build(k)));
     if cfg.position_mode == "free" {
-        style.push(setting(s, &format!("Position X ({:.1}%)", cfg.island_x), slider(s, "island-x", "Position X", (0.0, 100.0, 0.1), |c| c.island_x, |c, v| c.island_x = v)));
-        style.push(setting(s, &format!("Position Y ({}px)", cfg.island_y.round()), slider(s, "island-y", "Position Y", (0.0, 500.0, 1.0), |c| c.island_y, |c, v| c.island_y = v)));
+        style.push(setting(s, &format!("Position X ({:.1}%)", cfg.island_x), slider(s, "island-x", "Position X", (0.0, 100.0, 0.1), |c| c.island_x, |c, v| c.island_x = v)).key("island-x-row"));
+        style.push(setting(s, &format!("Position Y ({}px)", cfg.island_y.round()), slider(s, "island-y", "Position Y", (0.0, 500.0, 1.0), |c| c.island_y, |c, v| c.island_y = v)).key("island-y-row"));
     }
     style.push(setting(s, "Island border", switch(k, "Island border", cfg.island_border, |c| c.island_border = !c.island_border).a11y_hidden()));
     // Only the Wayland layer-shell overlay can be pushed below a panel.
@@ -541,6 +586,21 @@ mod tests {
         rt.pointer_up(x, y + 100.0);
         rt.frame(1.0 / 60.0);
         use Tab::*;
-        assert_eq!(store.get().tab_order, [Workflows, Overview, Search, Assistant, Clipboard, Tasks, T3, Notes, Stremflix, Shelf, System, Calendar]);
+        assert_eq!(store.get().tab_order, [Workflows, Overview, Search, Assistant, Clipboard, Tasks, T3, Notes, Stremflix, Shelf, System, Calendar, Limits]);
+    }
+
+    #[test]
+    fn a_dragged_slider_saves_on_release() {
+        let store = Store::memory(Config::default());
+        let s = Settings::new(store.clone(), None, &[]);
+        let mut rt = rune::Runtime::new(s, view, (520.0, 2600.0), rune::Env { system_dark: true, scale: 1.0 });
+        rt.frame(0.0);
+        // The row's label shows the value, so a drag that changed it must not lose its release.
+        let (x, y) = rt.find("tab-linger").unwrap();
+        rt.pointer_down(x, y);
+        for step in 1..=6 { rt.pointer_move(x + step as f32 * 10.0, y); rt.frame(1.0 / 60.0); }
+        rt.pointer_up(x + 60.0, y);
+        rt.frame(1.0 / 60.0);
+        assert!(store.get().tab_linger > 1.0, "saved {}", store.get().tab_linger);
     }
 }
