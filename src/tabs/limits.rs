@@ -42,6 +42,7 @@ pub fn view(s: &Island) -> El {
                 .children((!who.is_empty()).then(|| text(who).font(s.cfg.font(11.0, 400.0)).color(muted).truncate())));
         match &agent.windows {
             Err(e) => card = card.child(text(e).font(s.cfg.font(12.0, 400.0)).color(muted).grow(1.0).min_w(0.0).truncate()),
+            Ok(windows) if windows.is_empty() => card = card.child(text("Unlimited").font(s.cfg.font(12.0, 400.0)).color(muted)),
             Ok(windows) => for w in windows {
                 let resets = w.resets.map_or(String::new(), |r| limits::until(r, now));
                 card = card.child(

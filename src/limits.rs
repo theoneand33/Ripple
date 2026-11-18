@@ -201,7 +201,11 @@ fn copilot(name: String, token: &str) -> Account {
             ("editor-version", "vscode/1.96.2"),
             ("editor-plugin-version", "copilot-chat/0.26.7"),
             ("x-github-api-version", "2025-04-01"),
-        ]).and_then(|v| found(copilot_windows(&v)))
+        ]).and_then(|v| match copilot_windows(&v) {
+            // Every quota unlimited: recognised, with nothing to show.
+            w if w.is_empty() && v["quota_snapshots"].is_object() => Ok(w),
+            w => found(w),
+        })
     }) }
 }
 
