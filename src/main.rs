@@ -4,6 +4,7 @@ mod command;
 mod config;
 mod icons;
 mod island;
+mod limits;
 #[cfg(target_os = "macos")]
 mod mac;
 mod migrate;
@@ -116,6 +117,18 @@ fn island_spec() -> AppSpec<Island> {
                 const GB: u64 = 1 << 30;
                 s.stats = Some(system::Stats { cpu: 7.0, mem_used: 29 * GB, mem_total: 48 * GB, disk_free: 810 * GB, disk_total: 990 * GB, down: 15_200, up: 3_100 });
             }),
+            ("limits", |s| {
+                s.mode = Mode::Large;
+                s.set_tab(Tab::Limits);
+                let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
+                let w = |label: &str, used, hours: i64| limits::Window { label: label.into(), used, resets: Some(now + hours * 3600) };
+                s.limits = Some(vec![
+                    limits::Usage { name: "Claude Code".into(), windows: Ok(vec![w("5 hours", 42.0, 3), w("Week", 71.0, 100)]) },
+                    limits::Usage { name: "Codex · me@example.com".into(), windows: Ok(vec![w("5 hours", 8.0, 4), w("Week", 93.0, 30)]) },
+                    limits::Usage { name: "OpenCode Go".into(), windows: Ok(vec![w("5 hours", 12.0, 2), w("Week", 55.0, 50), w("Month", 30.0, 400)]) },
+                    limits::Usage { name: "Grok Build".into(), windows: Err("Token expired: run its CLI once to refresh".into()) },
+                ]);
+            }),
             ("shelf-drop", |s| { s.mode = Mode::Large; s.set_tab(Tab::Shelf); s.dropping = true }),
             ("shelf", |s| { s.mode = Mode::Large; s.set_tab(Tab::Shelf); s.cfg.shelf = vec!["/home/me/Report final.pdf".into(), "/home/me/photo.png".into()] }),
             ("t3-device", |s| {
@@ -165,7 +178,7 @@ fn settings_spec() -> AppSpec<Settings> {
         min_size: Some((420.0, 400.0)),
         fonts: FONTS,
         families: FAMILIES,
-        scenes: &[("panel-ai", |s| s.page = Some(Tab::Assistant))],
+        scenes: &[("panel-ai", |s| s.page = Some(Tab::Assistant)), ("panel-limits", |s| s.page = Some(Tab::Limits))],
         ..AppSpec::new("Ripple Settings", (520.0, 720.0), || unreachable!("state comes from WindowSpec::state"), settings::view)
     }
 }

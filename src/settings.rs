@@ -36,6 +36,8 @@ pub struct Settings {
     t3_token: TextEdit,
     workflow_name: TextEdit,
     workflow_urls: TextEdit,
+    agent_dirs: TextEdit,
+    cliproxy_dir: TextEdit,
 }
 
 impl Settings {
@@ -58,6 +60,8 @@ impl Settings {
             t3_token: TextEdit::new("").secure(),
             workflow_name: edit(""),
             workflow_urls: edit(""),
+            agent_dirs: edit(&cfg.agent_dirs.join("\n")),
+            cliproxy_dir: edit(&cfg.cliproxy_dir),
             screens: screens.iter().map(|s| s.name.clone()).collect(),
             open: None,
             dragging: None,
@@ -225,7 +229,7 @@ fn drag_tab(s: &mut Settings, from: usize, d: &mut Drag, tx: &mut Tx) {
 /// Whether a tab has its own settings page: one `panel` has sections for.
 fn has_panel(tab: Tab) -> bool {
     match tab {
-        Tab::Search | Tab::Workflows | Tab::Overview | Tab::Assistant | Tab::T3 => true,
+        Tab::Search | Tab::Workflows | Tab::Overview | Tab::Assistant | Tab::T3 | Tab::Limits => true,
         Tab::Clipboard | Tab::Tasks | Tab::Notes | Tab::Stremflix | Tab::Shelf | Tab::System => false,
     }
 }
@@ -345,6 +349,18 @@ fn panel(s: &Settings, k: &Kit, layer: &mut Vec<El>, tab: Tab) -> Vec<El> {
             t3.push(TextInput::new(&s.t3_token).label("Bearer token").secure().placeholder("Bearer token").on_edit(|s: &mut Settings| &mut s.t3_token).on_submit(|s: &mut Settings, _| s.add_t3_device()).build(k));
             t3.push(row().child(Button::new("Add device").variant(ButtonVariant::Contrast).disabled(!s.t3_addable()).on_press(Settings::add_t3_device).build(k)));
             sections.push(section(s, "t3", "T3 Code devices", t3));
+        }
+        Tab::Limits => {
+            sections.push(section(s, "limits", "Accounts", vec![
+                text("Each CLI's own sign-in is found by itself. Add more accounts here.").font(cfg.font(12.0, 400.0)).color(fg.alpha(0.6)),
+                text("More Claude Code or Codex config folders, one per line").font(cfg.font(14.0, 500.0)).color(fg.alpha(0.8)).mt(10.0),
+                TextArea::new(&s.agent_dirs).label("Claude Code or Codex config folders").placeholder("~/.claude-work").rows(3)
+                    .on_edit(|s: &mut Settings| &mut s.agent_dirs)
+                    .on_change(|s: &mut Settings, _| { let v = s.agent_dirs.text.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_string).collect(); s.save(|c| c.agent_dirs = v) }).build(k),
+                text("CLIProxyAPI auth folder").font(cfg.font(14.0, 500.0)).color(fg.alpha(0.8)).mt(10.0),
+                TextInput::new(&s.cliproxy_dir).label("CLIProxyAPI auth folder").placeholder("~/.cli-proxy-api")
+                    .on_edit(|s: &mut Settings| &mut s.cliproxy_dir).on_change(|s: &mut Settings, _| { let v = s.cliproxy_dir.text.trim().to_string(); s.save(|c| c.cliproxy_dir = v) }).build(k),
+            ]));
         }
         Tab::Clipboard | Tab::Tasks | Tab::Notes | Tab::Stremflix | Tab::Shelf | Tab::System => {}
     }

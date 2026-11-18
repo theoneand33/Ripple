@@ -227,6 +227,10 @@ pub struct Island {
     pub stremflix: tabs::Stremflix,
     /// The System tab's figures; None until the first sample.
     pub stats: Option<system::Stats>,
+    /// The AI Limits tab's agents; None until the first answer.
+    pub limits: Option<Vec<crate::limits::Usage>>,
+    /// Bumped on every load, so an earlier answer is dropped.
+    pub limits_generation: u64,
     /// A file drag is over the Island.
     pub dropping: bool,
     /// A drag started elsewhere on the desktop opened the Shelf; it rests when the drag ends.
@@ -313,6 +317,8 @@ impl Island {
             notes: tabs::Notes::new(&cfg),
             stremflix: tabs::Stremflix::default(),
             stats: None,
+            limits: None,
+            limits_generation: 0,
             dropping: false,
             desktop_drag: false,
             t3: tabs::T3::new(store.dir().as_deref()),
