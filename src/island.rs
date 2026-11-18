@@ -1572,4 +1572,21 @@ mod tests {
         assert!(after < before - 50.0, "task-0 stayed at {before} -> {after}");
     }
 
+    #[test]
+    fn a_swipe_over_a_scrolling_list_changes_tab() {
+        let mut s = island(Config { tasks: (0..30).map(|i| format!("task {i}")).collect(), ..Config::default() });
+        s.mode = Mode::Large;
+        s.set_tab(Tab::Tasks);
+        let before = s.tab;
+        let [left, top, w, h] = s.rect();
+        let mut rt = rune::Runtime::new(s, view, CANVAS, rune::Env { system_dark: true, scale: 1.0 });
+        for _ in 0..60 { rt.frame(1.0 / 60.0); }
+        for i in 0..10 {
+            let phase = match i { 0 => rune::GesturePhase::Began, 9 => rune::GesturePhase::Ended, _ => rune::GesturePhase::Moved };
+            rt.wheel_event(WheelEvent::new(-10.0, 0.0).at(left + w / 2.0, top + h / 2.0).precise(true).phase(phase));
+            rt.frame(1.0 / 60.0);
+        }
+        assert_ne!(rt.state.tab, before);
+    }
+
 }

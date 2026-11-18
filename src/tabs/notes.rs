@@ -92,14 +92,14 @@ pub fn view(s: &Island) -> El {
         .on_input_change(|s: &mut Island, _| s.note_edited());
     root.child(
         row().key("notes-body").w_full().grow(1.0).min_h(0.0).gap(12.0)
-            .child(col().key("note-scroll").w(160.0).h_full().scroll(ScrollSpec { stick_bottom: false }).scroll_edge_fade(8.0).child(list))
+            .child(col().key("note-scroll").w(160.0).h_full().scroll(ScrollSpec { stick_bottom: false }).on_wheel(Island::wheel).scroll_edge_fade(8.0).child(list))
             .child(
                 col().key(format!("note-card-{}", s.notes.index)).grow(1.0).min_w(0.0).h_full().px(14.0).py(10.0)
                     .radius(s.cfg.radius(18.0)).fill(fg.alpha(0.08 * fg.a)).border(1.0, fg.alpha(0.06 * fg.a))
                     .transition(Transition::opacity())
                     // The editor is only as tall as its text: a press on the rest of the card types into it too.
                     .on_press(|s: &mut Island| s.notes.editor.focused = true)
-                    .scroll(ScrollSpec { stick_bottom: false }).scroll_edge_fade(10.0).child(editor),
+                    .scroll(ScrollSpec { stick_bottom: false }).on_wheel(Island::wheel).scroll_edge_fade(10.0).child(editor),
             ),
     )
 }

@@ -49,7 +49,7 @@ pub fn view(s: &Island) -> El {
                 .child(copy),
         );
     }
-    col().key("clipboard").w_full().h_full().scroll(ScrollSpec { stick_bottom: false }).scroll_edge_fade(12.0).child(list)
+    col().key("clipboard").w_full().h_full().scroll(ScrollSpec { stick_bottom: false }).on_wheel(Island::wheel).scroll_edge_fade(12.0).child(list)
 }
 
 #[cfg(test)]
