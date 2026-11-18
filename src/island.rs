@@ -8,7 +8,7 @@ use std::sync::mpsc::Sender;
 use rune::time::LocalTime;
 use rune::{
     AppHandle, Color, Curve, Cx, DisplayTarget, Drag, Easing, Edge, Effect, GesturePhase, El, Image, ImageCache, Key, KeyEvent, LoopSpec, OverlayHandle, OverlayPlacement,
-    Phase, Shadow, Spring, SurfaceFit, TextEdit, Transition, Tx, Vec2, Waker, WheelEvent, WindowHandle, el, icon, row, text,
+    Phase, Shadow, Spring, SurfaceFit, TextEdit, Transition, Tx, Vec2, Waker, WheelEvent, WindowHandle, col, el, icon, row, text,
 };
 
 use crate::config::{Config, Store, Tab};
@@ -1196,20 +1196,24 @@ fn glance(s: &Island, fg: Color) -> El {
         .child(left).child(right)
 }
 
-/// A privacy dot at the compact Island's right end while the camera or microphone is in use,
-/// once that one's alert has had its turn. Like the border, it shows even when the Island hides.
+/// Privacy icons at the compact Island's right end while the camera or microphone is in use,
+/// once their alert has had its turn; both stack when both are on. Like the border, they show even when the Island hides.
 fn capture_dot(s: &Island) -> Option<El> {
-    let (color, label) = match (s.camera, s.microphone) {
-        (true, true) => (status::camera(), "Camera and microphone in use"),
-        (true, false) => (status::camera(), "Camera in use"),
-        (false, true) => (status::mic(), "Microphone in use"),
+    let label = match (s.camera, s.microphone) {
+        (true, true) => "Camera and microphone in use",
+        (true, false) => "Camera in use",
+        (false, true) => "Microphone in use",
         (false, false) => return None,
     };
     if matches!(s.alert(), Some(Alert::Camera | Alert::Microphone)) { return None }
-    const SIZE: f32 = 6.0;
-    Some(el().key("capture-dot").role("img").label(label).inert()
-        .pin(None, Some((s.size().1 - SIZE) / 2.0), Some(3.0), None).size(SIZE, SIZE)
-        .radius(SIZE / 2.0).fill(color).transition(Transition::opacity()))
+    const SIZE: f32 = 9.0;
+    const GAP: f32 = 2.0;
+    let mut stack = col().key("capture-dot").role("img").label(label).inert().gap(GAP);
+    for (alert, on) in [(Alert::Camera, s.camera), (Alert::Microphone, s.microphone)] {
+        if on { stack = stack.child(icon(alert.icon(), SIZE).color(alert.color()).a11y_hidden()) }
+    }
+    let h = if s.camera && s.microphone { 2.0 * SIZE + GAP } else { SIZE };
+    Some(stack.pin(None, Some((s.size().1 - h) / 2.0), Some(4.0), None).transition(Transition::opacity()))
 }
 
 /// A clipped line; one wider than the `width` the caller gives it scrolls sideways as one
