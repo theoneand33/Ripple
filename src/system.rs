@@ -45,7 +45,7 @@ fn command(program: &str) -> Command {
 const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Trimmed stdout, or None when the program is missing, failed or ran past `TIMEOUT`.
-fn output(program: &str, args: &[&str]) -> Option<String> {
+pub(crate) fn output(program: &str, args: &[&str]) -> Option<String> {
     use std::io::Read;
     let mut child = command(program).args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().ok()?;
     // Read stdout on its own thread: a full pipe would otherwise block the child forever.
