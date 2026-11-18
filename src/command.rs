@@ -24,12 +24,22 @@ pub fn tokenize_args(s: &str) -> Vec<String> {
     args
 }
 
-/// Parses a Windows command string into (exe, args): forward slashes become backslashes and
-/// `%ENV_VAR%` expands before splitting.
+/// Parses a Windows command string into (exe, args): `%ENV_VAR%` expands before splitting, and
+/// forward slashes become backslashes, except in URLs and a leading `/switch`.
 #[cfg_attr(not(any(windows, test)), allow(dead_code))]
 pub fn parse_command(input: &str) -> (String, Vec<String>) {
-    let prepared = expand_env(&input.replace('/', "\\"));
+    let (exe, args) = split_command(&expand_env(input));
+    (exe.replace('/', "\\"), args.into_iter().map(arg_path).collect())
+}
 
+/// Every `/` becomes `\`, except a leading `/switch` and a URL (from its scheme to the end).
+fn arg_path(arg: String) -> String {
+    let switch = usize::from(arg.starts_with('/') && arg[1..].starts_with(|c: char| c.is_ascii_alphanumeric() || c == '?'));
+    let url = arg.find("://").map_or(arg.len(), |i| arg[..i].char_indices().rev().find(|&(_, c)| !(c.is_ascii_alphanumeric() || "+.-".contains(c))).map_or(0, |(j, c)| j + c.len_utf8())).max(switch);
+    format!("{}{}{}", &arg[..switch], arg[switch..url].replace('/', "\\"), &arg[url..])
+}
+
+fn split_command(prepared: &str) -> (String, Vec<String>) {
     // Quoted exe path: "C:\path with spaces\app.exe" [args...]
     if let Some(rest) = prepared.strip_prefix('"')
         && let Some(end) = rest.find('"')
@@ -41,10 +51,12 @@ pub fn parse_command(input: &str) -> (String, Vec<String>) {
     // Unquoted path: the exe ends at a known extension, so spaces inside the path
     // (C:\Program Files\...) don't split it early.
     let lower = prepared.to_ascii_lowercase();
+    // The exe ends before any URL argument, so `chrome https://example.com` doesn't end at `.com`.
+    let url = prepared.find("://").map_or(prepared.len(), |i| prepared[..i].rfind(char::is_whitespace).unwrap_or(0));
     let boundary = [".exe", ".cmd", ".bat", ".com", ".ps1"]
         .iter()
         .flat_map(|ext| lower.match_indices(ext).map(|(i, _)| i + ext.len()).collect::<Vec<_>>())
-        .filter(|&end| end > 4 && prepared[end..].chars().next().is_none_or(char::is_whitespace))
+        .filter(|&end| end > 4 && end <= url && prepared[end..].chars().next().is_none_or(char::is_whitespace))
         .min();
     if let Some(end) = boundary {
         return (prepared[..end].to_string(), tokenize_args(&prepared[end..]));
@@ -52,7 +64,7 @@ pub fn parse_command(input: &str) -> (String, Vec<String>) {
 
     // No recognised extension (cmd, wt): split on the first whitespace.
     match prepared.find(char::is_whitespace) {
-        None => (prepared, Vec::new()),
+        None => (prepared.to_string(), Vec::new()),
         Some(i) => (prepared[..i].to_string(), tokenize_args(&prepared[i..])),
     }
 }
@@ -91,6 +103,14 @@ mod tests {
         assert_eq!(parse_command("C:/Program Files/App/app.exe -v"), (r"C:\Program Files\App\app.exe".into(), s(&["-v"])));
         assert_eq!(parse_command("wt new-tab"), ("wt".into(), s(&["new-tab"])));
         assert_eq!(parse_command("cmd"), ("cmd".into(), vec![]));
+        assert_eq!(parse_command("C:/a/app.exe --u=https://x /select,C:/b"), (r"C:\a\app.exe".into(), s(&["--u=https://x", r"/select,C:\b"])));
+        assert_eq!(parse_command("x.exe C:/a/b file:///C:/c --p=d:/e"), ("x.exe".into(), s(&[r"C:\a\b", "file:///C:/c", r"--p=d:\e"])));
+        assert_eq!(parse_command("x.exe --u=C:/x?next=https://a/b C:/a;D:/b"), ("x.exe".into(), s(&[r"--u=C:\x?next=https://a/b", r"C:\a;D:\b"])));
+        assert_eq!(parse_command("x.exe //nas/share docs/a.txt /A %RIPPLE_NO_SUCH_VAR%/b"), ("x.exe".into(), s(&[r"\\nas\share", r"docs\a.txt", "/A", r"%RIPPLE_NO_SUCH_VAR%\b"])));
+        assert_eq!(parse_command("C:/Apps/chrome https://example.com"), (r"C:\Apps\chrome".into(), s(&["https://example.com"])));
+        assert_eq!(parse_command("C:/a b/x.exe https://example.com"), (r"C:\a b\x.exe".into(), s(&["https://example.com"])));
+        assert_eq!(parse_command("x.exe é/a=ü://b/c"),("x.exe".into(), s(&[r"é\a=ü://b/c"])));
+        assert_eq!(parse_command(r#""C:/Program Files/a.exe" https://x"#), (r"C:\Program Files\a.exe".into(), s(&["https://x"])));
     }
 
     #[test]
