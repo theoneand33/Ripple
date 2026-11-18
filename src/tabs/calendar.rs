@@ -1,10 +1,13 @@
-//! Calendar: a month at a glance, today marked; the arrows page through months.
+//! Calendar: a month at a glance, today marked; the arrows page through months. Beside it, the
+//! picked day's events. With a Nextcloud account, events sync with a Nextcloud calendar.
 
-use rune::{El, Transition, col, el, row, text};
+use rune::{El, ScrollSpec, Transition, Tx, col, el, row, text};
 
-use super::tool;
+use super::{button, empty, field, tool};
+use crate::config::Item;
 use crate::icons;
-use crate::island::{Island, weekday};
+use crate::island::{Island, format_date, weekday};
+use crate::nextcloud::{Kind, event_day};
 
 const MONTHS: [&str; 12] = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 
@@ -21,6 +24,30 @@ fn days_in(year: i32, month: u32) -> u32 {
         4 | 6 | 9 | 11 => 30,
         _ => 31,
     }
+}
+
+fn add_event(s: &mut Island, _: &mut Tx) {
+    let title = s.event.text.trim().to_string();
+    if title.is_empty() { return }
+    let (y, m, d) = s.calendar_day.unwrap_or(s.today);
+    s.save(|c| c.events.push(Item::new(format!("{y:04}-{m:02}-{d:02} {title}"))));
+    s.event.clear();
+    s.nextcloud_sync(Kind::Events);
+}
+
+fn delete_event(s: &mut Island, key: u64) {
+    s.save(|c| {
+        let Some(i) = c.events.iter().position(|e| e.key == key) else { return };
+        if let Some(r) = c.events.remove(i).remote { c.nextcloud.deleted_events.push(r.id) }
+    });
+    s.nextcloud_sync(Kind::Events);
+}
+
+/// The picked day's events, by title, so timed ones (`HH:MM title`) run in order.
+fn day_events(s: &Island, day: (i32, u32, u32)) -> Vec<(u64, &str)> {
+    let mut events: Vec<_> = s.cfg.events.iter().filter_map(|e| event_day(&e.text).filter(|(d, _)| *d == day).map(|(_, title)| (e.key, title))).collect();
+    events.sort_by_key(|e| e.1);
+    events
 }
 
 pub fn view(s: &Island) -> El {
@@ -43,7 +70,7 @@ pub fn view(s: &Island) -> El {
                 .h(28.0).px(12.0).center().radius(s.cfg.radius(14.0)).fill(fg.alpha(0.1 * fg.a))
                 .hover(fg.alpha(0.18 * fg.a)).press(fg.alpha(0.26 * fg.a))
                 .child(text("Today").font(s.cfg.font(13.0, 600.0)).color(fg).a11y_hidden())
-                .on_press(|s: &mut Island| s.calendar_offset = 0),
+                .on_press(|s: &mut Island| (s.calendar_offset, s.calendar_day) = (0, None)),
         );
     }
     header = header
@@ -58,6 +85,7 @@ pub fn view(s: &Island) -> El {
 
     // Six weeks always, so the Island keeps one height; days of the months around are dimmed.
     let first = weekday(year, month, 1) as i32;
+    let picked = s.calendar_day.unwrap_or(s.today);
     let (py, pm) = shift(year, month, -1);
     let (len, prev_len) = (days_in(year, month) as i32, days_in(py, pm) as i32);
     let mut grid = col().key(format!("calendar-grid-{year}-{month}")).role("group").label(format!("{} {year}", MONTHS[month as usize - 1]))
@@ -66,21 +94,55 @@ pub fn view(s: &Island) -> El {
         let mut line = row().w_full();
         for col_ in 0..7 {
             let n = week * 7 + col_ - first + 1;
-            let (day, inside) = if n < 1 { (prev_len + n, false) } else if n > len { (n - len, false) } else { (n, true) };
-            let today = inside && (year, month, day as u32) == (ty, tm, td);
-            let color = if today { ink } else if inside { fg } else { fg.alpha(0.25 * fg.a) };
+            // A day of the month before or after pages there as it is picked.
+            let (day, page) = if n < 1 { (prev_len + n, -1) } else if n > len { (n - len, 1) } else { (n, 0) };
+            let (dy, dm) = shift(year, month, page);
+            let date = (dy, dm, day as u32);
+            let today = date == (ty, tm, td);
+            let busy = s.cfg.events.iter().any(|e| event_day(&e.text).is_some_and(|(d, _)| d == date));
+            let color = if today { ink } else if page == 0 { fg } else { fg.alpha(0.25 * fg.a) };
             let mut dot = el().size(28.0, 28.0).center().radius(s.cfg.radius(14.0))
-                .child(text(day.to_string()).font(s.cfg.font(13.0, if today { 700.0 } else { 500.0 }).features("'tnum' 1")).color(color));
-            if today { dot = dot.fill(fg).label("Today") }
-            line = line.child(el().key(format!("day-{week}-{col_}")).w(0.0).grow(1.0).h(28.0).center().child(dot));
+                .child(text(day.to_string()).font(s.cfg.font(13.0, if today { 700.0 } else { 500.0 }).features("'tnum' 1")).color(color).a11y_hidden());
+            if today { dot = dot.fill(fg) } else if busy { dot = dot.fill(fg.alpha(0.12 * fg.a)) }
+            if date == picked && !today { dot = dot.border(1.5, fg.alpha(0.6 * fg.a)) }
+            let label = format!("{}{}{}", format_date(dy, dm, day as u32), if today { ", today" } else { "" }, if busy { ", has events" } else { "" });
+            line = line.child(
+                el().key(format!("day-{week}-{col_}")).role("button").label(label).focusable(true).w(0.0).grow(1.0).h(28.0).center().child(dot)
+                    .on_press(move |s: &mut Island| { s.calendar_day = Some(date); s.calendar_offset += page }),
+            );
         }
         grid = grid.child(line);
     }
 
-    col().key("calendar").w_full().h_full().px(16.0).pt(14.0).pb(14.0).gap(8.0)
-        .child(header)
-        .child(names)
-        .child(grid)
+    let mut list = col().key("event-list").w_full().gap(6.0);
+    if let Some(e) = &s.nextcloud[Kind::Events as usize].error {
+        list = list.child(text(e).font(s.cfg.font(12.0, 400.0)).color(fg.alpha(0.55 * fg.a)).wrap_anywhere());
+    }
+    let events = day_events(s, picked);
+    if events.is_empty() { list = list.child(empty(s, "No events")) }
+    for (key, title) in events {
+        list = list.child(
+            row().key(format!("event-{key}")).w_full().pl(12.0).pr(4.0).py(4.0).gap(8.0).center_y()
+                .radius(s.cfg.radius(12.0)).fill(fg.alpha(0.05 * fg.a))
+                .transition(Transition::opacity())
+                .child(text(title).font(s.cfg.font(14.0, 500.0)).color(fg).grow(1.0).min_w(0.0).wrap_anywhere())
+                .child(tool(s, "delete", &icons::X, &format!("Delete {title}")).on_press(move |s: &mut Island| delete_event(s, key))),
+        );
+    }
+    let (py_, pm_, pd_) = picked;
+    let day = col().key("calendar-day").w(0.0).grow(1.0).h_full().gap(8.0)
+        .child(row().key("calendar-day-title").w_full().h(28.0).center_y()
+            .child(text(format_date(py_, pm_, pd_)).font(s.cfg.font(15.0, 600.0)).color(fg)))
+        .child(col().key("event-scroll").w_full().grow(1.0).min_h(0.0).scroll(ScrollSpec { stick_bottom: false }).on_wheel(Island::wheel).child(list))
+        .child(
+            row().key("event-input").w_full().gap(8.0).center_y()
+                .child(field(s, "new-event", &s.event, "New event...", |s: &mut Island| &mut s.event, add_event))
+                .child(button(s, "add-event", "Add", true).on_press_tx(add_event)),
+        );
+
+    row().key("calendar").w_full().h_full().px(16.0).pt(14.0).pb(14.0).gap(16.0)
+        .child(col().key("calendar-month").w(280.0).h_full().gap(8.0).child(header).child(names).child(grid))
+        .child(day)
 }
 
 #[cfg(test)]
