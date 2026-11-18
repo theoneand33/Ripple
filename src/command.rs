@@ -33,16 +33,21 @@ pub fn parse_command(input: &str) -> (String, Vec<String>) {
     (exe.replace('/', "\\"), args.into_iter().map(drive_path).collect())
 }
 
-/// Backslashes from the first `X:/` on, unless it is inside a URL (`https:`, `file:///C:/`).
+/// Backslashes in each `X:/...` path, up to `,;?#=` or `://`; not inside a URL (`https:`, `file:///C:/`).
 fn drive_path(arg: String) -> String {
     let b = arg.as_bytes();
-    let drive = (0..b.len().saturating_sub(2)).find(|&i| {
-        b[i].is_ascii_alphabetic() && b[i + 1] == b':' && b[i + 2] == b'/' && (i == 0 || !(b[i - 1].is_ascii_alphanumeric() || b[i - 1] == b'/'))
-    });
-    match drive {
-        Some(i) => format!("{}{}", &arg[..i], arg[i..].replace('/', "\\")),
-        None => arg,
+    let mut out = b.to_vec();
+    let mut i = 0;
+    while i + 2 < b.len() {
+        let drive = b[i].is_ascii_alphabetic() && b[i + 1] == b':' && b[i + 2] == b'/' && (i == 0 || !(b[i - 1].is_ascii_alphanumeric() || b[i - 1] == b'/'));
+        if !drive { i += 1; continue }
+        i += 2;
+        while i < b.len() && !b",;?#=".contains(&b[i]) && !b[i..].starts_with(b"://") {
+            if b[i] == b'/' { out[i] = b'\\' }
+            i += 1;
+        }
     }
+    String::from_utf8(out).expect("only ASCII bytes changed")
 }
 
 fn split_command(prepared: &str) -> (String, Vec<String>) {
@@ -109,6 +114,7 @@ mod tests {
         assert_eq!(parse_command("cmd"), ("cmd".into(), vec![]));
         assert_eq!(parse_command("C:/a/app.exe --u=https://x /select,C:/b"), (r"C:\a\app.exe".into(), s(&["--u=https://x", r"/select,C:\b"])));
         assert_eq!(parse_command("x.exe C:/a/b file:///C:/c --p=d:/e"), ("x.exe".into(), s(&[r"C:\a\b", "file:///C:/c", r"--p=d:\e"])));
+        assert_eq!(parse_command("x.exe --u=C:/x?next=https://a/b C:/a;D:/b"), ("x.exe".into(), s(&[r"--u=C:\x?next=https://a/b", r"C:\a;D:\b"])));
         assert_eq!(parse_command(r#""C:/Program Files/a.exe" https://x"#), (r"C:\Program Files\a.exe".into(), s(&["https://x"])));
     }
 
