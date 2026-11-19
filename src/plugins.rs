@@ -61,7 +61,8 @@ impl Plugin {
     pub fn load(path: PathBuf, modified: Option<SystemTime>, source: &str) -> Plugin {
         let name = path.file_stem().map_or("plugin".into(), |s| s.to_string_lossy().into_owned());
         let mut p = Plugin { name, path, modified, lua: Lua::new(), spec: None, view: None, error: None, handlers: Vec::new() };
-        let spec = guarded(&p.lua, || {
+        let deadline = Instant::now() + BUDGET;
+        let spec = guarded(&p.lua, deadline, || {
             p.lua.set_memory_limit(64 << 20)?;
             p.lua.globals().set("__ripple_expired", p.lua.create_function(|lua, ()| Ok(lua.app_data_ref::<Instant>().is_some_and(|d| Instant::now() > *d)))?)?;
             p.lua.load(PRELUDE).exec()?;
@@ -71,7 +72,7 @@ impl Plugin {
             Ok(spec) => {
                 if let Ok(name) = spec.get::<String>("name") { p.name = name }
                 p.spec = Some(spec);
-                p.render();
+                p.render(deadline);
             }
             Err(e) => p.fail(e),
         }
@@ -80,7 +81,8 @@ impl Plugin {
 
     fn read(path: PathBuf, modified: Option<SystemTime>) -> Plugin {
         match std::fs::read_to_string(&path) {
-            Ok(source) => Plugin::load(path, modified, &source),
+            // Lua's load skips no byte-order mark, and some Windows editors write one.
+            Ok(source) => Plugin::load(path, modified, source.strip_prefix('\u{feff}').unwrap_or(&source)),
             // An empty panel that loads cleanly, so the read error is the one shown.
             Err(e) => { let mut p = Plugin::load(path, modified, r#"return { view = function() return "" end }"#); p.fail(mlua::Error::runtime(e)); p }
         }
@@ -92,9 +94,9 @@ impl Plugin {
     }
 
     /// Calls `spec[name](state)` when the plugin defines it.
-    fn call(&mut self, name: &str) {
+    fn call(&mut self, name: &str, deadline: Instant) {
         let Some(spec) = &self.spec else { return };
-        let r = guarded(&self.lua, || match spec.get::<Option<Function>>(name)? {
+        let r = guarded(&self.lua, deadline, || match spec.get::<Option<Function>>(name)? {
             Some(f) => f.call::<()>(spec.get::<Value>("state")?),
             None => Ok(()),
         });
@@ -102,10 +104,10 @@ impl Plugin {
     }
 
     /// Runs `view(state)` again; a failed view keeps the last good one.
-    fn render(&mut self) {
+    fn render(&mut self, deadline: Instant) {
         let Some(spec) = &self.spec else { return };
         let mut handlers = Vec::new();
-        let view = guarded(&self.lua, || {
+        let view = guarded(&self.lua, deadline, || {
             let view: Function = spec.get("view").map_err(|_| mlua::Error::runtime("the plugin's table has no view function"))?;
             node(&view.call::<Value>(spec.get::<Value>("state")?)?, &mut handlers, 0)
         });
@@ -118,8 +120,10 @@ impl Plugin {
     /// Runs the handler of the button pressed.
     pub fn press(&mut self, action: usize) {
         let (Some(f), Some(spec)) = (self.handlers.get(action).cloned(), &self.spec) else { return };
-        if let Err(e) = guarded(&self.lua, || f.call::<()>(spec.get::<Value>("state")?)) { self.fail(e) }
-        self.render();
+        // The handler and the view after it share one budget.
+        let deadline = Instant::now() + BUDGET;
+        if let Err(e) = guarded(&self.lua, deadline, || f.call::<()>(spec.get::<Value>("state")?)) { self.fail(e) }
+        self.render(deadline);
     }
 
     /// The handler of the button with this key, as `--test-plugin --press` finds it.
@@ -139,15 +143,15 @@ impl Plugin {
     /// Once a second while the panel shows: `tick(state)`, then the view again. True if it changed.
     pub fn tick(&mut self) -> bool {
         let before = (self.view.clone(), self.error.clone());
-        self.call("tick");
-        self.render();
+        let deadline = Instant::now() + BUDGET;
+        self.call("tick", deadline);
+        self.render(deadline);
         before != (self.view.clone(), self.error.clone())
     }
 }
 
-/// Runs `f` with `BUDGET` to finish.
-fn guarded<R>(lua: &Lua, f: impl FnOnce() -> mlua::Result<R>) -> mlua::Result<R> {
-    let deadline = Instant::now() + BUDGET;
+/// Runs `f`, stopping it at `deadline`.
+fn guarded<R>(lua: &Lua, deadline: Instant, f: impl FnOnce() -> mlua::Result<R>) -> mlua::Result<R> {
     lua.set_app_data(deadline);
     lua.set_global_hook(HookTriggers::new().every_nth_instruction(10_000), move |_, _| {
         if Instant::now() > deadline { Err(mlua::Error::runtime(format!("stopped after {} ms", BUDGET.as_millis()))) } else { Ok(VmState::Continue) }
@@ -308,6 +312,10 @@ mod tests {
         let p = Plugin::read(path.clone(), None);
         let _ = std::fs::remove_file(&path);
         assert!(p.error.unwrap().contains("UTF-8"));
+        std::fs::write(&path, "\u{feff}return { view = function() return 'ok' end }").unwrap();
+        let p = Plugin::read(path.clone(), None);
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(p.error, None, "a byte-order mark is skipped");
     }
 
     #[test]
