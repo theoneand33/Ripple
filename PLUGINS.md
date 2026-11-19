@@ -48,7 +48,7 @@ Errors show at the top of the panel and on stderr. An error stays until you chan
 
 These commands need no display, so they work in CI, over SSH and for agents.
 
-`--test-plugin` works in any build, the installed app included. It loads one file, runs the steps in order and prints JSON. It exits 1 if the plugin has an error.
+`--test-plugin` works in any build, the installed app included. It loads one file, runs the steps in order and prints JSON. It exits 1 if the plugin has an error. On Windows the release build is a GUI app, so the shell doesn't wait for it: pipe it (`ripple --test-plugin counter.lua | Out-String`) to get the output and exit code in order.
 
 ```bash
 ripple --test-plugin counter.lua --press + --press + --tick

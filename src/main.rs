@@ -1,5 +1,8 @@
 //! Ripple: a Dynamic Island-style bar at the top of the screen, drawn with Rune.
 
+// Release builds on Windows open no console window beside the Island; `attach_console` keeps CLI output.
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 mod command;
 mod config;
 mod icons;
@@ -271,8 +274,26 @@ fn overlay_island(screens: Vec<Screen>, store: Store) -> Vec<rune::AnyWindowSpec
     vec![WindowSpec::from_app("host", host).into()]
 }
 
+/// Writes stdout and stderr to the terminal that ran Ripple, unless they are already redirected.
+#[cfg(windows)]
+fn attach_console() {
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetStdHandle(which: u32) -> isize;
+        fn AttachConsole(pid: u32) -> i32;
+    }
+    const ATTACH_PARENT_PROCESS: u32 = u32::MAX;
+    // STD_OUTPUT_HANDLE and STD_ERROR_HANDLE; unset reads as NULL or INVALID_HANDLE_VALUE.
+    // SAFETY: plain Win32 calls; attaching fails harmlessly when there is no parent console or one is attached.
+    unsafe {
+        if [-11i32, -12].into_iter().any(|h| matches!(GetStdHandle(h as u32), 0 | -1)) { AttachConsole(ATTACH_PARENT_PROCESS); }
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    #[cfg(windows)]
+    if !args.is_empty() { attach_console() }
     if args.first().is_some_and(|a| a == "--test-plugin") { std::process::exit(plugins::test_cli(&args[1..])) }
     #[cfg(target_os = "linux")]
     let wayland = {

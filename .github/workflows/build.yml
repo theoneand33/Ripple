@@ -166,6 +166,9 @@ jobs:
         if: matrix.platform == 'windows'
         shell: pwsh
         run: |
+          # The release exe is a GUI app: piped CLI output must still come through.
+          $scenes = target/${{ matrix.target }}/release/ripple.exe --list-scenes | Out-String
+          if (-not $scenes.Trim()) { throw "ripple.exe --list-scenes printed nothing" }
           $p = Start-Process target/${{ matrix.target }}/release/ripple.exe -PassThru -RedirectStandardError out/smoke-Windows.log
           Start-Sleep 15
           Add-Type -AssemblyName System.Windows.Forms, System.Drawing
