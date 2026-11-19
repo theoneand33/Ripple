@@ -81,7 +81,8 @@ impl Plugin {
     fn read(path: PathBuf, modified: Option<SystemTime>) -> Plugin {
         match std::fs::read_to_string(&path) {
             Ok(source) => Plugin::load(path, modified, &source),
-            Err(e) => { let mut p = Plugin::load(path, modified, "return {}"); p.fail(mlua::Error::runtime(e)); p }
+            // An empty panel that loads cleanly, so the read error is the one shown.
+            Err(e) => { let mut p = Plugin::load(path, modified, r#"return { view = function() return "" end }"#); p.fail(mlua::Error::runtime(e)); p }
         }
     }
 
@@ -298,6 +299,15 @@ mod tests {
         assert!(p.error.unwrap().contains("stopped"), "pcall can't catch the stop");
         assert!(plugin(r#"return { view = function() local ok = pcall(error, "x"); return ui.text(tostring(ok)) end }"#).error.is_none(), "pcall still works in time");
         assert!(plugin("return { view = function() local t = ui.row {}; t[1] = t; return t end }").error.unwrap().contains("deeper"));
+    }
+
+    #[test]
+    fn unreadable_files_say_why() {
+        let path = std::env::temp_dir().join(format!("ripple-plugin-{}.lua", std::process::id()));
+        std::fs::write(&path, [0xff, 0xfe]).unwrap();
+        let p = Plugin::read(path.clone(), None);
+        let _ = std::fs::remove_file(&path);
+        assert!(p.error.unwrap().contains("UTF-8"));
     }
 
     #[test]
