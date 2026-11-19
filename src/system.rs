@@ -129,10 +129,26 @@ fn start_ps_server() -> Option<PsServer> {
 /// `TIMEOUT` (or a dead process) takes the process down, and the next call starts another.
 #[cfg(windows)]
 fn powershell(script: &str) -> String {
+    static SERVER: PsSlot = std::sync::Mutex::new(None);
+    powershell_in(&SERVER, script)
+}
+
+#[cfg(windows)]
+type PsSlot = std::sync::Mutex<Option<PsServer>>;
+
+/// Now playing and its controls: WinRT calls that can hang get a process of their own, so a stuck
+/// one doesn't hold up the camera, mic and Bluetooth pollers.
+#[cfg(windows)]
+fn powershell_media(script: &str) -> String {
+    static SERVER: PsSlot = std::sync::Mutex::new(None);
+    powershell_in(&SERVER, script)
+}
+
+#[cfg(windows)]
+fn powershell_in(slot: &PsSlot, script: &str) -> String {
     use base64::Engine;
     use std::io::Write;
-    static SERVER: std::sync::Mutex<Option<PsServer>> = std::sync::Mutex::new(None);
-    let mut server = SERVER.lock().unwrap_or_else(|e| e.into_inner());
+    let mut server = slot.lock().unwrap_or_else(|e| e.into_inner());
     if server.is_none() { *server = start_ps_server() }
     let Some(ps) = server.as_mut() else { return String::new() };
     let answer = writeln!(ps.stdin, "{}", ps_encode(script)).and_then(|_| ps.stdin.flush()).ok()
@@ -319,7 +335,7 @@ end if"#;
 #[cfg(windows)]
 pub fn media() -> Option<Track> {
     const SCRIPT: &str = "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Add-Type -AssemblyName System.Runtime.WindowsRuntime; $manager = [Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager, Windows.Media.Control, ContentType = WindowsRuntime]::RequestAsync().GetAwaiter().GetResult(); $session = $manager.GetSessions() | Where-Object { $_.GetPlaybackInfo().PlaybackStatus -eq 'Playing' } | Select-Object -First 1; if (-not $session) { $session = $manager.GetCurrentSession() }; if ($session) { $props = $session.TryGetMediaPropertiesAsync().GetAwaiter().GetResult(); $playback = $session.GetPlaybackInfo(); $status = $playback.PlaybackStatus; $timeline = $session.GetTimelineProperties(); $position = $timeline.Position; if ($status.ToString() -eq 'Playing' -and $timeline.LastUpdatedTime.Year -gt 2000) { $position += [DateTimeOffset]::Now - $timeline.LastUpdatedTime }; $length = $timeline.EndTime - $timeline.StartTime; $thumbnail = $props.Thumbnail; $artwork = ''; if ($thumbnail) { try { $stream = $thumbnail.OpenReadAsync().GetAwaiter().GetResult(); $buffer = New-Object byte[] $stream.Size; $reader = New-Object Windows.Storage.Streams.DataReader $stream; $reader.LoadAsync($stream.Size).GetAwaiter().GetResult() | Out-Null; $reader.ReadBytes($buffer); $artwork = 'data:image/png;base64,' + [Convert]::ToBase64String($buffer); $reader.Close(); $stream.Close(); } catch { } } $info = @{ Title = $props.Title; Artist = $props.Artist; Album = $props.AlbumTitle; Status = $status.ToString().ToLower(); Source = $session.SourceAppUserModelId; Artwork = $artwork; Position = $position.TotalSeconds; Length = $length.TotalSeconds }; return $info | ConvertTo-Json -Compress; } return 'null';";
-    let out = powershell(SCRIPT);
+    let out = powershell_media(SCRIPT);
     if let Ok(data) = serde_json::from_str::<serde_json::Value>(&out)
         && data.is_object()
     {
@@ -337,7 +353,7 @@ pub fn media() -> Option<Track> {
         });
     }
     // No media session: fall back to Spotify's window title ("Artist - Song").
-    let out = powershell("[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Get-Process | Where-Object {$_.ProcessName -eq 'Spotify'} | Select-Object -ExpandProperty MainWindowTitle");
+    let out = powershell_media("[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Get-Process | Where-Object {$_.ProcessName -eq 'Spotify'} | Select-Object -ExpandProperty MainWindowTitle");
     let title = out.lines().map(str::trim).find(|l| l.contains(" - "))?;
     let (artist, song) = title.split_once(" - ")?;
     Some(Track { name: song.into(), artist: artist.into(), playing: true, source: "Spotify".into(), ..Track::default() })
@@ -370,7 +386,7 @@ end if"#);
     #[cfg(windows)]
     {
         let method = match cmd { MediaCommand::PlayPause => "TryTogglePlayPauseAsync", MediaCommand::Next => "TrySkipNextAsync", MediaCommand::Previous => "TrySkipPreviousAsync" };
-        powershell(&format!("Add-Type -AssemblyName System.Runtime.WindowsRuntime; $m = [Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager, Windows.Media.Control, ContentType = WindowsRuntime]::RequestAsync().GetAwaiter().GetResult(); $s = $m.GetSessions() | Where-Object {{ $_.GetPlaybackInfo().PlaybackStatus -eq 'Playing' }} | Select-Object -First 1; if (-not $s) {{ $s = $m.GetCurrentSession() }}; if ($s) {{ $s.{method}().GetAwaiter().GetResult() | Out-Null }}"));
+        powershell_media(&format!("Add-Type -AssemblyName System.Runtime.WindowsRuntime; $m = [Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager, Windows.Media.Control, ContentType = WindowsRuntime]::RequestAsync().GetAwaiter().GetResult(); $s = $m.GetSessions() | Where-Object {{ $_.GetPlaybackInfo().PlaybackStatus -eq 'Playing' }} | Select-Object -First 1; if (-not $s) {{ $s = $m.GetCurrentSession() }}; if ($s) {{ $s.{method}().GetAwaiter().GetResult() | Out-Null }}"));
     }
 }
 
