@@ -564,9 +564,9 @@ mod tests {
     fn the_last_visible_tab_cannot_be_hidden() {
         let mut cfg = Config::default();
         for t in Tab::ALL { cfg.toggle_tab(t) }
-        assert_eq!(cfg.visible_tabs(), [Tab::Plugins]);
+        assert_eq!(cfg.visible_tabs(), [Tab::Calculator]);
         cfg.toggle_tab(Tab::Search);
-        assert_eq!(cfg.visible_tabs(), [Tab::Search, Tab::Plugins]);
+        assert_eq!(cfg.visible_tabs(), [Tab::Search, Tab::Calculator]);
     }
 
     #[cfg(unix)]
