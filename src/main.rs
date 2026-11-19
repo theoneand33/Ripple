@@ -291,7 +291,8 @@ fn main() {
         #[cfg(target_os = "linux")]
         if wayland { return overlay_island(screens, store) }
         // The Island only takes focus when clicked, never on launch (macOS and Windows).
-        let mut app = App::new(island_spec()).keep_running().open_inactive().on_focus(Island::window_focus);
+        // Saves a note typed since the last per-second save: macOS Quit and logout, Windows logoff and shutdown.
+        let mut app = App::new(island_spec()).keep_running().open_inactive().on_focus(Island::window_focus).on_quit(|s, _| s.store.flush());
         let island = Host::Window(app.handle());
 
         let settings_state = Settings::new(store.clone(), Some(island.clone()), &screens);
