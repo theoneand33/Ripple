@@ -50,7 +50,7 @@ impl Island {
     /// Resumes an entry in Stremflix-rs's window.
     pub fn stremflix_play(&mut self, entry: Entry) {
         let (Some(base), Some(me)) = (api::base(), self.me.clone()) else { return };
-        self.stremflix.status = format!("Opening {}...", entry.title);
+        self.stremflix.status = format!("Opening {}…", entry.title);
         std::thread::spawn(move || {
             let result = api::play(&base, &entry);
             me.update(move |s, _| s.stremflix.status = result.err().unwrap_or_default());
@@ -62,12 +62,12 @@ pub fn view(s: &Island) -> El {
     let fg = s.cfg.text();
     let muted = fg.alpha(0.55 * fg.a);
     let (pw, ph) = (88.0, 132.0);
-    let header = row().key("stremflix-header").w_full().h(28.0).gap(8.0).center_y()
+    let header = row().key("stremflix-header").w_full().min_h(28.0).gap(8.0).center_y()
         .child(text("Continue Watching").font(s.cfg.font(17.0, 700.0)).color(fg).single_line())
-        .child(text(&s.stremflix.status).key("stremflix-status").role("status").font(s.cfg.font(12.0, 400.0)).color(muted).grow(1.0).min_w(0.0).align(rune::Align::End).truncate());
+        .child(text(&s.stremflix.status).key("stremflix-status").role("status").font(s.cfg.font(12.0, 400.0)).color(muted).grow(1.0).min_w(0.0).align(rune::Align::End).wrap_anywhere());
     let root = col().key("stremflix").w_full().h_full().px(16.0).pt(14.0).pb(14.0).gap(10.0).child(header);
     let entries = match &s.stremflix.entries {
-        None => return root.child(empty(s, "Loading...")),
+        None => return root.child(empty(s, "Loading…")),
         Some(Err(e)) => return root.child(empty(s, e)),
         Some(Ok(list)) if list.is_empty() => return root.child(empty(s, "Nothing to continue")),
         Some(Ok(list)) => list,

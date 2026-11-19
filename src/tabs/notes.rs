@@ -1,9 +1,9 @@
 //! Notes: plain-text notes, each titled by its first line, saved as they are typed and synced
 //! with Nextcloud Notes when an account is set.
 
-use rune::{El, ScrollSpec, TextEdit, Transition, col, el, row, text, text_input};
+use rune::{Color, El, ScrollSpec, TextEdit, Transition, col, el, row, text, text_input};
 
-use super::{empty, tool};
+use super::{Undo, empty, tool, undo_button};
 use crate::config::{Config, Item};
 use crate::icons;
 use crate::island::Island;
@@ -39,11 +39,15 @@ impl Island {
 
     pub fn delete_note(&mut self) {
         let i = self.notes.index;
+        let mut gone = None;
         self.save(|c| {
             if i >= c.notes.len() { return }
+            let item = c.notes.remove(i);
             // Nextcloud deletes it on the next sync.
-            if let Some(r) = c.notes.remove(i).remote { c.nextcloud.deleted_notes.push(r.id) }
+            if let Some(r) = &item.remote { c.nextcloud.deleted_notes.push(r.id.clone()) }
+            gone = Some(item);
         });
+        if let Some(item) = gone { self.undo = Some(Undo::Note(i, item)) }
         self.open_note(i);
         self.nextcloud_sync(crate::nextcloud::Kind::Notes);
     }
@@ -75,6 +79,7 @@ pub fn view(s: &Island) -> El {
     if let Some(e) = &s.nextcloud[crate::nextcloud::Kind::Notes as usize].error {
         header = header.child(text(e).font(s.cfg.font(12.0, 400.0)).color(muted).shrink().min_w(0.0).truncate());
     }
+    if let Some(undo) = undo_button(s) { header = header.child(undo) }
     if !s.cfg.notes.is_empty() {
         header = header.child(tool(s, "delete-note", &icons::TRASH, "Delete note").on_press(Island::delete_note));
     }
@@ -89,6 +94,8 @@ pub fn view(s: &Island) -> El {
         list = list.child(
             row().key(format!("note-{i}")).role("button").label(title.to_string()).checked(on).focusable(true)
                 .w_full().px(6.0).py(6.0).gap(8.0).items_start().radius(s.cfg.radius(10.0))
+                // Selection shows in the fill too, not only the accent (WCAG 1.4.1).
+                .fill(if on { fg.alpha(0.1 * fg.a) } else { Color::TRANSPARENT })
                 .hover(fg.alpha(0.06 * fg.a)).press(fg.alpha(0.12 * fg.a))
                 .on_press(move |s: &mut Island| s.open_note(i))
                 .child(el().mt(6.0).size(7.0, 7.0).radius(3.5).fill(if on { accent } else { fg.alpha(0.3 * fg.a) }).a11y_hidden())
@@ -100,7 +107,7 @@ pub fn view(s: &Island) -> El {
         );
     }
     let editor = text_input(&s.notes.editor, s.cfg.font(14.0, 400.0).lh(20.0)).key("note-editor").label("Note").w_full()
-        .color(fg).placeholder("Title, then your note", fg.alpha(0.4 * fg.a))
+        .color(fg).placeholder("Title, then your note", fg.alpha(0.5 * fg.a))
         .on_edit(|s: &mut Island| &mut s.notes.editor)
         // Return breaks the line.
         .on_submit(|s: &mut Island, _| { s.notes.editor.insert("\n"); s.note_edited() })

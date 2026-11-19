@@ -64,7 +64,7 @@ impl Island {
         if self.cfg.t3_devices.is_empty() && !self.cfg.t3_detected && !self.t3.detecting {
             if let Some(me) = self.me.clone() {
                 self.t3.detecting = true;
-                self.t3.status = "Looking for T3 Code on this computer...".into();
+                self.t3.status = "Looking for T3 Code on this computer…".into();
                 std::thread::spawn(move || {
                     let found = client::detect_local();
                     me.update(move |s, _| {
@@ -80,7 +80,7 @@ impl Island {
             return;
         }
         let (Some(device), Some(me)) = (self.t3_device().map(|d| d.1.clone()), self.me.clone()) else { return };
-        self.t3.status = "Loading...".into();
+        self.t3.status = "Loading…".into();
         let (client, generation) = (self.t3.client.clone(), self.t3.generation);
         std::thread::spawn(move || {
             let result = client.load(&device);
@@ -101,7 +101,7 @@ impl Island {
         self.t3.generation += 1;
         self.t3.projects = None;
         let (Some(device), Some(me)) = (self.t3_device().map(|d| d.1.clone()), self.me.clone()) else { return };
-        self.t3.status = "Loading folders...".into();
+        self.t3.status = "Loading folders…".into();
         let (client, generation, env) = (self.t3.client.clone(), self.t3.generation, self.t3_env().to_string());
         std::thread::spawn(move || {
             let result = client.projects(&device, &env);
@@ -136,7 +136,7 @@ impl Island {
             runtime_mode: self.t3.data.as_ref().map(|d| d.runtime_mode.clone()).unwrap_or_default(),
         };
         let (device, client, title) = (device.clone(), self.t3.client.clone(), project.title.clone());
-        self.t3.status = "Starting...".into();
+        self.t3.status = "Starting…".into();
         self.t3.starting = true;
         std::thread::spawn(move || {
             let result = client.start_thread(&device, &launch);
@@ -155,7 +155,7 @@ pub fn view(s: &Island, layer: &mut Vec<El>) -> El {
     let fg = s.cfg.text();
     let root = col().key("t3").w_full().h_full().px(16.0).pt(18.0).pb(14.0).gap(8.0);
     let Some((device_index, _)) = s.t3_device() else {
-        return root.child(empty(s, if s.t3.detecting { "Looking for T3 Code on this computer..." } else { "Add a T3 Code device in Settings" }));
+        return root.child(empty(s, if s.t3.detecting { "Looking for T3 Code on this computer…" } else { "Add a T3 Code device in Settings" }));
     };
     let k = &s.cfg.kit();
     let links = s.t3.data.as_ref().map(|d| d.links.as_slice()).unwrap_or_default();
@@ -227,7 +227,7 @@ pub fn view(s: &Island, layer: &mut Vec<El>) -> El {
         );
 
     let message = text_input(&s.t3.message, s.cfg.font(14.0, 400.0).lh(20.0)).key("t3-message").label("Message").w_full()
-        .color(fg).placeholder("What should the agent do?", fg.alpha(0.4 * fg.a))
+        .color(fg).placeholder("What should the agent do?", fg.alpha(0.5 * fg.a))
         .on_edit(|s: &mut Island| &mut s.t3.message)
         // Return breaks the line; Ctrl+Return (⌘ on macOS) starts the thread.
         .on_submit(|s: &mut Island, _| s.t3.message.insert("\n"))
@@ -248,7 +248,7 @@ pub fn view(s: &Island, layer: &mut Vec<El>) -> El {
         )
         .child(
             row().key("t3-actions").w_full().gap(8.0).center_y()
-                .child(text(&s.t3.status).key("t3-status").role("status").font(s.cfg.font(12.0, 400.0)).color(fg.alpha(0.6 * fg.a)).grow(1.0).min_w(0.0).truncate())
+                .child(text(&s.t3.status).key("t3-status").role("status").font(s.cfg.font(12.0, 400.0)).color(fg.alpha(0.6 * fg.a)).grow(1.0).min_w(0.0).wrap_anywhere())
                 .child(button(s, "t3-start", "Start", s.t3_can_start()).on_press(Island::t3_start)),
         )
 }

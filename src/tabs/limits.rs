@@ -26,7 +26,7 @@ pub fn view(s: &Island) -> El {
     let muted = fg.alpha(0.55 * fg.a);
     let root = col().key("limits").w_full().h_full().px(16.0).pt(14.0).pb(14.0);
     let usage = match &s.limits {
-        None => return root.child(empty(s, "Loading...")),
+        None => return root.child(empty(s, "Loading…")),
         Some(u) if u.is_empty() => return root.child(empty(s, "Sign in to Claude Code, Codex, Copilot, OpenCode Go or Grok Build")),
         Some(u) => u,
     };

@@ -21,7 +21,7 @@ pub fn view(s: &Island) -> El {
         root = root.child(battery.child(text(format!("{percent}%")).font(s.cfg.font(13.0, 500.0).features("'tnum' 1")).color(bg)));
     }
     let gear = el().key("open-settings").role("button").label("Open settings").focusable(true)
-        .size(28.0, 28.0).center().radius(8.0).hover(fg.alpha(0.1 * fg.a)).press(fg.alpha(0.2 * fg.a))
+        .size(28.0, 28.0).center().radius(s.cfg.radius(8.0)).hover(fg.alpha(0.1 * fg.a)).press(fg.alpha(0.2 * fg.a))
         .child(icon(&icons::SETTINGS, 16.0).color(muted))
         .on_press(|s: &mut Island| if let Some(settings) = &s.settings { settings.open() });
 
@@ -39,11 +39,11 @@ pub fn view(s: &Island) -> El {
     let artist = if track.artist.is_empty() { "Unknown Artist" } else { &track.artist };
     let media = |key: &'static str, glyph: &'static rune::Icon, size: f32, command: MediaCommand, label: &str| {
         el().key(key).role("button").label(label).focusable(true)
-            .padding(4.0).radius(8.0).hover(fg.alpha(0.1 * fg.a)).press(fg.alpha(0.2 * fg.a)).press_scale(0.97)
+            .padding(4.0).radius(s.cfg.radius(8.0)).hover(fg.alpha(0.1 * fg.a)).press(fg.alpha(0.2 * fg.a)).press_scale(0.97)
             .child(icon(glyph, size).color(fg))
             .on_press(move |s: &mut Island| control(s, command))
     };
-    let line = |key: &str, text: El, text_width: f32, height: f32| marquee(key, text, text_width, 175.0, 10.0).w(175.0).h(height);
+    let line = |key: &str, text: El, text_width: f32, height: f32| marquee(s, key, text, text_width, 175.0, 10.0).w(175.0).h(height);
     let details = col().key("details").grow(1.0).min_w(0.0).pl(5.0)
         .child(line("track-name", text(name).font(s.cfg.font(18.0, 600.0)).color(fg).single_line(), estimate_width(name, 18.0), 24.0))
         .child(line("track-artist", text(artist).font(s.cfg.font(13.0, 400.0)).color(fg.alpha(0.8 * fg.a)).single_line(), estimate_width(artist, 13.0), 18.0).mt(4.0))

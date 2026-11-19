@@ -32,7 +32,7 @@ pub fn view(s: &Island) -> El {
         let copied = s.clipboard.copied.is_some_and(|c| c.0 == i);
         let value = item.clone();
         let copy = el().key("copy").role("button").label("Copy").focusable(true)
-            .px(8.0).h(24.0).center().radius(6.0)
+            .px(8.0).h(24.0).center().radius(s.cfg.radius(6.0))
             .fill(if copied { Color { r: 0.03, g: 0.57, b: 0.1, a: 0.4 } } else { Color::WHITE.alpha(0.15) })
             .hover(fg.alpha(0.1 * fg.a)).press(fg.alpha(0.2 * fg.a))
             .child(text(if copied { "Copied" } else { "Copy" }).key(if copied { "copied" } else { "copy-label" }).font(s.cfg.font(11.0, 500.0)).color(fg).a11y_hidden()

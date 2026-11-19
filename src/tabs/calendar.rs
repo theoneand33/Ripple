@@ -3,7 +3,7 @@
 
 use rune::{El, ScrollSpec, Transition, Tx, col, el, row, text};
 
-use super::{button, empty, field, tool};
+use super::{Undo, button, empty, field, pill, tool, undo_button};
 use crate::config::Item;
 use crate::icons;
 use crate::island::{Island, format_date, weekday};
@@ -36,10 +36,14 @@ fn add_event(s: &mut Island, _: &mut Tx) {
 }
 
 fn delete_event(s: &mut Island, key: u64) {
+    let mut gone = None;
     s.save(|c| {
         let Some(i) = c.events.iter().position(|e| e.key == key) else { return };
-        if let Some(r) = c.events.remove(i).remote { c.nextcloud.deleted_events.push(r.id) }
+        let item = c.events.remove(i);
+        if let Some(r) = &item.remote { c.nextcloud.deleted_events.push(r.id.clone()) }
+        gone = Some(item);
     });
+    if let Some(item) = gone { s.undo = Some(Undo::Event(item)) }
     s.nextcloud_sync(Kind::Events);
 }
 
@@ -65,13 +69,7 @@ pub fn view(s: &Island) -> El {
         );
     if s.calendar_offset != 0 || s.calendar_day.is_some_and(|d| d != s.today) {
         // Shaped like `tool`, so it sits quietly beside the arrows.
-        header = header.child(
-            el().key("calendar-today").role("button").label("Today").focusable(true)
-                .h(28.0).px(12.0).center().radius(s.cfg.radius(14.0)).fill(fg.alpha(0.1 * fg.a))
-                .hover(fg.alpha(0.18 * fg.a)).press(fg.alpha(0.26 * fg.a))
-                .child(text("Today").font(s.cfg.font(13.0, 600.0)).color(fg).a11y_hidden())
-                .on_press(|s: &mut Island| (s.calendar_offset, s.calendar_day) = (0, None)),
-        );
+        header = header.child(pill(s, "calendar-today", "Today").on_press(|s: &mut Island| (s.calendar_offset, s.calendar_day) = (0, None)));
     }
     header = header
         .child(tool(s, "calendar-prev", &icons::CHEVRON_LEFT, "Previous month").on_press(|s: &mut Island| s.calendar_offset -= 1))
@@ -132,12 +130,13 @@ pub fn view(s: &Island) -> El {
     }
     let (py_, pm_, pd_) = picked;
     let day = col().key("calendar-day").w(0.0).grow(1.0).h_full().gap(8.0)
-        .child(row().key("calendar-day-title").w_full().h(28.0).center_y()
-            .child(text(format_date(py_, pm_, pd_)).font(s.cfg.font(15.0, 600.0)).color(fg)))
+        .child(row().key("calendar-day-title").w_full().h(28.0).center_y().justify_between()
+            .child(text(format_date(py_, pm_, pd_)).font(s.cfg.font(15.0, 600.0)).color(fg))
+            .children(undo_button(s)))
         .child(col().key("event-scroll").w_full().grow(1.0).min_h(0.0).scroll(ScrollSpec { stick_bottom: false }).on_wheel(Island::wheel).child(list))
         .child(
             row().key("event-input").w_full().gap(8.0).center_y()
-                .child(field(s, "new-event", &s.event, "New event...", |s: &mut Island| &mut s.event, add_event))
+                .child(field(s, "new-event", &s.event, "New event…", |s: &mut Island| &mut s.event, add_event))
                 .child(button(s, "add-event", "Add", true).on_press_tx(add_event)),
         );
 
