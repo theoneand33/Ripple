@@ -234,6 +234,7 @@ impl Plugins {
                 .filter(|p| p.extension().is_some_and(|e| e == "lua")).collect()
         };
         files.sort();
+        let shown = self.list.get(self.open).map(|p| p.path.clone());
         let mut old = std::mem::take(&mut self.list);
         self.list = files.into_iter().map(|path| {
             let modified = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
@@ -243,7 +244,8 @@ impl Plugins {
                 None => Plugin::read(path, modified),
             }
         }).collect();
-        self.open = self.open.min(self.list.len().saturating_sub(1));
+        // The plugin shown stays shown when files are added or removed around it.
+        self.open = shown.and_then(|s| self.list.iter().position(|p| p.path == s)).unwrap_or(self.open).min(self.list.len().saturating_sub(1));
     }
 
     pub fn press(&mut self, action: usize) {
@@ -338,6 +340,20 @@ mod tests {
         assert!(p.error.as_deref().unwrap_or("").contains("__gc"));
         drop(p);
         assert!(plugin(r#"return { view = function() return tostring(getmetatable(setmetatable({}, { __index = {} })) ~= nil) end }"#).error.is_none());
+    }
+
+    #[test]
+    fn rescans_keep_the_plugin_shown() {
+        let dir = std::env::temp_dir().join(format!("ripple-plugins-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let view = "return { view = function() return 'x' end }";
+        std::fs::write(dir.join("b.lua"), view).unwrap();
+        let mut plugins = Plugins { dir: Some(dir.clone()), ..Default::default() };
+        plugins.scan();
+        std::fs::write(dir.join("a.lua"), view).unwrap();
+        plugins.scan();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(plugins.list[plugins.open].name, "b");
     }
 
     #[test]
