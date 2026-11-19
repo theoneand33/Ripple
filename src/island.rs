@@ -862,6 +862,8 @@ impl Island {
             *old = new;
         }
         let Some(alert) = moved else { return false };
+        // A poll's commit lands at once otherwise: the Island would snap open with no ring entrance.
+        tx.animated();
         if self.mode != Mode::Large { self.set_mode(Mode::Quick) }
         self.level = Some((alert, tx.clock() + 1.5));
         self.schedule(tx);

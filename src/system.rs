@@ -500,14 +500,21 @@ fn capability_in_use(name: &str) -> bool {
 
 // --- Volume and brightness ---
 
-/// Calls `on(volume, brightness)` with each as a percent (a muted output reads 0), about twice a
-/// second; None where the OS doesn't say. Blocks for good; run it on its own thread.
+/// Calls `on(volume, brightness)` with each as a percent (a muted output reads 0), about ten times
+/// a second; None where the OS doesn't say or nothing was read. Blocks for good; run it on its own thread.
 pub fn watch_levels(on: impl Fn(Option<u8>, Option<u8>)) {
-    // shortcut: spawns wpctl twice a second (a few ms each); switch to `pactl subscribe` if that shows up in idle CPU.
+    // Volume is read when `pactl subscribe` reports a sink change (or twice a second without it);
+    // brightness is a cheap sysfs read, polled every 100 ms.
     #[cfg(target_os = "linux")]
-    loop {
-        on(volume(), brightness());
-        std::thread::sleep(std::time::Duration::from_millis(500));
+    {
+        use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+        let changed = Arc::new(AtomicBool::new(true));
+        let events = { let changed = changed.clone(); std::thread::spawn(move || watch_sinks(&changed)) };
+        for tick in 0u64.. {
+            let read = changed.swap(false, Ordering::Relaxed) || (events.is_finished() && tick % 5 == 0);
+            on(if read { volume() } else { None }, brightness());
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
     }
     // One process for good: starting one per poll costs too much CPU at this rate.
     #[cfg(windows)]
@@ -534,15 +541,26 @@ pub fn watch_levels(on: impl Fn(Option<u8>, Option<u8>)) {
     }
 }
 
-/// Logs the volume twice a second, 0 when muted; "missing value" where the output has none (HDMI).
+/// Sets `changed` on each sink or default-sink event from `pactl subscribe`; returns once pactl exits.
+#[cfg(target_os = "linux")]
+fn watch_sinks(changed: &std::sync::atomic::AtomicBool) {
+    use std::io::BufRead;
+    let Ok(mut child) = command("pactl").arg("subscribe").stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn() else { return };
+    for line in child.stdout.take().into_iter().flat_map(|o| std::io::BufReader::new(o).lines().map_while(Result::ok)) {
+        if line.contains(" on sink ") || line.contains(" on server") { changed.store(true, std::sync::atomic::Ordering::Relaxed) }
+    }
+    let _ = child.wait();
+}
+
+/// Logs the volume ten times a second, 0 when muted; "missing value" where the output has none (HDMI).
 #[cfg(target_os = "macos")]
 const MAC_LEVELS: [&str; 9] = [
     "repeat", "set s to get volume settings",
     "if output muted of s then", "log 0", "else", "log (output volume of s)", "end if",
-    "delay 0.5", "end repeat",
+    "delay 0.1", "end repeat",
 ];
 
-/// Prints "volume brightness" twice a second; -1 for one it can't read.
+/// Prints "volume brightness" ten times a second; -1 for one it can't read.
 #[cfg(windows)]
 const WINDOWS_LEVELS: &str = r#"
 Add-Type -TypeDefinition @'
@@ -579,10 +597,12 @@ public static class RippleAudio {
 '@
 while ($true) {
   $v = try { [RippleAudio]::Level() } catch { -1 }
-  $b = try { [int](Get-CimInstance -Namespace root/wmi -ClassName WmiMonitorBrightness -ErrorAction Stop | Select-Object -First 1).CurrentBrightness } catch { -1 }
+  # WMI is slow: brightness every third pass; -1 keeps the last level.
+  $i++
+  $b = if ($i % 3) { -1 } else { try { [int](Get-CimInstance -Namespace root/wmi -ClassName WmiMonitorBrightness -ErrorAction Stop | Select-Object -First 1).CurrentBrightness } catch { -1 } }
   # Ripple closed the pipe: quit rather than poll on as an orphan.
   try { [Console]::Out.WriteLine("$v $b"); [Console]::Out.Flush() } catch { exit }
-  Start-Sleep -Milliseconds 500
+  Start-Sleep -Milliseconds 100
 }
 "#;
 
