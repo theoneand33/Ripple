@@ -42,6 +42,7 @@ pub struct Settings {
     nc_user: TextEdit,
     nc_password: TextEdit,
     nc_list: TextEdit,
+    nc_calendar: TextEdit,
 }
 
 impl Settings {
@@ -70,6 +71,7 @@ impl Settings {
             nc_user: edit(&cfg.nextcloud.user),
             nc_password: TextEdit::new("").secure(),
             nc_list: edit(&cfg.nextcloud.list),
+            nc_calendar: edit(&cfg.nextcloud.calendar),
             screens: screens.iter().map(|s| s.name.clone()).collect(),
             open: None,
             dragging: None,
@@ -237,8 +239,8 @@ fn drag_tab(s: &mut Settings, from: usize, d: &mut Drag, tx: &mut Tx) {
 /// Whether a tab has its own settings page: one `panel` has sections for.
 fn has_panel(tab: Tab) -> bool {
     match tab {
-        Tab::Search | Tab::Workflows | Tab::Overview | Tab::Assistant | Tab::T3 | Tab::Limits | Tab::Tasks | Tab::Notes => true,
-        Tab::Clipboard | Tab::Stremflix | Tab::Shelf | Tab::System | Tab::Calendar => false,
+        Tab::Search | Tab::Workflows | Tab::Overview | Tab::Assistant | Tab::T3 | Tab::Limits | Tab::Tasks | Tab::Notes | Tab::Calendar => true,
+        Tab::Clipboard | Tab::Stremflix | Tab::Shelf | Tab::System => false,
     }
 }
 
@@ -370,10 +372,10 @@ fn panel(s: &Settings, k: &Kit, layer: &mut Vec<El>, tab: Tab) -> Vec<El> {
                     .on_edit(|s: &mut Settings| &mut s.cliproxy_dir).on_change(|s: &mut Settings, _| { let v = s.cliproxy_dir.text.trim().to_string(); s.save(|c| c.cliproxy_dir = v) }).build(k),
             ]));
         }
-        Tab::Tasks | Tab::Notes => {
+        Tab::Tasks | Tab::Notes | Tab::Calendar => {
             let label = |t: &str| text(t.to_string()).font(cfg.font(14.0, 500.0)).color(fg.alpha(0.8)).mt(10.0);
             let mut rows = vec![
-                text("Notes and Tasks sync with this account. Make an app password in Nextcloud under Settings → Security.").font(cfg.font(12.0, 400.0)).color(fg.alpha(0.6)).wrap(),
+                text("Notes, Tasks and Calendar sync with this account. Make an app password in Nextcloud under Settings → Security.").font(cfg.font(12.0, 400.0)).color(fg.alpha(0.6)).wrap(),
                 label("Server"),
                 TextInput::new(&s.nc_url).label("Nextcloud server").placeholder("https://cloud.example.com")
                     .on_edit(|s: &mut Settings| &mut s.nc_url).on_change(|s: &mut Settings, _| { let v = s.nc_url.text.trim().to_string(); s.save(|c| c.nextcloud.url = v) }).build(k),
@@ -389,9 +391,14 @@ fn panel(s: &Settings, k: &Kit, layer: &mut Vec<El>, tab: Tab) -> Vec<El> {
                 rows.push(TextInput::new(&s.nc_list).label("Nextcloud tasks list").placeholder("The first list with tasks")
                     .on_edit(|s: &mut Settings| &mut s.nc_list).on_change(|s: &mut Settings, _| { let v = s.nc_list.text.trim().to_string(); s.save(|c| c.nextcloud.list = v) }).build(k));
             }
+            if tab == Tab::Calendar {
+                rows.push(label("Calendar"));
+                rows.push(TextInput::new(&s.nc_calendar).label("Nextcloud calendar").placeholder("The first calendar with events")
+                    .on_edit(|s: &mut Settings| &mut s.nc_calendar).on_change(|s: &mut Settings, _| { let v = s.nc_calendar.text.trim().to_string(); s.save(|c| c.nextcloud.calendar = v) }).build(k));
+            }
             sections.push(section(s, "nextcloud", "Nextcloud", rows));
         }
-        Tab::Clipboard | Tab::Stremflix | Tab::Shelf | Tab::System | Tab::Calendar => {}
+        Tab::Clipboard | Tab::Stremflix | Tab::Shelf | Tab::System => {}
     }
     sections
 }

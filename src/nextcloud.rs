@@ -1,4 +1,5 @@
-//! Nextcloud sync for Notes (the Notes app's REST API) and Tasks (CalDAV to-dos).
+//! Nextcloud sync for Notes (the Notes app's REST API), Tasks (CalDAV to-dos) and Calendar
+//! events (CalDAV events).
 //! `sync` blocks, so it runs off the UI thread; `apply` merges its outcome on the UI thread,
 //! so edits made while it ran are kept.
 
@@ -15,6 +16,7 @@ use crate::net::percent_encode;
 pub enum Kind {
     Notes = 0,
     Tasks = 1,
+    Events = 2,
 }
 
 /// One kind's sync: whether one runs, whether another was asked for meanwhile, and the last error.
@@ -29,13 +31,13 @@ pub struct SyncState {
 pub struct Outcome {
     /// What each uploaded item now is on Nextcloud, by item key.
     pub pushed: Vec<(u64, Remote)>,
-    /// Pending deletes (notes) or completions (tasks) that went through.
+    /// Pending deletes (notes, events) or completions (tasks) that went through.
     pub cleared: Vec<String>,
     /// Everything Nextcloud has, after the uploads; None when the sync stopped before reading it.
     pub server: Option<Vec<Remote>>,
     /// Why the sync stopped early. What it did before that still counts.
     pub error: Option<String>,
-    /// The path `server` lists (a Tasks list); items synced elsewhere are left alone.
+    /// The path `server` lists (a Tasks list or calendar); items synced elsewhere are left alone.
     pub scope: String,
 }
 
@@ -87,6 +89,7 @@ impl Island {
         let (mut items, mut pending) = match kind {
             Kind::Notes => (self.cfg.notes.clone(), nc.deleted_notes.clone()),
             Kind::Tasks => (self.cfg.tasks.clone(), nc.done_tasks.clone()),
+            Kind::Events => (self.cfg.events.clone(), nc.deleted_events.clone()),
         };
         // Ids from another account mean nothing to this one: everything uploads as new. The saved
         // ids are only dropped once this account answers, so a half-typed URL loses nothing.
@@ -112,14 +115,16 @@ impl Island {
                 let open = self.cfg.notes.get(self.notes.index).map(|n| (n.key, n.text.clone()));
                 self.save(|c| {
                     if c.nextcloud.synced_with != account {
-                        for i in c.notes.iter_mut().chain(&mut c.tasks) { i.remote = None }
+                        for i in c.notes.iter_mut().chain(&mut c.tasks).chain(&mut c.events) { i.remote = None }
                         c.nextcloud.deleted_notes.clear();
                         c.nextcloud.done_tasks.clear();
+                        c.nextcloud.deleted_events.clear();
                         c.nextcloud.synced_with = account.to_string();
                     }
                     match kind {
                         Kind::Notes => apply(&mut c.notes, &mut c.nextcloud.deleted_notes, out),
                         Kind::Tasks => apply(&mut c.tasks, &mut c.nextcloud.done_tasks, out),
+                        Kind::Events => apply(&mut c.events, &mut c.nextcloud.deleted_events, out),
                     }
                 });
                 // Keep the open note open where it went, and show Nextcloud's text if it changed.
@@ -197,6 +202,7 @@ pub fn sync(nc: &Nextcloud, kind: Kind, items: &[Item], pending: &[String]) -> O
     let result = match kind {
         Kind::Notes => sync_notes(&c, items, pending, &mut out),
         Kind::Tasks => sync_tasks(&c, &nc.list, items, pending, &mut out),
+        Kind::Events => sync_events(&c, &nc.calendar, items, pending, &mut out),
     };
     out.error = result.err();
     out
@@ -280,15 +286,8 @@ const XML: (&str, &str) = ("content-type", "application/xml; charset=utf-8");
 const ICS: (&str, &str) = ("content-type", "text/calendar; charset=utf-8");
 
 fn sync_tasks(c: &Client, list: &str, items: &[Item], pending: &[String], out: &mut Outcome) -> Result<(), String> {
-    let home = format!("{}/remote.php/dav/calendars/{}/", c.base, percent_encode(&c.user));
-    let (status, _, res) = c.call("PROPFIND", &home, &[XML, ("depth", "1")], LISTS)?;
-    if status != 207 { return Err(failed(status)) }
-    let calendar = pick_list(&res, list.trim()).ok_or_else(|| match list.trim() {
-        "" => "No Nextcloud list holds tasks".to_string(),
-        name => format!("No Nextcloud list is named {name}"),
-    })?;
-    out.scope = format!("{}/", calendar.trim_end_matches('/'));
-    let stamp = utc_stamp();
+    let calendar = find_list(c, list, "VTODO", out)?;
+    let stamp = utc_stamp(0);
     for href in pending {
         let Some(path) = server_path(href.clone()) else { out.cleared.push(href.clone()); continue };
         let url = c.at(&path);
@@ -303,8 +302,15 @@ fn sync_tasks(c: &Client, list: &str, items: &[Item], pending: &[String], out: &
         }
         out.cleared.push(href.clone());
     }
-    // An open task with the same text, unclaimed, is that task (as with notes).
-    let listed = list_tasks(c, &calendar)?;
+    let listed = list_objects(c, &calendar, OPEN_TASKS, open_task)?;
+    upload_new(c, items, &listed, out, |uid, text| Some(new_task(uid, text, &stamp)))?;
+    out.server = Some(list_objects(c, &calendar, OPEN_TASKS, open_task)?);
+    Ok(())
+}
+
+/// Uploads each new item as a calendar object, `ics(uid, text)`; None skips it. A listed object
+/// with the same text, unclaimed, is that item instead (as with notes).
+fn upload_new(c: &Client, items: &[Item], listed: &[Remote], out: &mut Outcome, ics: impl Fn(&str, &str) -> Option<String>) -> Result<(), String> {
     let mut claimed: Vec<&str> = items.iter().filter_map(|i| i.remote.as_ref().map(|r| r.id.as_str())).collect();
     for item in items.iter().filter(|i| i.remote.is_none() && !i.text.trim().is_empty()) {
         if let Some(t) = listed.iter().find(|t| t.text == item.text && !claimed.contains(&t.id.as_str())) {
@@ -314,38 +320,57 @@ fn sync_tasks(c: &Client, list: &str, items: &[Item], pending: &[String], out: &
         }
         // Named by the item's key, so a retry after a lost answer finds it already there (412).
         let uid = format!("ripple-{:016x}", item.key);
+        let Some(body) = ics(&uid, &item.text) else { continue };
         let href = format!("{}{uid}.ics", out.scope);
-        let (status, etag, _) = c.call("PUT", &c.at(&href), &[ICS, ("if-none-match", "*")], &new_task(&uid, &item.text, &stamp))?;
+        let (status, etag, _) = c.call("PUT", &c.at(&href), &[ICS, ("if-none-match", "*")], &body)?;
         if !ok(status) && status != 412 { return Err(failed(status)) }
         out.pushed.push((item.key, Remote { id: href, etag, text: item.text.clone() }));
     }
-    out.server = Some(list_tasks(c, &calendar)?);
     Ok(())
 }
 
-/// Every open task in the list.
-fn list_tasks(c: &Client, calendar: &str) -> Result<Vec<Remote>, String> {
-    let (status, _, res) = c.call("REPORT", &c.at(calendar), &[XML, ("depth", "1")], OPEN_TASKS)?;
+/// The user's calendar or Tasks list that `want` names and that holds `comp`, which `out` then scopes to.
+fn find_list(c: &Client, want: &str, comp: &str, out: &mut Outcome) -> Result<String, String> {
+    let home = format!("{}/remote.php/dav/calendars/{}/", c.base, percent_encode(&c.user));
+    let (status, _, res) = c.call("PROPFIND", &home, &[XML, ("depth", "1")], LISTS)?;
+    if status != 207 { return Err(failed(status)) }
+    let calendar = pick_list(&res, want.trim(), comp).ok_or_else(|| match (want.trim(), comp) {
+        ("", "VTODO") => "No Nextcloud list holds tasks".to_string(),
+        ("", _) => "No Nextcloud calendar holds events".to_string(),
+        (name, _) => format!("No Nextcloud list is named {name}"),
+    })?;
+    out.scope = format!("{}/", calendar.trim_end_matches('/'));
+    Ok(calendar)
+}
+
+/// Every calendar object `query` matches, as `text` reads it; objects it reads as None are left out.
+fn list_objects(c: &Client, calendar: &str, query: &str, text: fn(&str) -> Option<String>) -> Result<Vec<Remote>, String> {
+    let (status, _, res) = c.call("REPORT", &c.at(calendar), &[XML, ("depth", "1")], query)?;
     if status != 207 { return Err(failed(status)) }
     Ok(elements(&res, "response").into_iter().filter_map(|response| {
         let first = |name| elements(response, name).first().map(|v| unescape(v)).unwrap_or_default();
-        Some(Remote { id: server_path(first("href"))?, etag: first("getetag"), text: open_task(&first("calendar-data"))? })
+        Some(Remote { id: server_path(first("href"))?, etag: first("getetag"), text: text(&first("calendar-data"))? })
     }).collect())
 }
 
-/// The list named `want` (by name or path), else the first that holds only tasks, else the first that holds tasks.
-fn pick_list(xml: &str, want: &str) -> Option<String> {
+/// The list named `want` (by name or path) that holds `comp`. Else, for tasks, the first that holds
+/// only tasks, else the first that holds tasks; for events, the first that holds events, past the
+/// read-only birthdays calendar.
+fn pick_list(xml: &str, want: &str, comp: &str) -> Option<String> {
     let lists: Vec<(String, String, &str)> = elements(xml, "response").into_iter().filter_map(|r| {
         let comps = *elements(r, "supported-calendar-component-set").first()?;
         let href = server_path(unescape(elements(r, "href").first()?))?;
-        comps.contains("\"VTODO\"").then(|| (href, elements(r, "displayname").first().map(|n| unescape(n)).unwrap_or_default(), comps))
+        comps.contains(&format!("\"{comp}\"")).then(|| (href, elements(r, "displayname").first().map(|n| unescape(n)).unwrap_or_default(), comps))
     }).collect();
+    let slug = |href: &str| href.trim_end_matches('/').rsplit('/').next().unwrap_or_default().to_string();
     if !want.is_empty() {
-        let slug = |href: &str| href.trim_end_matches('/').rsplit('/').next().unwrap_or_default().to_string();
         return lists.into_iter().find(|(href, name, _)| name.eq_ignore_ascii_case(want) || slug(href).eq_ignore_ascii_case(want)).map(|l| l.0);
     }
-    let only_tasks = lists.iter().position(|l| !l.2.contains("\"VEVENT\"")).unwrap_or(0);
-    lists.into_iter().nth(only_tasks).map(|l| l.0)
+    let first = match comp {
+        "VTODO" => lists.iter().position(|l| !l.2.contains("\"VEVENT\"")).unwrap_or(0),
+        _ => lists.iter().position(|l| slug(&l.0) != "contact_birthdays")?,
+    };
+    lists.into_iter().nth(first).map(|l| l.0)
 }
 
 /// The contents of each `<name>` element, whatever its namespace prefix. Enough for WebDAV's
@@ -433,8 +458,11 @@ fn unescape_text(value: &str) -> String {
     out
 }
 
+/// A TEXT value for iCalendar.
+fn escape_text(value: &str) -> String { value.replace('\\', "\\\\").replace(';', "\\;").replace(',', "\\,").replace('\n', "\\n").replace('\r', "") }
+
 fn new_task(uid: &str, summary: &str, stamp: &str) -> String {
-    let summary = summary.replace('\\', "\\\\").replace(';', "\\;").replace(',', "\\,").replace('\n', "\\n");
+    let summary = escape_text(summary);
     format!("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Ripple//EN\r\nBEGIN:VTODO\r\nUID:{uid}\r\nDTSTAMP:{stamp}\r\nCREATED:{stamp}\r\nSUMMARY:{summary}\r\nSTATUS:NEEDS-ACTION\r\nEND:VTODO\r\nEND:VCALENDAR\r\n")
 }
 
@@ -457,9 +485,106 @@ fn completed(ics: &str, stamp: &str) -> String {
     out
 }
 
-fn utc_stamp() -> String {
+// --- Calendar events: CalDAV VEVENTs in one of the user's calendars ---
+
+/// Events that end after `since` (a UTC stamp). Older ones drop out of the Calendar tab.
+fn events_query(since: &str) -> String {
+    format!(r#"<?xml version="1.0"?><c:calendar-query xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav"><d:prop><d:getetag/><c:calendar-data/></d:prop><c:filter><c:comp-filter name="VCALENDAR"><c:comp-filter name="VEVENT"><c:time-range start="{since}"/></c:comp-filter></c:comp-filter></c:filter></c:calendar-query>"#)
+}
+
+fn sync_events(c: &Client, want: &str, items: &[Item], pending: &[String], out: &mut Outcome) -> Result<(), String> {
+    let calendar = find_list(c, want, "VEVENT", out)?;
+    for href in pending {
+        if let Some(path) = server_path(href.clone()) {
+            let (status, ..) = c.call("DELETE", &c.at(&path), &[], "")?;
+            if !ok(status) && status != 404 { return Err(failed(status)) }
+        }
+        out.cleared.push(href.clone());
+    }
+    let (stamp, since) = (utc_stamp(0), utc_stamp(365));
+    let query = events_query(&since);
+    let listed = list_objects(c, &calendar, &query, event)?;
+    // An event before the listed window stays here only: uploaded, the next listing would miss it and drop it.
+    let listable = |(y, m, d): (i32, u32, u32)| format!("{y:04}{m:02}{d:02}").as_str() >= &since[..8];
+    upload_new(c, items, &listed, out, |uid, text| event_day(text).filter(|(day, _)| listable(*day)).map(|(day, title)| new_event(uid, day, title, &stamp)))?;
+    out.server = Some(list_objects(c, &calendar, &query, event)?);
+    Ok(())
+}
+
+/// An event's day and title: its text is `YYYY-MM-DD title`, where the title starts with the
+/// time (`HH:MM`) when the event has one.
+pub fn event_day(text: &str) -> Option<((i32, u32, u32), &str)> {
+    let (date, title) = text.split_once(' ')?;
+    let mut parts = date.splitn(3, '-').map(str::parse::<u32>);
+    let (y, m, d) = (parts.next()?.ok()?, parts.next()?.ok()?, parts.next()?.ok()?);
+    ((1..=12).contains(&m) && (1..=31).contains(&d)).then_some(((y as i32, m, d), title))
+}
+
+/// The calendar object's first event as an event's text, unless it was cancelled.
+/// shortcut: a recurring event shows on its first day only; expand RRULEs if people ask.
+fn event(ics: &str) -> Option<String> {
+    let (mut inside, mut summary, mut start, mut open) = (false, String::new(), None, true);
+    for line in unfold(ics).lines() {
+        let upper = line.to_ascii_uppercase();
+        if upper == "BEGIN:VEVENT" || upper == "END:VALARM" { inside = true; continue }
+        if upper == "BEGIN:VALARM" { inside = false; continue }
+        if upper == "END:VEVENT" { break }
+        let Some((name, value)) = line.split_once(':').filter(|_| inside) else { continue };
+        match name.split(';').next().unwrap_or_default().to_ascii_uppercase().as_str() {
+            "SUMMARY" => summary = unescape_text(value),
+            "DTSTART" => start = Some(value.trim().to_string()),
+            "STATUS" => open = !value.trim().eq_ignore_ascii_case("CANCELLED"),
+            _ => {}
+        }
+    }
+    let start = start?;
+    let num = |from: usize, to: usize| start.get(from..to)?.parse::<u32>().ok();
+    let (y, m, d) = (num(0, 4)? as i32, num(4, 6)?, num(6, 8)?);
+    let summary = if summary.trim().is_empty() { "Untitled".to_string() } else { summary };
+    let text = match start.get(8..)? {
+        "" => format!("{y:04}-{m:02}-{d:02} {summary}"),
+        t if t.starts_with('T') => {
+            let (h, min) = (num(9, 11)?, num(11, 13)?);
+            // UTC moves to this clock; a TZID time is taken as written, as it is usually this zone.
+            let (y, m, d, h, min) = if t.ends_with('Z') {
+                let l = rune::time::LocalTime::at((days_from_civil(y, m, d) * 86_400 + i64::from(h * 3600 + min * 60)) * 1000);
+                (l.year, l.month, l.day, l.hour, l.minute)
+            } else { (y, m, d, h, min) };
+            format!("{y:04}-{m:02}-{d:02} {h:02}:{min:02} {summary}")
+        }
+        _ => return None,
+    };
+    open.then_some(text)
+}
+
+/// An event on `day`: at the title's leading `HH:MM`, on this clock, else all day. `event` reads
+/// either back as the same text.
+fn new_event(uid: &str, (y, m, d): (i32, u32, u32), title: &str, stamp: &str) -> String {
+    let time = title.split_once(' ').filter(|(t, _)| t.len() == 5 && t.as_bytes()[2] == b':')
+        .and_then(|(t, rest)| Some((t[..2].parse::<u32>().ok().filter(|h| *h < 24)?, t[3..].parse::<u32>().ok().filter(|m| *m < 60)?, rest)));
+    let (when, summary) = match time {
+        Some((h, min, rest)) => (format!("DTSTART:{y:04}{m:02}{d:02}T{h:02}{min:02}00"), rest),
+        None => {
+            let next = rune::time::LocalTime::at_offset((days_from_civil(y, m, d) + 1) * 86_400_000, 0);
+            (format!("DTSTART;VALUE=DATE:{y:04}{m:02}{d:02}\r\nDTEND;VALUE=DATE:{:04}{:02}{:02}", next.year, next.month, next.day), title)
+        }
+    };
+    format!("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Ripple//EN\r\nBEGIN:VEVENT\r\nUID:{uid}\r\nDTSTAMP:{stamp}\r\nCREATED:{stamp}\r\n{when}\r\nSUMMARY:{}\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n", escape_text(summary))
+}
+
+/// Days since 1970-01-01, from Howard Hinnant's `days_from_civil`.
+fn days_from_civil(y: i32, m: u32, d: u32) -> i64 {
+    let y = i64::from(y) - i64::from(m <= 2);
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * ((i64::from(m) + 9) % 12) + 2) / 5 + i64::from(d) - 1;
+    era * 146_097 + yoe * 365 + yoe / 4 - yoe / 100 + doy - 719_468
+}
+
+/// Now, or `days_ago` days back, in UTC.
+fn utc_stamp(days_ago: i64) -> String {
     let ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64);
-    let t = rune::time::LocalTime::at_offset(ms, 0);
+    let t = rune::time::LocalTime::at_offset(ms - days_ago * 86_400_000, 0);
     format!("{:04}{:02}{:02}T{:02}{:02}{:02}Z", t.year, t.month, t.day, t.hour, t.minute, t.second)
 }
 
@@ -518,10 +643,14 @@ mod tests {
     #[test]
     fn webdav_answers_parse() {
         let xml = r#"<d:multistatus xmlns:d="DAV:"><d:response><d:href>/dav/cal/personal/</d:href><d:propstat><d:prop><d:displayname>Personal</d:displayname><cal:supported-calendar-component-set><cal:comp name="VEVENT"/><cal:comp name="VTODO"/></cal:supported-calendar-component-set></d:prop></d:propstat></d:response><d:response><d:href>/dav/cal/tasks/</d:href><d:propstat><d:prop><d:displayname>Tasks &amp; more</d:displayname><cal:supported-calendar-component-set><cal:comp name="VTODO"/></cal:supported-calendar-component-set></d:prop></d:propstat></d:response><d:response><d:href>/dav/cal/</d:href><d:propstat><d:prop><d:displayname/></d:prop></d:propstat></d:response></d:multistatus>"#;
-        assert_eq!(pick_list(xml, ""), Some("/dav/cal/tasks/".into()));
-        assert_eq!(pick_list(xml, "personal"), Some("/dav/cal/personal/".into()));
-        assert_eq!(pick_list(xml, "Tasks & more"), Some("/dav/cal/tasks/".into()));
-        assert_eq!(pick_list(xml, "nope"), None);
+        assert_eq!(pick_list(xml, "", "VTODO"), Some("/dav/cal/tasks/".into()));
+        assert_eq!(pick_list(xml, "personal", "VTODO"), Some("/dav/cal/personal/".into()));
+        assert_eq!(pick_list(xml, "Tasks & more", "VTODO"), Some("/dav/cal/tasks/".into()));
+        assert_eq!(pick_list(xml, "nope", "VTODO"), None);
+        assert_eq!(pick_list(xml, "", "VEVENT"), Some("/dav/cal/personal/".into()));
+        assert_eq!(pick_list(xml, "Tasks & more", "VEVENT"), None, "that list holds no events");
+        let birthdays = xml.replace("/dav/cal/personal/", "/dav/cal/contact_birthdays/");
+        assert_eq!(pick_list(&birthdays, "", "VEVENT"), None);
         assert_eq!(unescape("a&lt;b&#13;&#x41;&bogus;"), "a<b\rA&bogus;");
     }
 
@@ -534,6 +663,57 @@ mod tests {
         assert!(done.contains("DUE:20260101\r\nSTATUS:COMPLETED\r\nCOMPLETED:20261118T000000Z\r\nPERCENT-COMPLETE:100\r\nEND:VTODO") && !done.contains("NEEDS-ACTION"));
         assert_eq!(open_task(&new_task("u", "a, b; c \\n", "20260101T000000Z")).as_deref(), Some("a, b; c \\n"));
         assert_eq!(open_task("BEGIN:VTODO\r\nSUMMARY:Task\r\nBEGIN:VALARM\r\nSUMMARY:Alarm\r\nEND:VALARM\r\nEND:VTODO").as_deref(), Some("Task"));
+    }
+
+    #[test]
+    fn events_read_and_write() {
+        let ics = "BEGIN:VCALENDAR\r\nBEGIN:VTIMEZONE\r\nBEGIN:STANDARD\r\nDTSTART:19701025T030000\r\nEND:STANDARD\r\nEND:VTIMEZONE\r\nBEGIN:VEVENT\r\nDTSTART;TZID=Europe/Berlin:20261119T150000\r\nSUMMARY:Dentist\\, upstairs\r\nBEGIN:VALARM\r\nSUMMARY:Alarm\r\nEND:VALARM\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+        assert_eq!(event(ics).as_deref(), Some("2026-11-19 15:00 Dentist, upstairs"));
+        assert_eq!(event("BEGIN:VEVENT\r\nDTSTART;VALUE=DATE:20261231\r\nEND:VEVENT").as_deref(), Some("2026-12-31 Untitled"));
+        assert_eq!(event("BEGIN:VEVENT\r\nDTSTART:20261231\r\nSTATUS:CANCELLED\r\nEND:VEVENT"), None);
+        let new = new_event("u", (2026, 12, 31), "Party; late", "20261118T000000Z");
+        assert!(new.contains("DTSTART;VALUE=DATE:20261231\r\nDTEND;VALUE=DATE:20270101\r\n"));
+        assert_eq!(event(&new).as_deref(), Some("2026-12-31 Party; late"), "an event round-trips to the same text");
+        let timed = new_event("u", (2026, 11, 19), "15:00 Dentist", "20261118T000000Z");
+        assert!(timed.contains("DTSTART:20261119T150000\r\nSUMMARY:Dentist\r\n"), "a leading time is the event's time, not its title");
+        assert_eq!(event(&timed).as_deref(), Some("2026-11-19 15:00 Dentist"));
+        assert_eq!(event(&new_event("u", (2026, 11, 19), "25:00 Odd", "s")).as_deref(), Some("2026-11-19 25:00 Odd"));
+        assert_eq!(event_day("2026-02-03 9:00 Standup"), Some(((2026, 2, 3), "9:00 Standup")));
+        assert_eq!((event_day("2026-13-01 x"), event_day("Standup")), (None, None));
+        assert_eq!(days_from_civil(1970, 1, 1), 0);
+        let t = rune::time::LocalTime::at_offset(days_from_civil(2024, 2, 29) * 86_400_000, 0);
+        assert_eq!((t.year, t.month, t.day), (2024, 2, 29));
+    }
+
+    #[test]
+    fn events_sync_over_caldav() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let log = seen.clone();
+        let base = serve(move |r| {
+            log.lock().unwrap().push((r.method.clone(), r.path.clone(), r.body.clone()));
+            let ok = |status, body: &str| Response { status, headers: vec![("etag".into(), "\"e\"".into())], body: body.into() };
+            match (r.method.as_str(), r.path.as_str()) {
+                ("PROPFIND", "/remote.php/dav/calendars/me/") => ok(207, r#"<d:multistatus xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav"><d:response><d:href>/remote.php/dav/calendars/me/personal/</d:href><d:propstat><d:prop><c:supported-calendar-component-set><c:comp name="VEVENT"/></c:supported-calendar-component-set></d:prop></d:propstat></d:response></d:multistatus>"#),
+                ("DELETE", "/remote.php/dav/calendars/me/personal/old.ics") => ok(204, ""),
+                ("PUT", _) => ok(201, ""),
+                ("REPORT", "/remote.php/dav/calendars/me/personal/") => ok(207, "<d:multistatus xmlns:d=\"DAV:\" xmlns:cal=\"urn:ietf:params:xml:ns:caldav\"><d:response><d:href>/remote.php/dav/calendars/me/personal/a.ics</d:href><d:propstat><d:prop><d:getetag>&quot;1&quot;</d:getetag><cal:calendar-data>BEGIN:VCALENDAR\nBEGIN:VEVENT\nDTSTART;VALUE=DATE:20261120\nSUMMARY:Review\nEND:VEVENT\nEND:VCALENDAR\n</cal:calendar-data></d:prop></d:propstat></d:response></d:multistatus>"),
+                _ => ok(500, ""),
+            }
+        }, |_| String::new());
+        let nc = Nextcloud { url: base, user: "me".into(), password: "pw".into(), ..Nextcloud::default() };
+        let items = [item("2026-11-19 Launch", 0xcd, None), item("2026-11-20 Review", 2, None), item("2001-01-01 Long ago", 3, None)];
+        let out = sync(&nc, Kind::Events, &items, &["/remote.php/dav/calendars/me/personal/old.ics".into()]);
+        assert_eq!(out.error, None);
+        assert_eq!(out.cleared, ["/remote.php/dav/calendars/me/personal/old.ics"]);
+        assert_eq!(out.pushed, [
+            (0xcd, remote("/remote.php/dav/calendars/me/personal/ripple-00000000000000cd.ics", "\"e\"", "2026-11-19 Launch")),
+            (2, remote("/remote.php/dav/calendars/me/personal/a.ics", "\"1\"", "2026-11-20 Review")),
+        ]);
+        let seen = seen.lock().unwrap();
+        let puts: Vec<_> = seen.iter().filter(|r| r.0 == "PUT").collect();
+        assert_eq!(puts.len(), 1, "the matching event was claimed, not uploaded again, and the old one stays local");
+        assert!(puts[0].2.contains("DTSTART;VALUE=DATE:20261119") && puts[0].2.contains("SUMMARY:Launch"));
+        assert!(seen.iter().any(|r| r.0 == "REPORT" && r.2.contains("<c:time-range start=\"")));
     }
 
     #[test]

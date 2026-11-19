@@ -54,7 +54,7 @@ pub fn size(tab: Tab) -> (f32, f32) {
         Tab::Shelf | Tab::System => (520.0, 230.0),
         Tab::Limits => (520.0, 290.0),
         Tab::Tasks | Tab::T3 => (420.0, 290.0),
-        Tab::Calendar => (420.0, 280.0),
+        Tab::Calendar => (560.0, 280.0),
         Tab::Overview | Tab::Assistant | Tab::Clipboard => (420.0, 230.0),
     }
 }
@@ -67,7 +67,10 @@ pub fn entered(s: &mut Island) {
         Tab::Limits => s.limits_load(),
         Tab::Notes => s.nextcloud_sync(crate::nextcloud::Kind::Notes),
         Tab::Tasks => s.nextcloud_sync(crate::nextcloud::Kind::Tasks),
-        Tab::Calendar => s.calendar_offset = 0,
+        Tab::Calendar => {
+            (s.calendar_offset, s.calendar_day) = (0, None);
+            s.nextcloud_sync(crate::nextcloud::Kind::Events);
+        }
         _ => {}
     }
 }

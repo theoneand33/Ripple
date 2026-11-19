@@ -248,9 +248,12 @@ pub struct Island {
     pub task: TextEdit,
     /// The Calendar tab's month, as months from this one.
     pub calendar_offset: i32,
+    /// The Calendar tab's picked day; None is today.
+    pub calendar_day: Option<(i32, u32, u32)>,
+    pub event: TextEdit,
     pub notes: tabs::Notes,
-    /// Nextcloud sync of Notes and Tasks, by `nextcloud::Kind`.
-    pub nextcloud: [crate::nextcloud::SyncState; 2],
+    /// Nextcloud sync of Notes, Tasks and events, by `nextcloud::Kind`.
+    pub nextcloud: [crate::nextcloud::SyncState; 3],
     pub stremflix: tabs::Stremflix,
     /// The System tab's figures; None until the first sample.
     pub stats: Option<system::Stats>,
@@ -350,6 +353,8 @@ impl Island {
             clipboard: tabs::Clipboard::default(),
             task: TextEdit::default(),
             calendar_offset: 0,
+            calendar_day: None,
+            event: TextEdit::default(),
             notes: tabs::Notes::new(&cfg),
             nextcloud: Default::default(),
             stremflix: tabs::Stremflix::default(),
@@ -531,7 +536,7 @@ impl Island {
     pub fn set_mode(&mut self, mode: Mode) {
         let was = self.mode;
         self.mode = if mode == Mode::Still { self.rest() } else { mode };
-        if self.mode == Mode::Large && was != Mode::Large { self.calendar_offset = 0 }
+        if self.mode == Mode::Large && was != Mode::Large { (self.calendar_offset, self.calendar_day) = (0, None) }
         if self.mode == Mode::Large && was != Mode::Large {
             if self.cfg.open_default_tab { self.tab = self.cfg.first_tab() }
             self.entered_tab();
@@ -1092,7 +1097,7 @@ impl Island {
 }
 
 /// "Thu, Jan 1".
-fn format_date(year: i32, month: u32, day: u32) -> String {
+pub fn format_date(year: i32, month: u32, day: u32) -> String {
     const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
     const DAYS: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
     format!("{}, {} {}", DAYS[weekday(year, month, day) as usize], MONTHS[(month as usize - 1) % 12], day)

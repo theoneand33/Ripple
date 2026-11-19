@@ -105,6 +105,11 @@ fn island_spec() -> AppSpec<Island> {
             }),
             ("calendar", |s| { s.mode = Mode::Large; s.set_tab(Tab::Calendar) }),
             ("calendar-paged", |s| { s.mode = Mode::Large; s.set_tab(Tab::Calendar); s.calendar_offset = 1 }),
+            ("calendar-events", |s| {
+                s.mode = Mode::Large;
+                s.set_tab(Tab::Calendar);
+                s.cfg.events = ["2026-01-01 New Year's brunch", "2026-01-01 09:30 Standup", "2026-01-15 Dentist"].map(config::Item::new).into();
+            }),
             ("t3", |s| { s.mode = Mode::Large; s.set_tab(Tab::T3) }),
             ("notes", |s| {
                 s.mode = Mode::Large;

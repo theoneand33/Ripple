@@ -149,7 +149,7 @@ impl T3Device {
     }
 }
 
-/// A note or a task, and what Nextcloud had for it at the last sync.
+/// A note, a task or an event, and what Nextcloud had for it at the last sync.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(from = "ItemFile")]
 pub struct Item {
@@ -193,7 +193,7 @@ impl Item {
     }
 }
 
-/// The Nextcloud account Notes and Tasks sync with.
+/// The Nextcloud account Notes, Tasks and Calendar events sync with.
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Nextcloud {
@@ -210,6 +210,10 @@ pub struct Nextcloud {
     pub deleted_notes: Vec<String>,
     /// Synced tasks ticked off here, by path, that Nextcloud doesn't know are done.
     pub done_tasks: Vec<String>,
+    /// The calendar Calendar events sync with; empty picks the first that holds events.
+    pub calendar: String,
+    /// Synced events deleted here, by path, that Nextcloud still has.
+    pub deleted_events: Vec<String>,
 }
 
 impl Nextcloud {
@@ -264,6 +268,8 @@ pub struct Config {
     pub tasks: Vec<Item>,
     /// Each note's first line is its title.
     pub notes: Vec<Item>,
+    /// Calendar events; each one's text is `YYYY-MM-DD title` (`nextcloud::event_day`).
+    pub events: Vec<Item>,
     pub nextcloud: Nextcloud,
     /// Files dropped on the Island, newest first.
     pub shelf: Vec<std::path::PathBuf>,
@@ -323,6 +329,7 @@ impl Default for Config {
             workflows: Vec::new(),
             tasks: Vec::new(),
             notes: Vec::new(),
+            events: Vec::new(),
             nextcloud: Nextcloud::default(),
             shelf: Vec::new(),
             ai_provider: "groq".into(),
