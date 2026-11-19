@@ -157,7 +157,9 @@ pub fn fetch_image(url: &str) -> Option<Vec<u8>> {
         // file:///C:/a.png names C:/a.png on Windows.
         #[cfg(windows)]
         let path = match path.strip_prefix('/') { Some(p) if p.get(1..2) == Some(":") => p.to_string(), _ => path };
-        // One handle for the check and the read; a FIFO or /dev/zero reports length 0 and never ends.
+        // A FIFO blocks on open and /dev/zero never ends: regular files only, checked before opening
+        // and again on the handle that is read.
+        if !std::fs::metadata(&path).ok()?.is_file() { return None }
         let file = std::fs::File::open(&path).ok()?;
         if !file.metadata().ok()?.is_file() { return None }
         let mut bytes = Vec::new();
