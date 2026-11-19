@@ -42,9 +42,9 @@ pub fn view(s: &Island) -> El {
                 s.clipboard.copied = Some((i, tx.clock() + 2.0));
             });
         list = list.child(
-            row().key(format!("clip-{i}")).w_full().px(12.0).py(8.0).gap(8.0).items_start()
-                .radius(s.cfg.radius(12.0))
-                .fill(fg.alpha(0.05 * fg.a)).border(1.0, fg.alpha(0.08 * fg.a))
+            row().key(format!("clip-{i}")).w_full().px(14.0).py(10.0).gap(8.0).items_start()
+                .radius(s.cfg.radius(16.0))
+                .fill(super::card(fg))
                 .child(text(item).font(s.cfg.font(13.0, 400.0).lh(18.0)).color(fg).grow(1.0).min_w(0.0).wrap_anywhere().max_lines(4))
                 .child(copy),
         );

@@ -115,6 +115,15 @@ fn island_spec() -> AppSpec<Island> {
                 s.cfg.events = ["2026-01-01 New Year's brunch", "2026-01-01 09:30 Standup", "2026-01-15 Dentist"].map(config::Item::new).into();
             }),
             ("t3", |s| { s.mode = Mode::Large; s.set_tab(Tab::T3) }),
+            ("pomodoro", |s| { s.mode = Mode::Large; s.set_tab(Tab::Pomodoro); s.pomodoro.left = 18.0 * 60.0 + 42.0; s.pomodoro.rounds = 2 }),
+            // Ends on the app clock, which starts near zero in a headless render.
+            ("pomodoro-live", |s| { s.pomodoro.ends = Some(15.0 * 60.0 + 23.0); s.pomodoro.tick(0.0); }),
+            ("calculator", |s| {
+                s.mode = Mode::Large;
+                s.set_tab(Tab::Calculator);
+                s.calc.tape = vec![("1299 * 0.8".into(), "1039.2".into()), ("(12 + 30) / 7".into(), "6".into())];
+                s.calc.input.replace_text("1039.2 + 15%4");
+            }),
             ("notes", |s| {
                 s.mode = Mode::Large;
                 s.set_tab(Tab::Notes);
@@ -187,7 +196,7 @@ fn island_spec() -> AppSpec<Island> {
                 s.mode = Mode::Large;
                 s.set_tab(Tab::Overview);
                 let mut tx = rune::Tx::default();
-                s.set_track(Some(system::Track { name: "Song".into(), artist: "Artist".into(), playing: true, ..Default::default() }), &mut tx);
+                s.set_track(Some(system::Track { name: "Song".into(), artist: "Artist".into(), playing: true, progress: Some((89, 200)), ..Default::default() }), &mut tx);
             }),
             ("camera", |s| { let mut tx = rune::Tx::default(); s.set_capture(Some(true), None, &mut tx); }),
             ("capture-both", |s| {

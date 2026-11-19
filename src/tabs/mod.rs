@@ -2,6 +2,7 @@
 //! and its view.
 
 mod assistant;
+mod calculator;
 mod calendar;
 mod clipboard;
 mod limits;
@@ -9,6 +10,7 @@ mod monitor;
 mod notes;
 mod overview;
 mod plugins;
+mod pomodoro;
 mod search;
 mod shelf;
 mod stremflix;
@@ -17,8 +19,10 @@ mod tasks;
 mod workflows;
 
 pub use assistant::Assistant;
+pub use calculator::Calculator;
 pub use clipboard::Clipboard;
 pub use notes::Notes;
+pub use pomodoro::{Pomodoro, color as pomodoro_color};
 pub use stremflix::Stremflix;
 pub use t3::T3;
 
@@ -45,6 +49,8 @@ pub fn view(s: &Island, layer: &mut Vec<El>) -> El {
         Tab::Limits => limits::view(s),
         Tab::Calendar => calendar::view(s),
         Tab::Plugins => plugins::view(s),
+        Tab::Pomodoro => pomodoro::view(s),
+        Tab::Calculator => calculator::view(s),
     }
 }
 
@@ -56,7 +62,8 @@ pub fn size(tab: Tab) -> (f32, f32) {
         Tab::Notes | Tab::Stremflix => (520.0, 290.0),
         Tab::Shelf | Tab::System => (520.0, 230.0),
         Tab::Limits => (520.0, 290.0),
-        Tab::Tasks | Tab::T3 | Tab::Plugins => (420.0, 290.0),
+        Tab::Tasks | Tab::T3 | Tab::Plugins | Tab::Calculator => (420.0, 290.0),
+        Tab::Pomodoro => (440.0, 190.0),
         Tab::Calendar => (560.0, 280.0),
         Tab::Overview | Tab::Assistant | Tab::Clipboard => (420.0, 230.0),
     }
@@ -123,6 +130,45 @@ impl Island {
         }
     }
 }
+
+/// Droppy-style accents: each widget has one colour for its rings, chips and figures.
+pub mod accent {
+    use rune::Color;
+    // Colours are linear: decode the sRGB hex, as `config::parse_color` does.
+    fn hex(s: &str) -> Color { rune::color::hex(s).unwrap_or(Color::WHITE) }
+    pub fn orange() -> Color { hex("#FF9F0A") }
+    pub fn red() -> Color { hex("#FF453A") }
+    pub fn indigo() -> Color { hex("#7D86F0") }
+    pub fn green() -> Color { hex("#30D158") }
+    pub fn teal() -> Color { hex("#40C8E0") }
+    pub fn pink() -> Color { hex("#FA586A") }
+}
+
+/// A button tinted with an accent: the accent faint as fill, full as ink.
+fn tinted(s: &Island, key: &str, label: &str, color: Color) -> El {
+    el().key(key).role("button").label(label).focusable(true)
+        .px(20.0).h(40.0).center().radius(s.cfg.radius(20.0))
+        .fill(color.alpha(0.22)).hover(color.alpha(0.3)).press(color.alpha(0.38)).press_scale(0.97)
+        .child(text(label).font(s.cfg.font(15.0, 700.0)).color(color).a11y_hidden())
+}
+
+/// A label pill: tinted with its accent while on, grey while off.
+fn chip(s: &Island, key: &str, label: &str, color: Color, on: bool) -> El {
+    let fg = s.cfg.text();
+    el().key(key).h(28.0).px(12.0).center().radius(s.cfg.radius(14.0))
+        .fill(if on { color.alpha(0.22) } else { fg.alpha(0.1 * fg.a) })
+        .child(text(label).font(s.cfg.font(13.0, 700.0)).color(if on { color } else { fg.alpha(0.5 * fg.a) }))
+}
+
+/// A progress ring in one colour, its track the same colour faint, with `inner` in its middle.
+fn ring(size: f32, percent: f32, color: Color, inner: El) -> El {
+    el().size(size, size).center().a11y_hidden()
+        .child(icon(icons::ring(percent.clamp(0.0, 100.0).round() as u8), size).color(color).pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0)))
+        .child(inner)
+}
+
+/// The fill of a list row: a raised grey card, no outline.
+fn card(fg: Color) -> Color { fg.alpha(0.09 * fg.a) }
 
 /// A text button shaped like `tool`, so it sits quietly in a tab's header.
 fn pill(s: &Island, key: &str, label: &str) -> El {

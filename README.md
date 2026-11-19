@@ -40,6 +40,8 @@ https://github.com/user-attachments/assets/a7b9ed8a-97b5-4603-bad7-6f4c4bef1f5d
 - AI Limits shows how much of each coding agent's plan is used and when it resets: Claude Code, Codex, GitHub Copilot, OpenCode Go and Grok Build. It reads the sign-in each CLI already saved and lists only the agents signed in on this computer. For more accounts, add Claude Code or Codex config folders (one per account) in its settings; every Claude and Codex account in CLIProxyAPI's auth folder (`~/.cli-proxy-api` by default) shows too.
 - Shelf stashes files: drag a file over the Island and it opens the Shelf to drop it in. Drag files back out to use them. Both directions work on macOS, Windows, X11, KDE Plasma and other layer-shell compositors, and GNOME (where the Island runs under XWayland).
 - T3 Code starts an agent thread on a project on one of your T3 devices. You choose the model, the worktree, and the linked environment.
+- Pomodoro runs 25-minute focus rounds with 5-minute breaks. While it runs, the compact Island shows the time left beside a ring.
+- Calculator shows the answer as you type a sum (+ - × ÷ ^, % as remainder, and brackets). Press Enter to keep it on the history tape.
 - Plugins shows panels you write in Lua: drop a `.lua` file in the `plugins` folder next to `prefs.json`. See [PLUGINS.md](PLUGINS.md) for the API and how to test a plugin without a display.
 
 You can reorder and hide tabs in Settings.
