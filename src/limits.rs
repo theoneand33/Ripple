@@ -39,7 +39,8 @@ pub fn all(extra_dirs: &[String], cliproxy_dir: &str) -> Vec<Usage> {
     let Some(home) = rune::dirs::home() else { return Vec::new() };
     let accounts = accounts(&home, extra_dirs, cliproxy_dir);
     // Two files with one account: one may hold an older, already-used refresh token, and spending it can revoke the sign-in.
-    let sole = |name: &str| accounts.iter().filter(|a| a.renews && a.name == name).count() == 1;
+    // A name without an account ("Claude Code") says nothing about who it is; its token was deduplicated already.
+    let sole = |name: &str| !name.contains(" · ") || accounts.iter().filter(|a| a.renews && a.name == name).count() == 1;
     let renew: Vec<bool> = accounts.iter().map(|a| a.renews && sole(&a.name)).collect();
     let handles: Vec<_> = accounts.into_iter().zip(renew)
         .map(|(a, renew)| (a.name, std::thread::spawn(move || (a.fetch)(renew)))).collect();
@@ -134,6 +135,7 @@ fn jwt_email(jwt: &str) -> Option<String> {
 }
 
 const EXPIRED: &str = "Token expired: run its CLI once to refresh";
+const LOST: &str = "Couldn't save the renewed sign-in: sign in to its CLI again";
 
 /// A CLI's OAuth app, to renew its expired tokens the way the CLI does.
 struct Oauth { url: &'static str, client: &'static str, scope: Option<&'static str> }
@@ -173,7 +175,7 @@ fn renew(s: &Saved, expired: &str) -> Result<String, String> {
         let text = serde_json::to_string_pretty(&file).map_err(|e| e.to_string())?;
         // The old refresh token is spent now, so a failed save falls back to writing the file in place.
         let ok = std::fs::write(&tmp, &text).and_then(|_| std::fs::rename(&tmp, &s.path)).or_else(|_| std::fs::write(&s.path, &text));
-        ok.map(|_| access).map_err(|_| "Couldn't save the renewed sign-in: sign in to its CLI again".to_string())
+        ok.map(|_| access).map_err(|_| LOST.to_string())
     });
     let _ = std::fs::remove_file(&tmp);
     saved
@@ -187,8 +189,9 @@ fn renew_into(s: &Saved, creds: &mut Value) -> Result<String, String> {
     let mut res = crate::net::agent().post(s.oauth.url).header("content-type", "application/json").header("user-agent", "Ripple")
         .send(body.to_string()).map_err(|_| "Can't reach the server".to_string())?;
     if !res.status().is_success() { return Err(EXPIRED.into()) }
-    let v: Value = serde_json::from_str(&res.body_mut().read_to_string().map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
-    let access = v["access_token"].as_str().ok_or(EXPIRED)?.to_string();
+    // From here the old refresh token is spent.
+    let v: Value = res.body_mut().read_to_string().ok().and_then(|b| serde_json::from_str(&b).ok()).ok_or(LOST)?;
+    let access = v["access_token"].as_str().ok_or(LOST)?.to_string();
     creds[s.access] = access.clone().into();
     if let Some(r) = v["refresh_token"].as_str() { creds[s.refresh] = r.into() }
     if let (Some(id), true) = (v["id_token"].as_str(), creds.get("id_token").is_some()) { creds["id_token"] = id.into() }
