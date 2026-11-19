@@ -153,7 +153,8 @@ impl Island {
 
 pub fn view(s: &Island, layer: &mut Vec<El>) -> El {
     let fg = s.cfg.text();
-    let root = col().key("t3").w_full().h_full().px(16.0).pt(18.0).pb(14.0).gap(8.0);
+    // A press on a disabled control or between controls would reach the Island and close Large.
+    let root = col().key("t3").w_full().h_full().px(16.0).pt(18.0).pb(14.0).gap(8.0).on_press(|_: &mut Island| {});
     let Some((device_index, _)) = s.t3_device() else {
         return root.child(empty(s, if s.t3.detecting { "Looking for T3 Code on this computer..." } else { "Add a T3 Code device in Settings" }));
     };
@@ -242,6 +243,8 @@ pub fn view(s: &Island, layer: &mut Vec<El>) -> El {
             col().key("t3-message-box").w_full().grow(1.0).min_h(0.0).px(12.0).py(8.0)
                 .radius(s.cfg.radius(10.0))
                 .fill(fg.alpha(0.05 * fg.a)).border(1.0, fg.alpha(0.1 * fg.a))
+                // The input is only as tall as its text: a press on the rest of the box types into it too.
+                .on_press(|s: &mut Island| s.t3.message.focused = true)
                 .scroll(ScrollSpec { stick_bottom: false }).on_wheel(Island::wheel).child(message),
         )
         .child(
