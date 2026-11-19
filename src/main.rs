@@ -27,7 +27,7 @@ use rune::{App, AppHandle, AppSpec, MacWindowOptions, RunOptions, Tray, TrayEven
 use config::{Store, Tab};
 use island::{CANVAS, Host, Island, Mode};
 use platform::Screen;
-use settings::Settings;
+use settings::{Page, Settings};
 
 static FONTS: &[&[u8]] = &[
     include_bytes!("../assets/fonts/OpenRunde-Regular.otf"),
@@ -218,11 +218,18 @@ fn island_spec() -> AppSpec<Island> {
 
 fn settings_spec() -> AppSpec<Settings> {
     AppSpec {
-        min_size: Some((420.0, 400.0)),
+        min_size: Some((600.0, 400.0)),
         fonts: FONTS,
         families: FAMILIES,
-        scenes: &[("panel-ai", |s| s.page = Some(Tab::Assistant)), ("panel-limits", |s| s.page = Some(Tab::Limits)), ("panel-tasks", |s| s.page = Some(Tab::Tasks))],
-        ..AppSpec::new("Ripple Settings", (520.0, 720.0), || unreachable!("state comes from WindowSpec::state"), settings::view)
+        scenes: &[
+            ("tabs", |s| s.page = Page::Tabs),
+            ("appearance", |s| s.page = Page::Appearance),
+            ("features", |s| s.page = Page::Features),
+            ("panel-ai", |s| s.page = Page::Tab(Tab::Assistant)),
+            ("panel-limits", |s| s.page = Page::Tab(Tab::Limits)),
+            ("panel-tasks", |s| s.page = Page::Tab(Tab::Tasks)),
+        ],
+        ..AppSpec::new("Ripple Settings", (720.0, 720.0), || unreachable!("state comes from WindowSpec::state"), settings::view)
     }
 }
 
@@ -231,7 +238,7 @@ fn settings_window<S: 'static>(app: &mut App<S>, state: Settings) -> (AppHandle<
     app.window(
         WindowSpec::new("settings", settings_spec())
             .state(state)
-            .options(WindowOptions { visible: false, min_size: Some((420.0, 400.0)), ..Default::default() }),
+            .options(WindowOptions { visible: false, min_size: Some((600.0, 400.0)), ..Default::default() }),
     )
 }
 

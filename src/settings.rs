@@ -8,6 +8,32 @@ use crate::icons;
 use crate::island::Host;
 use crate::platform::Screen;
 
+/// A sidebar entry: the app-wide pages, then one per tab that has settings.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Page { General, Tabs, Appearance, Features, Tab(Tab) }
+
+impl Page {
+    fn title(self) -> &'static str {
+        match self {
+            Page::General => "General",
+            Page::Tabs => "Tabs",
+            Page::Appearance => "Appearance",
+            Page::Features => "Features",
+            Page::Tab(tab) => tab.name(),
+        }
+    }
+
+    fn icon(self) -> &'static rune::Icon {
+        match self {
+            Page::General => &icons::SETTINGS,
+            Page::Tabs => &icons::LIST,
+            Page::Appearance => &icons::MONITOR,
+            Page::Features => &icons::ZAP,
+            Page::Tab(tab) => icons::tab(tab),
+        }
+    }
+}
+
 pub struct Settings {
     pub store: Store,
     pub cfg: Config,
@@ -17,8 +43,8 @@ pub struct Settings {
     open: Option<&'static str>,
     /// The tab row being dragged, and how far it has moved.
     dragging: Option<(usize, f32)>,
-    /// The tab whose settings page is showing.
-    pub page: Option<Tab>,
+    /// The page the sidebar has selected.
+    pub page: Page,
     bg_color: TextEdit,
     text_color: TextEdit,
     bg_image: TextEdit,
@@ -75,7 +101,7 @@ impl Settings {
             screens: screens.iter().map(|s| s.name.clone()).collect(),
             open: None,
             dragging: None,
-            page: None,
+            page: Page::General,
             island,
             store,
             cfg,
@@ -171,13 +197,16 @@ fn setting(s: &Settings, label: &str, control: El) -> El {
         .child(control)
 }
 
+/// A titled card of rows.
 fn section(s: &Settings, key: &str, title: &str, rows: Vec<El>) -> El {
     let fg = s.cfg.text().alpha(1.0);
-    rows.into_iter().fold(
-        col().key(key.to_string()).w_full().gap(6.0)
-            .child(text(title).font(s.cfg.font(13.0, 500.0)).color(fg.alpha(0.5)).mb(2.0)),
+    let card = rows.into_iter().fold(
+        col().w_full().gap(6.0).px(16.0).py(12.0).radius(12.0).fill(fg.alpha(0.04)).border(1.0, fg.alpha(0.08)),
         El::child,
-    )
+    );
+    col().key(key.to_string()).w_full().gap(8.0)
+        .child(text(title).font(s.cfg.font(12.0, 600.0)).color(fg.alpha(0.5)).px(4.0))
+        .child(card)
 }
 
 /// A horizontal slider: `value` in `min..=max`, moved while dragging and saved on release.
@@ -305,9 +334,9 @@ fn panel(s: &Settings, k: &Kit, layer: &mut Vec<El>, tab: Tab) -> Vec<El> {
                 // Workflows
             let mut workflows = vec![
                 text("Workflow name").font(cfg.font(14.0, 500.0)).color(fg.alpha(0.8)),
-                TextInput::new(&s.workflow_name).label("Workflow name").placeholder("e.g. Work Tools").on_edit(|s: &mut Settings| &mut s.workflow_name).build(k),
+                TextInput::new(&s.workflow_name).width(None).label("Workflow name").placeholder("e.g. Work Tools").on_edit(|s: &mut Settings| &mut s.workflow_name).build(k),
                 text("Apps or URLs, comma separated").font(cfg.font(14.0, 500.0)).color(fg.alpha(0.8)).mt(10.0),
-                TextArea::new(&s.workflow_urls).label("Apps or URLs").placeholder("e.g. Spotify, docs.google.com").rows(2).on_edit(|s: &mut Settings| &mut s.workflow_urls).build(k),
+                TextArea::new(&s.workflow_urls).width(None).label("Apps or URLs").placeholder("e.g. Spotify, docs.google.com").rows(2).on_edit(|s: &mut Settings| &mut s.workflow_urls).build(k),
                 row().child(Button::new("Save workflow").variant(ButtonVariant::Contrast).on_press(Settings::add_workflow).build(k)),
             ];
             for (i, wf) in cfg.workflows.iter().enumerate() {
@@ -340,11 +369,11 @@ fn panel(s: &Settings, k: &Kit, layer: &mut Vec<El>, tab: Tab) -> Vec<El> {
                 }),
                 col().w_full().gap(6.0)
                     .child(text("AI model").font(cfg.font(14.0, 500.0)).color(fg.alpha(0.85)))
-                    .child(TextInput::new(&s.ai_model).label("AI model").placeholder(cfg.provider().model)
+                    .child(TextInput::new(&s.ai_model).width(None).label("AI model").placeholder(cfg.provider().model)
                         .on_edit(|s: &mut Settings| &mut s.ai_model).on_change(|s: &mut Settings, _| { let v = s.ai_model.text.clone(); s.save(|c| c.ai_model = v) }).build(k)),
                 col().w_full().gap(6.0)
                     .child(text("API key").font(cfg.font(14.0, 500.0)).color(fg.alpha(0.85)))
-                    .child(TextInput::new(&s.api_key).label("API key").secure().placeholder(cfg.provider().key_hint)
+                    .child(TextInput::new(&s.api_key).width(None).label("API key").secure().placeholder(cfg.provider().key_hint)
                         .on_edit(|s: &mut Settings| &mut s.api_key).on_change(|s: &mut Settings, _| { let v = s.api_key.text.clone(); s.save(|c| c.api_key = v) }).build(k)),
             ]));
         }
@@ -354,9 +383,9 @@ fn panel(s: &Settings, k: &Kit, layer: &mut Vec<El>, tab: Tab) -> Vec<El> {
                 t3.push(setting(s, d.label(), IconButton::new(&icons::TRASH).label(format!("Remove {}", d.label()))
                     .on_press(move |s: &mut Settings| s.save(|c| { if i < c.t3_devices.len() && c.t3_devices.remove(i).name == crate::t3::LOCAL_NAME { c.t3_detected = true } })).build(k)));
             }
-            t3.push(TextInput::new(&s.t3_name).label("Device name").placeholder("Name (e.g. Laptop)").on_edit(|s: &mut Settings| &mut s.t3_name).build(k));
-            t3.push(TextInput::new(&s.t3_url).label("Device URL").placeholder("http://127.0.0.1:3773").on_edit(|s: &mut Settings| &mut s.t3_url).build(k));
-            t3.push(TextInput::new(&s.t3_token).label("Bearer token").secure().placeholder("Bearer token").on_edit(|s: &mut Settings| &mut s.t3_token).on_submit(|s: &mut Settings, _| s.add_t3_device()).build(k));
+            t3.push(TextInput::new(&s.t3_name).width(None).label("Device name").placeholder("Name (e.g. Laptop)").on_edit(|s: &mut Settings| &mut s.t3_name).build(k));
+            t3.push(TextInput::new(&s.t3_url).width(None).label("Device URL").placeholder("http://127.0.0.1:3773").on_edit(|s: &mut Settings| &mut s.t3_url).build(k));
+            t3.push(TextInput::new(&s.t3_token).width(None).label("Bearer token").secure().placeholder("Bearer token").on_edit(|s: &mut Settings| &mut s.t3_token).on_submit(|s: &mut Settings, _| s.add_t3_device()).build(k));
             t3.push(row().child(Button::new("Add device").variant(ButtonVariant::Contrast).disabled(!s.t3_addable()).on_press(Settings::add_t3_device).build(k)));
             sections.push(section(s, "t3", "T3 Code devices", t3));
         }
@@ -364,11 +393,11 @@ fn panel(s: &Settings, k: &Kit, layer: &mut Vec<El>, tab: Tab) -> Vec<El> {
             sections.push(section(s, "limits", "Accounts", vec![
                 text("Each CLI's own sign-in is found by itself. Add more accounts here.").font(cfg.font(12.0, 400.0)).color(fg.alpha(0.6)),
                 text("More Claude Code or Codex config folders, one per line").font(cfg.font(14.0, 500.0)).color(fg.alpha(0.8)).mt(10.0),
-                TextArea::new(&s.agent_dirs).label("Claude Code or Codex config folders").placeholder("~/.claude-work").rows(3)
+                TextArea::new(&s.agent_dirs).width(None).label("Claude Code or Codex config folders").placeholder("~/.claude-work").rows(3)
                     .on_edit(|s: &mut Settings| &mut s.agent_dirs)
                     .on_change(|s: &mut Settings, _| { let v = s.agent_dirs.text.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_string).collect(); s.save(|c| c.agent_dirs = v) }).build(k),
                 text("CLIProxyAPI auth folder").font(cfg.font(14.0, 500.0)).color(fg.alpha(0.8)).mt(10.0),
-                TextInput::new(&s.cliproxy_dir).label("CLIProxyAPI auth folder").placeholder("~/.cli-proxy-api")
+                TextInput::new(&s.cliproxy_dir).width(None).label("CLIProxyAPI auth folder").placeholder("~/.cli-proxy-api")
                     .on_edit(|s: &mut Settings| &mut s.cliproxy_dir).on_change(|s: &mut Settings, _| { let v = s.cliproxy_dir.text.trim().to_string(); s.save(|c| c.cliproxy_dir = v) }).build(k),
             ]));
         }
@@ -377,23 +406,23 @@ fn panel(s: &Settings, k: &Kit, layer: &mut Vec<El>, tab: Tab) -> Vec<El> {
             let mut rows = vec![
                 text("Notes, Tasks and Calendar sync with this account. Make an app password in Nextcloud under Settings → Security.").font(cfg.font(12.0, 400.0)).color(fg.alpha(0.6)).wrap(),
                 label("Server"),
-                TextInput::new(&s.nc_url).label("Nextcloud server").placeholder("https://cloud.example.com")
+                TextInput::new(&s.nc_url).width(None).label("Nextcloud server").placeholder("https://cloud.example.com")
                     .on_edit(|s: &mut Settings| &mut s.nc_url).on_change(|s: &mut Settings, _| { let v = s.nc_url.text.trim().to_string(); s.save(|c| c.nextcloud.url = v) }).build(k),
                 label("User"),
-                TextInput::new(&s.nc_user).label("Nextcloud user").placeholder("User name")
+                TextInput::new(&s.nc_user).width(None).label("Nextcloud user").placeholder("User name")
                     .on_edit(|s: &mut Settings| &mut s.nc_user).on_change(|s: &mut Settings, _| { let v = s.nc_user.text.trim().to_string(); s.save(|c| c.nextcloud.user = v) }).build(k),
                 label("App password"),
-                TextInput::new(&s.nc_password).label("Nextcloud app password").secure().placeholder(if cfg.nextcloud.password.is_empty() { "App password" } else { "Saved" })
+                TextInput::new(&s.nc_password).width(None).label("Nextcloud app password").secure().placeholder(if cfg.nextcloud.password.is_empty() { "App password" } else { "Saved" })
                     .on_edit(|s: &mut Settings| &mut s.nc_password).on_change(|s: &mut Settings, _| { let v = s.nc_password.text.clone(); s.save(|c| c.nextcloud.password = v) }).build(k),
             ];
             if tab == Tab::Tasks {
                 rows.push(label("Tasks list"));
-                rows.push(TextInput::new(&s.nc_list).label("Nextcloud tasks list").placeholder("The first list with tasks")
+                rows.push(TextInput::new(&s.nc_list).width(None).label("Nextcloud tasks list").placeholder("The first list with tasks")
                     .on_edit(|s: &mut Settings| &mut s.nc_list).on_change(|s: &mut Settings, _| { let v = s.nc_list.text.trim().to_string(); s.save(|c| c.nextcloud.list = v) }).build(k));
             }
             if tab == Tab::Calendar {
                 rows.push(label("Calendar"));
-                rows.push(TextInput::new(&s.nc_calendar).label("Nextcloud calendar").placeholder("The first calendar with events")
+                rows.push(TextInput::new(&s.nc_calendar).width(None).label("Nextcloud calendar").placeholder("The first calendar with events")
                     .on_edit(|s: &mut Settings| &mut s.nc_calendar).on_change(|s: &mut Settings, _| { let v = s.nc_calendar.text.trim().to_string(); s.save(|c| c.nextcloud.calendar = v) }).build(k));
             }
             sections.push(section(s, "nextcloud", "Nextcloud", rows));
@@ -403,140 +432,170 @@ fn panel(s: &Settings, k: &Kit, layer: &mut Vec<El>, tab: Tab) -> Vec<El> {
     sections
 }
 
-/// The main settings page.
-fn home(s: &Settings, k: &Kit, layer: &mut Vec<El>) -> Vec<El> {
+/// The sections of an app-wide page.
+fn page(s: &Settings, k: &Kit, layer: &mut Vec<El>, page: Page) -> Vec<El> {
     let cfg = &s.cfg;
     let fg = cfg.text().alpha(1.0);
     let mut sections = Vec::new();
+    match page {
+        Page::Tab(tab) => return panel(s, k, layer, tab),
+        Page::General => {
+            let mut general = vec![setting(s, "Clock format", choice(s, k, layer, "clock", "Clock format", &[("12", "12-hour"), ("24", "24-hour")], if cfg.hour12 { "12" } else { "24" }, |c, v| c.hour12 = v == "12"))];
+            if !cfg!(target_os = "macos") {
+                general.push(setting(s, "Launch at login", switch(k, "Launch at login", cfg.auto_launch, |c| {
+                    c.auto_launch = !c.auto_launch;
+                    let on = c.auto_launch;
+                    std::thread::spawn(move || crate::system::set_auto_launch(on));
+                }).a11y_hidden()));
+        }
+            if !s.screens.is_empty() {
+                let current = if s.screens.contains(&cfg.display) { cfg.display.clone() } else { s.screens[0].clone() };
+                general.push(setting(s, "Display", Select::new("display", &s.screens).label("Display").width(190.0).current(Some(&current))
+                    .open(s.open == Some("display")).on_toggle(toggle_open("display")).on_close(close)
+                    .on_choose(|s: &mut Settings, name: &str, _: &mut Tx| { s.open = None; let name = name.to_string(); s.save(|c| c.display = name) })
+                    .build(k, layer)));
+        }
+            sections.push(section(s, "general", "System", general));
+        }
+        Page::Tabs => {
 
-    // General
-    let mut general = vec![setting(s, "Clock format", choice(s, k, layer, "clock", "Clock format", &[("12", "12-hour"), ("24", "24-hour")], if cfg.hour12 { "12" } else { "24" }, |c, v| c.hour12 = v == "12"))];
-    if !cfg!(target_os = "macos") {
-        general.push(setting(s, "Launch at login", switch(k, "Launch at login", cfg.auto_launch, |c| {
-            c.auto_launch = !c.auto_launch;
-            let on = c.auto_launch;
-            std::thread::spawn(move || crate::system::set_auto_launch(on));
-        }).a11y_hidden()));
-    }
-    if !s.screens.is_empty() {
-        let current = if s.screens.contains(&cfg.display) { cfg.display.clone() } else { s.screens[0].clone() };
-        general.push(setting(s, "Display", Select::new("display", &s.screens).label("Display").width(190.0).current(Some(&current))
-            .open(s.open == Some("display")).on_toggle(toggle_open("display")).on_close(close)
-            .on_choose(|s: &mut Settings, name: &str, _: &mut Tx| { s.open = None; let name = name.to_string(); s.save(|c| c.display = name) })
-            .build(k, layer)));
-    }
-    sections.push(section(s, "general", "General", general));
+            // Tabs
+            let mut tabs = vec![
+                text("Drag to reorder, click the eye to hide").font(cfg.font(12.0, 400.0)).color(fg.alpha(0.5)),
+                setting(s, "Always open on the starred tab", switch(k, "Always open on the starred tab", cfg.open_default_tab, |c| c.open_default_tab = !c.open_default_tab).a11y_hidden()),
+                col().key("tab-linger-row").w_full().gap(8.0).py(6.0)
+                    .child(text(format!("Stay open after a tab change ({:.1}s)", cfg.tab_linger)).font(cfg.font(14.0, 500.0)).color(fg.alpha(0.85)))
+                    .child(slider(s, "tab-linger", "Stay open after a tab change", (0.0, 10.0, 0.5), |c| c.tab_linger, |c, v| c.tab_linger = v)),
+            ];
+            let last = cfg.tab_order.len().saturating_sub(1);
+            for (i, &tab) in cfg.tab_order.iter().enumerate() {
+                let name = tab.name();
+                let hidden = cfg.hidden_tabs.contains(&tab);
+                let is_default = cfg.default_tab == tab;
+                tabs.push(
+                    {
+                        let row = row().key(format!("tab-{}", tab as u8)).w_full().h(TAB_ROW).px(10.0).gap(10.0).center_y().radius(10.0)
+                            .fill(fg.alpha(0.03)).border(1.0, fg.alpha(if hidden { 0.05 } else { 0.08 }))
+                            .cursor(Cursor::Grab)
+                            .on_drag(move |s: &mut Settings, d: &mut Drag, tx| drag_tab(s, i, d, tx));
+                        match s.dragging {
+                            // The dragged row follows the pointer over its neighbours.
+                            Some((from, dy)) if from == i => row.offset(0.0, dy).raise().opacity(0.6).fill(fg.alpha(0.1)),
+                            _ => row.opacity(if hidden { 0.45 } else { 1.0 }),
+                        }
+                    }
+                        .child(icon(&icons::GRIP, 16.0).color(fg.alpha(0.3)))
+                        .child(icon(icons::tab(tab), 16.0).color(fg))
+                        .child(text(name).font(cfg.font(14.0, 500.0)).color(fg).grow(1.0).min_w(0.0).truncate())
+                        .child(if has_panel(tab) {
+                            IconButton::new(&icons::SETTINGS).label(format!("{} settings", name))
+                                .on_press(move |s: &mut Settings| { s.open = None; s.page = Page::Tab(tab) }).build(k)
+                        } else { el().size(32.0, 32.0).a11y_hidden() })
+                        .child(IconButton::new(if is_default { &icons::STAR_FILLED } else { &icons::STAR }).label(format!("Make {} the default tab", name))
+                            .on_press(move |s: &mut Settings| s.save(|c| c.default_tab = tab)).build(k).opacity(if is_default { 1.0 } else { 0.4 }))
+                        .child(IconButton::new(if hidden { &icons::EYE_OFF } else { &icons::EYE }).label(format!("{} {}", if hidden { "Show" } else { "Hide" }, name))
+                            .on_press(move |s: &mut Settings| s.save(|c| c.toggle_tab(tab))).build(k))
+                        .child(IconButton::new(&icons::CHEVRON_UP).label(format!("Move {} up", name)).disabled(i == 0)
+                            .on_press(move |s: &mut Settings| s.save(|c| c.move_tab(i, i.saturating_sub(1)))).build(k))
+                        .child(IconButton::new(&icons::CHEVRON_DOWN).label(format!("Move {} down", name)).disabled(i == last)
+                            .on_press(move |s: &mut Settings| s.save(|c| c.move_tab(i, i + 1))).build(k)),
+                );
+        }
+            sections.push(section(s, "tabs", "Order and visibility", tabs));
+        }
+        Page::Appearance => {
 
-    // Tabs
-    let mut tabs = vec![
-        text("Drag to reorder, click the eye to hide").font(cfg.font(12.0, 400.0)).color(fg.alpha(0.5)),
-        setting(s, "Always open on the starred tab", switch(k, "Always open on the starred tab", cfg.open_default_tab, |c| c.open_default_tab = !c.open_default_tab).a11y_hidden()),
-        setting(s, &format!("Stay open after a tab change ({:.1}s)", cfg.tab_linger), slider(s, "tab-linger", "Stay open after a tab change", (0.0, 10.0, 0.5), |c| c.tab_linger, |c, v| c.tab_linger = v)).key("tab-linger-row"),
-    ];
-    let last = cfg.tab_order.len().saturating_sub(1);
-    for (i, &tab) in cfg.tab_order.iter().enumerate() {
-        let name = tab.name();
-        let hidden = cfg.hidden_tabs.contains(&tab);
-        let is_default = cfg.default_tab == tab;
-        tabs.push(
-            {
-                let row = row().key(format!("tab-{}", tab as u8)).w_full().h(TAB_ROW).px(10.0).gap(10.0).center_y().radius(10.0)
-                    .fill(fg.alpha(0.03)).border(1.0, fg.alpha(if hidden { 0.05 } else { 0.08 }))
-                    .cursor(Cursor::Grab)
-                    .on_drag(move |s: &mut Settings, d: &mut Drag, tx| drag_tab(s, i, d, tx));
-                match s.dragging {
-                    // The dragged row follows the pointer over its neighbours.
-                    Some((from, dy)) if from == i => row.offset(0.0, dy).raise().opacity(0.6).fill(fg.alpha(0.1)),
-                    _ => row.opacity(if hidden { 0.45 } else { 1.0 }),
-                }
-            }
-                .child(icon(&icons::GRIP, 16.0).color(fg.alpha(0.3)))
-                .child(icon(icons::tab(tab), 16.0).color(fg))
-                .child(text(name).font(cfg.font(14.0, 500.0)).color(fg).grow(1.0))
-                .child(if has_panel(tab) {
-                    IconButton::new(&icons::SETTINGS).label(format!("{} settings", name))
-                        .on_press(move |s: &mut Settings| { s.open = None; s.page = Some(tab) }).build(k)
-                } else { el().size(32.0, 32.0).a11y_hidden() })
-                .child(IconButton::new(if is_default { &icons::STAR_FILLED } else { &icons::STAR }).label(format!("Make {} the default tab", name))
-                    .on_press(move |s: &mut Settings| s.save(|c| c.default_tab = tab)).build(k).opacity(if is_default { 1.0 } else { 0.4 }))
-                .child(IconButton::new(if hidden { &icons::EYE_OFF } else { &icons::EYE }).label(format!("{} {}", if hidden { "Show" } else { "Hide" }, name))
-                    .on_press(move |s: &mut Settings| s.save(|c| c.toggle_tab(tab))).build(k))
-                .child(IconButton::new(&icons::CHEVRON_UP).label(format!("Move {} up", name)).disabled(i == 0)
-                    .on_press(move |s: &mut Settings| s.save(|c| c.move_tab(i, i.saturating_sub(1)))).build(k))
-                .child(IconButton::new(&icons::CHEVRON_DOWN).label(format!("Move {} down", name)).disabled(i == last)
-                    .on_press(move |s: &mut Settings| s.save(|c| c.move_tab(i, i + 1))).build(k)),
-        );
-    }
-    sections.push(section(s, "tabs", "Tabs", tabs));
+            // Island style
+            let mut style = vec![
+                setting(s, "Notch mode", switch(k, "Notch mode", cfg.notch_mode, |c| c.notch_mode = !c.notch_mode).a11y_hidden()),
+                setting(s, "Theme", choice(s, k, layer, "theme", "Theme", &THEMES.map(|t| (t.0, t.1)), &cfg.theme, |c, v| c.set_theme(v))),
+            ];
+            if cfg.notch_mode {
+                style.insert(1, setting(s, "Mini notch", switch(k, "Mini notch", cfg.notch_mini, |c| c.notch_mini = !c.notch_mini).a11y_hidden()));
+                // Auto size only sizes around a physical notch.
+                if !cfg.notch_mini { style.insert(2, setting(s, "Auto size", switch(k, "Auto size", cfg.notch_auto_size, |c| c.notch_auto_size = !c.notch_auto_size).a11y_hidden())) }
+        }
+            let position = POSITIONS.iter()
+                .fold(RadioGroup::new().label("Position"), |group, &(value, label)| {
+                    group.item(RadioItem::new(label, cfg.position_mode == value).on_select(move |s: &mut Settings| s.save(|c| c.position_mode = value.into())))
+                });
+            style.push(col().key("position").w_full().gap(8.0).padding(14.0).radius(16.0).fill(fg.alpha(0.03)).border(1.0, fg.alpha(0.08)).child(position.build(k)));
+            if cfg.position_mode == "free" {
+                style.push(setting(s, &format!("Position X ({:.1}%)", cfg.island_x), slider(s, "island-x", "Position X", (0.0, 100.0, 0.1), |c| c.island_x, |c, v| c.island_x = v)).key("island-x-row"));
+                style.push(setting(s, &format!("Position Y ({}px)", cfg.island_y.round()), slider(s, "island-y", "Position Y", (0.0, 500.0, 1.0), |c| c.island_y, |c, v| c.island_y = v)).key("island-y-row"));
+        }
+            style.push(setting(s, "Island border", switch(k, "Island border", cfg.island_border, |c| c.island_border = !c.island_border).a11y_hidden()));
+            // Only the Wayland layer-shell overlay can be pushed below a panel.
+            if matches!(s.island, Some(Host::Overlay(..))) {
+                style.push(setting(s, "Overlap panels", switch(k, "Overlap panels", cfg.overlap_panels, |c| c.overlap_panels = !c.overlap_panels).a11y_hidden()));
+        }
+            style.push(setting(s, "Hide when inactive", switch(k, "Hide when inactive", cfg.hide_inactive, |c| c.hide_inactive = !c.hide_inactive).a11y_hidden()));
+            sections.push(section(s, "style", "Island style", style));
 
-    // Island style
-    let mut style = vec![
-        setting(s, "Notch mode", switch(k, "Notch mode", cfg.notch_mode, |c| c.notch_mode = !c.notch_mode).a11y_hidden()),
-        setting(s, "Theme", choice(s, k, layer, "theme", "Theme", &THEMES.map(|t| (t.0, t.1)), &cfg.theme, |c, v| c.set_theme(v))),
-    ];
-    if cfg.notch_mode {
-        style.insert(1, setting(s, "Mini notch", switch(k, "Mini notch", cfg.notch_mini, |c| c.notch_mini = !c.notch_mini).a11y_hidden()));
-        // Auto size only sizes around a physical notch.
-        if !cfg.notch_mini { style.insert(2, setting(s, "Auto size", switch(k, "Auto size", cfg.notch_auto_size, |c| c.notch_auto_size = !c.notch_auto_size).a11y_hidden())) }
+            // Colours
+            sections.push(section(s, "colors", "Colors and background", vec![
+                setting(s, "Island color", TextInput::new(&s.bg_color).label("Island color").placeholder("#000000").width(Some(160.0))
+                    .on_edit(|s: &mut Settings| &mut s.bg_color).on_change(|s: &mut Settings, _| { let v = s.bg_color.text.clone(); s.save(|c| c.bg_color = v) }).build(k)),
+                setting(s, "Text color", TextInput::new(&s.text_color).label("Text color").placeholder("#FAFAFA").width(Some(160.0))
+                    .on_edit(|s: &mut Settings| &mut s.text_color).on_change(|s: &mut Settings, _| { let v = s.text_color.text.clone(); s.save(|c| c.text_color = v) }).build(k)),
+                col().w_full().gap(6.0)
+                    .child(text("Background image URL").font(cfg.font(14.0, 500.0)).color(fg.alpha(0.85)))
+                    .child(TextInput::new(&s.bg_image).width(None).label("Background image URL").placeholder("https://...")
+                        .on_edit(|s: &mut Settings| &mut s.bg_image).on_change(|s: &mut Settings, _| { let v = s.bg_image.text.clone(); s.save(|c| c.bg_image = v) }).build(k)),
+            ]));
+        }
+        Page::Features => {
+            sections.push(section(s, "features", "Alerts and standby", vec![
+                setting(s, "Low battery alerts", switch(k, "Low battery alerts", cfg.battery_alerts, |c| c.battery_alerts = !c.battery_alerts).a11y_hidden()),
+                setting(s, "Standby mode", switch(k, "Standby mode", cfg.standby, |c| c.standby = !c.standby).a11y_hidden()),
+                setting(s, "Large standby mode", switch(k, "Large standby mode", cfg.large_standby, |c| c.large_standby = !c.large_standby).a11y_hidden()),
+                setting(s, "Show info when idle", switch(k, "Show info when idle", cfg.show_info_idle, |c| c.show_info_idle = !c.show_info_idle).a11y_hidden()),
+            ]));
+        }
     }
-    let position = POSITIONS.iter()
-        .fold(RadioGroup::new().label("Position"), |group, &(value, label)| {
-            group.item(RadioItem::new(label, cfg.position_mode == value).on_select(move |s: &mut Settings| s.save(|c| c.position_mode = value.into())))
-        });
-    style.push(col().key("position").w_full().gap(8.0).padding(14.0).radius(16.0).fill(fg.alpha(0.03)).border(1.0, fg.alpha(0.08)).child(position.build(k)));
-    if cfg.position_mode == "free" {
-        style.push(setting(s, &format!("Position X ({:.1}%)", cfg.island_x), slider(s, "island-x", "Position X", (0.0, 100.0, 0.1), |c| c.island_x, |c, v| c.island_x = v)).key("island-x-row"));
-        style.push(setting(s, &format!("Position Y ({}px)", cfg.island_y.round()), slider(s, "island-y", "Position Y", (0.0, 500.0, 1.0), |c| c.island_y, |c, v| c.island_y = v)).key("island-y-row"));
-    }
-    style.push(setting(s, "Island border", switch(k, "Island border", cfg.island_border, |c| c.island_border = !c.island_border).a11y_hidden()));
-    // Only the Wayland layer-shell overlay can be pushed below a panel.
-    if matches!(s.island, Some(Host::Overlay(..))) {
-        style.push(setting(s, "Overlap panels", switch(k, "Overlap panels", cfg.overlap_panels, |c| c.overlap_panels = !c.overlap_panels).a11y_hidden()));
-    }
-    style.push(setting(s, "Hide when inactive", switch(k, "Hide when inactive", cfg.hide_inactive, |c| c.hide_inactive = !c.hide_inactive).a11y_hidden()));
-    sections.push(section(s, "style", "Island style", style));
-
-    // Colours
-    sections.push(section(s, "colors", "Colors and background", vec![
-        setting(s, "Island color", TextInput::new(&s.bg_color).label("Island color").placeholder("#000000").width(Some(160.0))
-            .on_edit(|s: &mut Settings| &mut s.bg_color).on_change(|s: &mut Settings, _| { let v = s.bg_color.text.clone(); s.save(|c| c.bg_color = v) }).build(k)),
-        setting(s, "Text color", TextInput::new(&s.text_color).label("Text color").placeholder("#FAFAFA").width(Some(160.0))
-            .on_edit(|s: &mut Settings| &mut s.text_color).on_change(|s: &mut Settings, _| { let v = s.text_color.text.clone(); s.save(|c| c.text_color = v) }).build(k)),
-        col().w_full().gap(6.0)
-            .child(text("Background image URL").font(cfg.font(14.0, 500.0)).color(fg.alpha(0.85)))
-            .child(TextInput::new(&s.bg_image).label("Background image URL").placeholder("https://...")
-                .on_edit(|s: &mut Settings| &mut s.bg_image).on_change(|s: &mut Settings, _| { let v = s.bg_image.text.clone(); s.save(|c| c.bg_image = v) }).build(k)),
-    ]));
-
-    // Features
-    sections.push(section(s, "features", "Features", vec![
-        setting(s, "Low battery alerts", switch(k, "Low battery alerts", cfg.battery_alerts, |c| c.battery_alerts = !c.battery_alerts).a11y_hidden()),
-        setting(s, "Standby mode", switch(k, "Standby mode", cfg.standby, |c| c.standby = !c.standby).a11y_hidden()),
-        setting(s, "Large standby mode", switch(k, "Large standby mode", cfg.large_standby, |c| c.large_standby = !c.large_standby).a11y_hidden()),
-        setting(s, "Show info when idle", switch(k, "Show info when idle", cfg.show_info_idle, |c| c.show_info_idle = !c.show_info_idle).a11y_hidden()),
-    ]));
     sections
 }
+
+fn nav_item(s: &Settings, item: Page) -> El {
+    let fg = s.cfg.text().alpha(1.0);
+    let on = s.page == item;
+    let key = match item { Page::Tab(tab) => format!("nav-tab-{}", tab as u8), _ => format!("nav-{item:?}") };
+    row().key(key).role("tab").label(item.title()).checked(on).focusable(true)
+        .w_full().h(34.0).px(10.0).gap(10.0).center_y().radius(8.0)
+        .fill(fg.alpha(if on { 0.1 } else { 0.0 })).hover(fg.alpha(if on { 0.12 } else { 0.06 }))
+        .child(icon(item.icon(), 16.0).color(fg.alpha(if on { 1.0 } else { 0.6 })))
+        .child(text(item.title()).font(s.cfg.font(13.0, if on { 600.0 } else { 500.0 })).color(fg.alpha(if on { 1.0 } else { 0.75 })).truncate().shrink())
+        .on_press(move |s: &mut Settings| { s.open = None; s.page = item })
+}
+
+fn sidebar(s: &Settings) -> El {
+    let fg = s.cfg.text().alpha(1.0);
+    let group = |title: &str| text(title.to_string()).font(s.cfg.font(11.0, 600.0)).color(fg.alpha(0.4)).px(10.0).pt(14.0).pb(4.0);
+    let mut items = vec![text("Settings").font(s.cfg.font(17.0, 700.0)).color(fg).px(10.0).pb(10.0)];
+    items.extend([Page::General, Page::Tabs, Page::Appearance, Page::Features].map(|p| nav_item(s, p)));
+    items.push(group("Tab settings"));
+    items.extend(s.cfg.tab_order.iter().filter(|&&t| has_panel(t)).map(|&t| nav_item(s, Page::Tab(t))));
+    let list = items.into_iter().fold(col().key("sidebar-list").w_full().gap(2.0).px(10.0).pt(20.0).pb(16.0), El::child);
+    col().key("sidebar").w(SIDEBAR).h_full().min_h(0.0).fill(fg.alpha(0.03)).border_sides([0.0, 1.0, 0.0, 0.0], fg.alpha(0.08))
+        .child(col().key("sidebar-scroll").w_full().grow(1.0).min_h(0.0).scroll(ScrollSpec { stick_bottom: false }).child(list))
+}
+
+const SIDEBAR: f32 = 190.0;
 
 pub fn view(s: &Settings, _: &mut Cx<Settings>) -> El {
     let k = s.cfg.kit();
     let mut layer = Vec::new();
     let cfg = &s.cfg;
     let fg = cfg.text().alpha(1.0);
-    let sections = match s.page {
-        Some(tab) => {
-            let header = row().key("page-header").w_full().gap(8.0).center_y()
-                .child(IconButton::new(&icons::CHEVRON_LEFT).label("Back to settings").on_press(|s: &mut Settings| { s.open = None; s.page = None }).build(&k))
-                .child(text(tab.name()).font(cfg.font(16.0, 600.0)).color(fg));
-            std::iter::once(header).chain(panel(s, &k, &mut layer, tab)).collect()
-        }
-        None => home(s, &k, &mut layer),
-    };
-
-    let content = sections.into_iter().fold(col().key("settings-content").w_full().px(24.0).pt(20.0).pb(36.0).gap(28.0), El::child);
+    let title = text(s.page.title()).font(cfg.font(22.0, 700.0)).color(fg).key("page-title");
+    let sections = std::iter::once(title).chain(page(s, &k, &mut layer, s.page));
+    let content = sections.fold(col().key("settings-content").w_full().max_w(720.0).px(28.0).pt(24.0).pb(36.0).gap(24.0), El::child);
+    let scroll_key = match s.page { Page::Tab(tab) => format!("settings-scroll-tab-{}", tab as u8), p => format!("settings-scroll-{p:?}") };
     // An opaque base, so a translucent Island colour stays readable in a normal window.
-    let base = col().key("settings").w_full().h_full().min_h(0.0).fill(Color::BLACK)
-        .child(col().key(format!("settings-scroll-{}", s.page.map_or(-1, |t| i32::from(t as u8)))).w_full().grow(1.0).min_h(0.0).fill(cfg.bg()).scroll(ScrollSpec { stick_bottom: false }).child(content));
+    let base = row().key("settings").w_full().h_full().min_h(0.0).fill(Color::BLACK)
+        .child(row().w_full().h_full().min_h(0.0).fill(cfg.bg())
+            .child(sidebar(s))
+            .child(col().key(scroll_key).grow(1.0).min_w(0.0).h_full().min_h(0.0).scroll(ScrollSpec { stick_bottom: false }).child(content)));
     rune_kit::root(base, layer)
 }
 
@@ -553,11 +612,12 @@ mod tests {
 
     #[test]
     fn the_wheel_scrolls_the_page() {
-        let s = Settings::new(Store::memory(Config::default()), None, &[]);
-        let mut rt = rune::Runtime::new(s, view, (520.0, 720.0), rune::Env { system_dark: true, scale: 1.0 });
+        let mut s = Settings::new(Store::memory(Config::default()), None, &[]);
+        s.page = Page::Tabs;
+        let mut rt = rune::Runtime::new(s, view, (720.0, 720.0), rune::Env { system_dark: true, scale: 1.0 });
         rt.frame(0.0);
         let before = rt.find("tab-0").unwrap().1;
-        rt.wheel(260.0, 360.0, -200.0);
+        rt.wheel(460.0, 360.0, -200.0);
         for _ in 0..30 { rt.frame(1.0 / 60.0); }
         let after = rt.find("tab-0").unwrap().1;
         assert!(after < before - 50.0, "tab-0 stayed at {before} -> {after}");
@@ -566,8 +626,8 @@ mod tests {
     #[test]
     fn a_tab_settings_page_replaces_the_main_page() {
         let mut s = Settings::new(Store::memory(Config::default()), None, &[]);
-        s.page = Some(Tab::Assistant);
-        let mut rt = rune::Runtime::new(s, view, (520.0, 720.0), rune::Env { system_dark: true, scale: 1.0 });
+        s.page = Page::Tab(Tab::Assistant);
+        let mut rt = rune::Runtime::new(s, view, (720.0, 720.0), rune::Env { system_dark: true, scale: 1.0 });
         rt.frame(0.0);
         assert!(rt.find("integrations").is_some() && rt.find("tab-0").is_none());
     }
@@ -584,8 +644,9 @@ mod tests {
     #[test]
     fn dragging_a_tab_row_moves_it_in_the_saved_order() {
         let store = Store::memory(Config::default());
-        let s = Settings::new(store.clone(), None, &[]);
-        let mut rt = rune::Runtime::new(s, view, (520.0, 2600.0), rune::Env { system_dark: true, scale: 1.0 });
+        let mut s = Settings::new(store.clone(), None, &[]);
+        s.page = Page::Tabs;
+        let mut rt = rune::Runtime::new(s, view, (720.0, 2600.0), rune::Env { system_dark: true, scale: 1.0 });
         rt.frame(0.0);
         let (x, y) = rt.find("tab-0").unwrap();
         rt.pointer_down(x, y);
@@ -599,8 +660,9 @@ mod tests {
     #[test]
     fn a_dragged_slider_saves_on_release() {
         let store = Store::memory(Config::default());
-        let s = Settings::new(store.clone(), None, &[]);
-        let mut rt = rune::Runtime::new(s, view, (520.0, 2600.0), rune::Env { system_dark: true, scale: 1.0 });
+        let mut s = Settings::new(store.clone(), None, &[]);
+        s.page = Page::Tabs;
+        let mut rt = rune::Runtime::new(s, view, (720.0, 2600.0), rune::Env { system_dark: true, scale: 1.0 });
         rt.frame(0.0);
         // The row's label shows the value, so a drag that changed it must not lose its release.
         let (x, y) = rt.find("tab-linger").unwrap();
