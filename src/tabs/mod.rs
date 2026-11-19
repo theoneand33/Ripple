@@ -8,6 +8,7 @@ mod limits;
 mod monitor;
 mod notes;
 mod overview;
+mod plugins;
 mod search;
 mod shelf;
 mod stremflix;
@@ -42,6 +43,7 @@ pub fn view(s: &Island, layer: &mut Vec<El>) -> El {
         Tab::System => monitor::view(s),
         Tab::Limits => limits::view(s),
         Tab::Calendar => calendar::view(s),
+        Tab::Plugins => plugins::view(s),
     }
 }
 
@@ -53,7 +55,7 @@ pub fn size(tab: Tab) -> (f32, f32) {
         Tab::Notes | Tab::Stremflix => (520.0, 290.0),
         Tab::Shelf | Tab::System => (520.0, 230.0),
         Tab::Limits => (520.0, 290.0),
-        Tab::Tasks | Tab::T3 => (420.0, 290.0),
+        Tab::Tasks | Tab::T3 | Tab::Plugins => (420.0, 290.0),
         Tab::Calendar => (560.0, 280.0),
         Tab::Overview | Tab::Assistant | Tab::Clipboard => (420.0, 230.0),
     }
@@ -71,6 +73,7 @@ pub fn entered(s: &mut Island) {
             (s.calendar_offset, s.calendar_day) = (0, None);
             s.nextcloud_sync(crate::nextcloud::Kind::Events);
         }
+        Tab::Plugins => s.plugins.scan(),
         _ => {}
     }
 }

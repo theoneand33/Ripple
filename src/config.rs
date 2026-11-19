@@ -40,6 +40,7 @@ tabs! {
     System = 12,
     Calendar = 13,
     Limits = 14,
+    Plugins = 15,
 }
 
 impl Tab {
@@ -59,6 +60,7 @@ impl Tab {
             Tab::System => "System",
             Tab::Calendar => "Calendar",
             Tab::Limits => "AI Limits",
+            Tab::Plugins => "Plugins",
         }
     }
 }
@@ -531,7 +533,7 @@ mod tests {
     fn saved_orders_drop_retired_tabs_and_gain_new_ones() {
         use Tab::*;
         let cfg = serde_json::from_str::<Config>(r#"{"tab_order": [7, 2, 3, 0], "hidden_tabs": [3, 0], "default_tab": 7}"#).unwrap().normalized();
-        assert_eq!(cfg.tab_order, [Overview, Search, Workflows, Assistant, Clipboard, Tasks, T3, Notes, Stremflix, Shelf, System, Calendar, Limits]);
+        assert_eq!(cfg.tab_order, [Overview, Search, Workflows, Assistant, Clipboard, Tasks, T3, Notes, Stremflix, Shelf, System, Calendar, Limits, Plugins]);
         assert_eq!(cfg.hidden_tabs, [Search]);
         assert_eq!(cfg.first_tab(), Overview);
     }
@@ -540,9 +542,9 @@ mod tests {
     fn the_last_visible_tab_cannot_be_hidden() {
         let mut cfg = Config::default();
         for t in Tab::ALL { cfg.toggle_tab(t) }
-        assert_eq!(cfg.visible_tabs(), [Tab::Limits]);
+        assert_eq!(cfg.visible_tabs(), [Tab::Plugins]);
         cfg.toggle_tab(Tab::Search);
-        assert_eq!(cfg.visible_tabs(), [Tab::Search, Tab::Limits]);
+        assert_eq!(cfg.visible_tabs(), [Tab::Search, Tab::Plugins]);
     }
 
     #[cfg(unix)]

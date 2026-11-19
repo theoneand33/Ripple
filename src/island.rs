@@ -266,6 +266,7 @@ pub struct Island {
     /// A drag started elsewhere on the desktop opened the Shelf; it rests when the drag ends.
     pub desktop_drag: bool,
     pub t3: tabs::T3,
+    pub plugins: crate::plugins::Plugins,
 
     pub me: Option<Host>,
     pub settings: Option<WindowHandle>,
@@ -364,6 +365,7 @@ impl Island {
             dropping: false,
             desktop_drag: false,
             t3: tabs::T3::new(store.dir().as_deref()),
+            plugins: crate::plugins::Plugins::new(store.dir().as_deref()),
             me: None,
             settings: None,
             images: None,
@@ -942,6 +944,7 @@ impl Island {
             changed |= before != (self.time.clone(), self.date.clone());
             self.next_second = now + 1.0;
             tx.wake_at(self.next_second);
+            if self.mode == Mode::Large && self.tab == Tab::Plugins { changed |= self.plugins.tick() }
             // A note uploads once typing in it pauses.
             if self.notes.edited.is_some_and(|t| t.elapsed().as_secs() >= 2) {
                 self.notes.edited = None;
