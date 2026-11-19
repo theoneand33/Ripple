@@ -1695,12 +1695,12 @@ mod tests {
 
     #[test]
     fn tabs_move_within_the_visible_ones() {
-        let mut s = island(Config { hidden_tabs: vec![Tab::Workflows], default_tab: Tab::Search, ..Config::default() });
-        assert_eq!(s.tab, Tab::Search);
-        s.move_tab(-1);
-        assert_eq!(s.tab, Tab::Search);
-        s.move_tab(1);
+        let mut s = island(Config { hidden_tabs: vec![Tab::Search], default_tab: Tab::Overview, ..Config::default() });
         assert_eq!(s.tab, Tab::Overview);
+        s.move_tab(-1);
+        assert_eq!(s.tab, Tab::Overview);
+        s.move_tab(1);
+        assert_eq!(s.tab, Tab::Workflows);
     }
 
     #[test]
@@ -1720,9 +1720,9 @@ mod tests {
 
     #[test]
     fn one_long_swipe_changes_tab_once_and_a_new_one_again() {
-        // Tab 1 scrolls, and a scroll view takes a wheel before the Island's handler, so skip
+        // Workflows scrolls, and a scroll view takes a wheel before the Island's handler, so skip
         // it: the swipe is about the gesture, not about which tab happens to have a scroller.
-        let mut s = island(Config { hidden_tabs: vec![Tab::Workflows], default_tab: Tab::Search, ..Config::default() });
+        let mut s = island(Config { hidden_tabs: vec![Tab::Workflows], default_tab: Tab::Overview, ..Config::default() });
         s.mode = Mode::Large;
         let [left, top, w, _] = s.rect();
         let mut rt = rune::Runtime::new(s, view, CANVAS, rune::Env { system_dark: true, scale: 1.0 });
@@ -1734,7 +1734,7 @@ mod tests {
         };
         // 1.5 s of fingers and momentum outlasts any fixed lock.
         swipe(&mut rt);
-        assert_eq!(rt.state.tab, Tab::Overview);
+        assert_eq!(rt.state.tab, Tab::Search);
         rt.frame(0.3);
         swipe(&mut rt);
         assert_eq!(rt.state.tab, Tab::Assistant);
@@ -1742,7 +1742,7 @@ mod tests {
 
     #[test]
     fn a_pause_within_one_swipe_does_not_change_tab_again() {
-        let mut s = island(Config { hidden_tabs: vec![Tab::Workflows], default_tab: Tab::Search, ..Config::default() });
+        let mut s = island(Config { hidden_tabs: vec![Tab::Workflows], default_tab: Tab::Overview, ..Config::default() });
         s.mode = Mode::Large;
         let [left, top, w, _] = s.rect();
         let at = |phase| WheelEvent::new(-10.0, 0.0).at(left + w / 2.0, top + 10.0).precise(true).phase(phase);
@@ -1754,14 +1754,14 @@ mod tests {
             rt.wheel_event(at(rune::GesturePhase::Moved));
             rt.frame(1.0 / 60.0);
         }
-        assert_eq!(rt.state.tab, Tab::Overview);
+        assert_eq!(rt.state.tab, Tab::Search);
         // The fingers stay down through the pause, so this is still one swipe.
         for _ in 0..20 { rt.frame(1.0 / 60.0); }
         for _ in 0..6 {
             rt.wheel_event(at(rune::GesturePhase::Moved));
             rt.frame(1.0 / 60.0);
         }
-        assert_eq!(rt.state.tab, Tab::Overview);
+        assert_eq!(rt.state.tab, Tab::Search);
     }
 
     #[test]
