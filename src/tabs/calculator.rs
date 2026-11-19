@@ -1,9 +1,9 @@
 //! Calculator: type a sum, see the answer as you type, press Enter to keep it on the tape.
 //! Handles + - * / % ^, brackets and decimals.
 
-use rune::{El, ScrollSpec, TextEdit, Tx, col, row, text};
+use rune::{El, TextEdit, Tx, col, row, text};
 
-use super::{empty, field, pill};
+use super::{Scrolls, empty, field, pill};
 use crate::island::Island;
 
 #[derive(Default)]
@@ -102,7 +102,7 @@ pub fn view(s: &Island) -> El {
     if !s.calc.tape.is_empty() { header = header.child(pill(s, "calc-clear", "Clear").on_press(|s: &mut Island| s.calc.tape.clear())) }
     col().key("calculator").w_full().h_full().px(16.0).pt(14.0).pb(14.0).gap(10.0)
         .child(header)
-        .child(col().key("calc-scroll").w_full().grow(1.0).min_h(0.0).scroll(ScrollSpec { stick_bottom: false }).on_wheel(Island::wheel).child(tape))
+        .child(col().key("calc-scroll").w_full().grow(1.0).min_h(0.0).scrolls().child(tape))
         .child(row().key("calc-row").w_full().child(field(s, "calc-input", &s.calc.input, "12 × (3 + 4)", |s: &mut Island| &mut s.calc.input, submit)))
 }
 

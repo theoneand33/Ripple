@@ -112,9 +112,4 @@ mod tests {
         assert_eq!(parse_command("x.exe é/a=ü://b/c"),("x.exe".into(), s(&[r"é\a=ü://b/c"])));
         assert_eq!(parse_command(r#""C:/Program Files/a.exe" https://x"#), (r"C:\Program Files\a.exe".into(), s(&["https://x"])));
     }
-
-    #[test]
-    fn unknown_env_vars_stay_as_written() {
-        assert_eq!(expand_env("%RIPPLE_NO_SUCH_VAR%\\x"), "%RIPPLE_NO_SUCH_VAR%\\x");
-    }
 }

@@ -373,21 +373,6 @@ impl Config {
         self
     }
 
-    pub fn visible_tabs(&self) -> Vec<Tab> {
-        // T3 Code needs a device; AI Limits needs a signed-in agent (`limits::NONE_FOUND`, set once looked for).
-        let absent = |t: &Tab| match t {
-            Tab::T3 => self.t3_devices.is_empty(),
-            Tab::Limits => crate::limits::NONE_FOUND.load(std::sync::atomic::Ordering::Relaxed),
-            _ => false,
-        };
-        self.tab_order.iter().copied().filter(|t| !self.hidden_tabs.contains(t) && !absent(t)).collect()
-    }
-
-    pub fn first_tab(&self) -> Tab {
-        let visible = self.visible_tabs();
-        if visible.contains(&self.default_tab) { self.default_tab } else { visible.first().copied().unwrap_or(Tab::Search) }
-    }
-
     pub fn move_tab(&mut self, from: usize, to: usize) {
         if from >= self.tab_order.len() || to >= self.tab_order.len() { return }
         let id = self.tab_order.remove(from);
@@ -562,18 +547,16 @@ mod tests {
         use Tab::*;
         let cfg = serde_json::from_str::<Config>(r#"{"tab_order": [7, 2, 3, 0], "hidden_tabs": [3, 0], "default_tab": 7}"#).unwrap().normalized();
         assert_eq!(cfg.tab_order, [Overview, Search, Workflows, Assistant, Clipboard, Tasks, T3, Notes, Stremflix, Shelf, System, Calendar, Limits, Pomodoro, Calculator, Plugins]);
-        assert_eq!(cfg.hidden_tabs, [Search]);
-        assert_eq!(cfg.first_tab(), Overview);
+        assert_eq!((cfg.hidden_tabs.as_slice(), cfg.default_tab), ([Search].as_slice(), Overview));
     }
 
     #[test]
     fn the_last_visible_tab_cannot_be_hidden() {
-        let mut cfg = Config { t3_devices: vec![T3Device { name: "t".into(), url: "u".into(), token: "t".into() }], ..Config::default() };
-        cfg.hidden_tabs.clear();
+        let mut cfg = Config { hidden_tabs: Vec::new(), ..Config::default() };
         for t in Tab::ALL { cfg.toggle_tab(t) }
-        assert_eq!(cfg.visible_tabs(), [Tab::Plugins]);
+        assert!(!cfg.hidden_tabs.contains(&Tab::Plugins) && cfg.hidden_tabs.len() == Tab::ALL.len() - 1);
         cfg.toggle_tab(Tab::Search);
-        assert_eq!(cfg.visible_tabs(), [Tab::Search, Tab::Plugins]);
+        assert!(!cfg.hidden_tabs.contains(&Tab::Search));
     }
 
     #[cfg(unix)]

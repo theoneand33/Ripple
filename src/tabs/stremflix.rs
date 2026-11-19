@@ -51,10 +51,7 @@ impl Island {
     pub fn stremflix_play(&mut self, entry: Entry) {
         let (Some(base), Some(me)) = (api::base(), self.me.clone()) else { return };
         self.stremflix.status = format!("Opening {}…", entry.title);
-        std::thread::spawn(move || {
-            let result = api::play(&base, &entry);
-            me.update(move |s, _| s.stremflix.status = result.err().unwrap_or_default());
-        });
+        me.spawn(move || api::play(&base, &entry), move |s, result| s.stremflix.status = result.err().unwrap_or_default());
     }
 }
 

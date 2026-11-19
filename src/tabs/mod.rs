@@ -20,16 +20,18 @@ mod workflows;
 
 pub use assistant::Assistant;
 pub use calculator::Calculator;
+pub use calendar::Calendar;
 pub use clipboard::Clipboard;
+pub use limits::Limits;
 pub use notes::Notes;
-pub use pomodoro::{Pomodoro, color as pomodoro_color};
+pub use pomodoro::{Pomodoro, live as pomodoro_live};
 pub use stremflix::Stremflix;
 pub use t3::T3;
 
-use rune::{Color, El, Key, KeyEvent, TextEdit, Tx, el, icon, row, text, text_input};
+use rune::{Color, El, Key, KeyEvent, ScrollSpec, TextEdit, Tx, el, icon, row, text, text_input};
 
 use crate::config::{Config, Item, Tab};
-use crate::nextcloud::Kind;
+use crate::nextcloud::{self, Kind};
 use crate::icons;
 use crate::island::{Island, Mode};
 
@@ -59,9 +61,8 @@ pub fn size(tab: Tab) -> (f32, f32) {
     match tab {
         Tab::Search => (445.0, 160.0),
         Tab::Workflows => (520.0, 250.0),
-        Tab::Notes | Tab::Stremflix => (520.0, 290.0),
+        Tab::Notes | Tab::Stremflix | Tab::Limits => (520.0, 290.0),
         Tab::Shelf | Tab::System => (520.0, 230.0),
-        Tab::Limits => (520.0, 290.0),
         Tab::Tasks | Tab::T3 | Tab::Plugins | Tab::Calculator => (420.0, 290.0),
         Tab::Pomodoro => (440.0, 190.0),
         Tab::Calendar => (560.0, 280.0),
@@ -75,54 +76,49 @@ pub fn entered(s: &mut Island) {
         Tab::T3 => s.t3_load(),
         Tab::Stremflix => s.stremflix_load(),
         Tab::Limits => s.limits_load(),
-        Tab::Notes => s.nextcloud_sync(crate::nextcloud::Kind::Notes),
-        Tab::Tasks => s.nextcloud_sync(crate::nextcloud::Kind::Tasks),
+        Tab::Notes => s.nextcloud_sync(Kind::Notes),
+        Tab::Tasks => s.nextcloud_sync(Kind::Tasks),
         Tab::Calendar => {
-            (s.calendar_offset, s.calendar_day) = (0, None);
-            s.nextcloud_sync(crate::nextcloud::Kind::Events);
+            (s.calendar.offset, s.calendar.day) = (0, None);
+            s.nextcloud_sync(Kind::Events);
         }
         Tab::Plugins => s.plugins.scan(),
         _ => {}
     }
 }
 
+/// Once a second, from `Island::poll`.
+pub fn each_second(s: &mut Island, now: f64) -> bool {
+    let plugins = s.mode == Mode::Large && s.tab == Tab::Plugins && s.plugins.tick();
+    s.notes_tick();
+    s.pomodoro.tick(now) | plugins
+}
+
+/// Before every frame, from `Island::poll`.
+pub fn poll(s: &mut Island, now: f64, tx: &mut Tx) -> bool { s.clipboard_poll(now, tx) }
+
+/// The next time a tab needs a poll.
+pub fn deadline(s: &Island) -> Option<f64> { s.clipboard.copied.map(|c| c.1) }
+
 /// Picks up a settings change another window made, for the tab showing.
 pub fn reloaded(s: &mut Island, old: &Config) {
     if s.mode == Mode::Large && s.tab == Tab::T3 && old.t3_devices != s.cfg.t3_devices { s.t3_load() }
 }
 
-/// What a delete took: a note and where it sat, an event, or the cleared Shelf.
+/// What a delete took: a note or an event and where it sat, or the cleared Shelf.
 pub enum Undo {
-    Note(usize, Item),
-    Event(Item),
+    Item(Kind, usize, Item),
     Shelf(Vec<std::path::PathBuf>),
-}
-
-/// An item back from the bin. A delete not yet sent is called off and the item keeps its
-/// Nextcloud link. One sent, or maybe in the sync running now, goes through, and the item
-/// uploads afresh: a kept link to a deleted copy would make `nextcloud::apply` drop it.
-fn restore(deleted: &mut Vec<String>, item: Item, syncing: bool) -> Item {
-    let Some(r) = &item.remote else { return item };
-    if !syncing && deleted.contains(&r.id) {
-        deleted.retain(|id| *id != r.id);
-        return item;
-    }
-    Item { remote: None, ..item }
 }
 
 impl Island {
     pub fn undo(&mut self) {
         match self.undo.take() {
-            Some(Undo::Note(i, item)) => {
-                let (key, syncing) = (item.key, self.nextcloud[Kind::Notes as usize].running);
-                self.save(|c| { let item = restore(&mut c.nextcloud.deleted_notes, item, syncing); c.notes.insert(i.min(c.notes.len()), item) });
-                self.open_note(self.cfg.notes.iter().position(|n| n.key == key).unwrap_or(0));
-                self.nextcloud_sync(Kind::Notes);
-            }
-            Some(Undo::Event(item)) => {
-                let syncing = self.nextcloud[Kind::Events as usize].running;
-                self.save(|c| { let item = restore(&mut c.nextcloud.deleted_events, item, syncing); c.events.push(item) });
-                self.nextcloud_sync(Kind::Events);
+            Some(Undo::Item(kind, i, item)) => {
+                let (key, syncing) = (item.key, self.nextcloud[kind as usize].running);
+                self.save(|c| nextcloud::restore(c, kind, i, item, syncing));
+                if kind == Kind::Notes { self.open_note(self.cfg.notes.iter().position(|n| n.key == key).unwrap_or(0)) }
+                self.nextcloud_sync(kind);
             }
             // Files dropped since stay in front.
             Some(Undo::Shelf(files)) => self.save(|c| { let back: Vec<_> = files.into_iter().filter(|f| !c.shelf.contains(f)).collect(); c.shelf.extend(back) }),
@@ -131,11 +127,28 @@ impl Island {
     }
 }
 
-/// Droppy-style accents: each widget has one colour for its rings, chips and figures.
+/// A tab's vertical scroll. A scroll view takes the wheel before the Island does, so it passes
+/// sideways swipes on to `Island::wheel` to keep them changing tab.
+pub trait Scrolls {
+    fn scrolls(self) -> Self;
+}
+
+impl Scrolls for El {
+    fn scrolls(self) -> El { self.scroll(ScrollSpec { stick_bottom: false }).on_wheel(Island::wheel) }
+}
+
+/// Droppy-style accents: each widget has one colour for its rings, chips and figures; and the
+/// status hues of the pill border and alerts.
 pub mod accent {
     use rune::Color;
     // Colours are linear: decode the sRGB hex, as `config::parse_color` does.
     fn hex(s: &str) -> Color { rune::color::hex(s).unwrap_or(Color::WHITE) }
+    pub fn charge() -> Color { hex("#4cc38a") }
+    pub fn low() -> Color { hex("#e5484d") }
+    pub fn camera() -> Color { hex("#e8b931") }
+    pub fn mic() -> Color { hex("#f0883e") }
+    pub fn blue() -> Color { hex("#4c9aff") }
+    pub fn bluetooth() -> Color { blue() }
     pub fn orange() -> Color { hex("#FF9F0A") }
     pub fn red() -> Color { hex("#FF453A") }
     pub fn indigo() -> Color { hex("#7D86F0") }
@@ -161,7 +174,7 @@ fn chip(s: &Island, key: &str, label: &str, color: Color, on: bool) -> El {
 }
 
 /// A progress ring in one colour, its track the same colour faint, with `inner` in its middle.
-fn ring(size: f32, percent: f32, color: Color, inner: El) -> El {
+pub fn ring(size: f32, percent: f32, color: Color, inner: El) -> El {
     el().size(size, size).center().a11y_hidden()
         .child(icon(icons::ring(percent.clamp(0.0, 100.0).round() as u8), size).color(color).pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0)))
         .child(inner)
@@ -235,25 +248,4 @@ fn checkbox(s: &Island, key: &str, label: &str, checked: bool) -> El {
         .hover(fg.alpha(0.15 * fg.a));
     if checked { b = b.child(icon(&icons::CHECK, 12.0).color(bg)) }
     b
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::config::Remote;
-
-    #[test]
-    fn restore_calls_off_an_unsent_delete_and_lets_a_sent_one_go() {
-        let linked = || Item { remote: Some(Remote { id: "n1".into(), ..Default::default() }), ..Item::new("a") };
-        // Not sent: the delete is dropped and the link kept, so no copy is made.
-        let mut deleted = vec!["n0".to_string(), "n1".to_string()];
-        assert!(restore(&mut deleted, linked(), false).remote.is_some());
-        assert_eq!(deleted, ["n0"]);
-        // Maybe in the running sync: the delete stays and the item uploads afresh.
-        let mut deleted = vec!["n1".to_string()];
-        assert_eq!(restore(&mut deleted, linked(), true).remote, None);
-        assert_eq!(deleted, ["n1"]);
-        // Already sent: nothing is pending, the item uploads afresh.
-        assert_eq!(restore(&mut Vec::new(), linked(), false).remote, None);
-    }
 }

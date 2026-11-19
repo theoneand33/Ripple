@@ -15,7 +15,8 @@ use crate::config::{Config, Store, Tab};
 use crate::net::Weather;
 use crate::platform::{self, Passthrough, Screen};
 use crate::system::{self, MediaCommand, Track};
-use crate::{icons, tabs};
+use crate::tabs::{self, accent};
+use crate::icons;
 
 /// The Island's window, in points: the largest Island at its hover scale, its tab dock, plus their shadows.
 pub const CANVAS: (f32, f32) = (620.0, 460.0);
@@ -31,17 +32,6 @@ pub const SPRING: Spring = Spring::new(0.5, 0.3);
 const COLLAPSE: Spring = Spring::new(0.35, 0.1);
 /// The Island grows this much under the pointer, past its layout rect.
 const HOVER_SCALE: f32 = 1.02;
-
-/// Status hues for the pill border and alerts.
-pub mod status {
-    use rune::Color;
-    fn hex(s: &str) -> Color { crate::config::parse_color(s).unwrap_or(Color::WHITE) }
-    pub fn charge() -> Color { hex("#4cc38a") }
-    pub fn low() -> Color { hex("#e5484d") }
-    pub fn camera() -> Color { hex("#e8b931") }
-    pub fn mic() -> Color { hex("#f0883e") }
-    pub fn bluetooth() -> Color { hex("#4c9aff") }
-}
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Mode {
@@ -63,15 +53,15 @@ pub enum Alert {
 }
 
 impl Alert {
-    fn color(self) -> Color {
+    /// None draws in the text colour.
+    fn color(self) -> Option<Color> {
         match self {
-            Alert::Charging => status::charge(),
-            Alert::Battery => status::low(),
-            Alert::Bluetooth => status::bluetooth(),
-            Alert::Camera => status::camera(),
-            Alert::Microphone => status::mic(),
-            // Drawn in the text colour instead; see `glance`.
-            Alert::Volume | Alert::Brightness | Alert::CapsLock => Color::WHITE,
+            Alert::Charging => Some(accent::charge()),
+            Alert::Battery => Some(accent::low()),
+            Alert::Bluetooth => Some(accent::bluetooth()),
+            Alert::Camera => Some(accent::camera()),
+            Alert::Microphone => Some(accent::mic()),
+            Alert::Volume | Alert::Brightness | Alert::CapsLock => None,
         }
     }
 
@@ -141,6 +131,12 @@ impl Host {
 
     pub fn quit(&self) {
         match self { Host::Window(h) => h.quit(), Host::Overlay(_, app, _) => app.quit() }
+    }
+
+    /// Runs blocking `work` off the UI thread, then `done` with its answer on it.
+    pub fn spawn<T: Send + 'static>(&self, work: impl FnOnce() -> T + Send + 'static, done: impl FnOnce(&mut Island, T) + Send + 'static) {
+        let me = self.clone();
+        std::thread::spawn(move || { let answer = work(); me.update(move |s, _| done(s, answer)) });
     }
 
     /// Lets a click give the overlay keyboard focus; a window takes it on click already.
@@ -242,7 +238,6 @@ pub struct Island {
     bluetooth_alert_until: Option<f64>,
     capture: Option<(Alert, f64)>,
     capture_queue: Vec<Alert>,
-    capture_shown: [bool; 2],
     paused_until: Option<f64>,
     /// After a play/pause click: the state shown, and until when polls of the same track that
     /// still report the old state are ignored while the player catches up.
@@ -254,21 +249,14 @@ pub struct Island {
     pub pomodoro: tabs::Pomodoro,
     pub calc: tabs::Calculator,
     pub task: TextEdit,
-    /// The Calendar tab's month, as months from this one.
-    pub calendar_offset: i32,
-    /// The Calendar tab's picked day; None is today.
-    pub calendar_day: Option<(i32, u32, u32)>,
-    pub event: TextEdit,
+    pub calendar: tabs::Calendar,
     pub notes: tabs::Notes,
     /// Nextcloud sync of Notes, Tasks and events, by `nextcloud::Kind`.
     pub nextcloud: [crate::nextcloud::SyncState; 3],
     pub stremflix: tabs::Stremflix,
     /// The System tab's figures; None until the first sample.
     pub stats: Option<system::Stats>,
-    /// The AI Limits tab's agents; None until the first answer.
-    pub limits: Option<Vec<crate::limits::Usage>>,
-    /// Bumped on every load, so an earlier answer is dropped.
-    pub limits_generation: u64,
+    pub limits: tabs::Limits,
     /// A file drag is over the Island.
     pub dropping: bool,
     /// A drag started elsewhere on the desktop opened the Shelf; it rests when the drag ends.
@@ -303,7 +291,6 @@ pub struct Island {
     /// When a lingering Island closes, unless the pointer comes back first.
     close_at: Option<f64>,
     next_second: f64,
-    next_clipboard: f64,
     intro_at: Option<f64>,
 }
 
@@ -325,7 +312,7 @@ impl Island {
         let cfg = store.get();
         let mut island = Island {
             mode: Mode::Still,
-            tab: cfg.first_tab(),
+            tab: cfg.default_tab,
             hovered: false,
             over: [false; 2],
             left: false,
@@ -356,7 +343,6 @@ impl Island {
             bluetooth_alert_until: None,
             capture: None,
             capture_queue: Vec::new(),
-            capture_shown: [false; 2],
             paused_until: None,
             expect_playing: None,
             search: TextEdit::default(),
@@ -365,15 +351,12 @@ impl Island {
             pomodoro: tabs::Pomodoro::default(),
             calc: tabs::Calculator::default(),
             task: TextEdit::default(),
-            calendar_offset: 0,
-            calendar_day: None,
-            event: TextEdit::default(),
+            calendar: tabs::Calendar::default(),
             notes: tabs::Notes::new(&cfg),
             nextcloud: Default::default(),
             stremflix: tabs::Stremflix::default(),
             stats: None,
-            limits: None,
-            limits_generation: 0,
+            limits: tabs::Limits::default(),
             dropping: false,
             desktop_drag: false,
             t3: tabs::T3::new(store.dir().as_deref()),
@@ -397,12 +380,12 @@ impl Island {
             linger_until: None,
             close_at: None,
             next_second: 0.0,
-            next_clipboard: 0.0,
             intro_at: None,
             store,
             cfg,
         };
         island.placement = Placement::of(&island.cfg, island.screen().size);
+        island.tab = island.first_tab();
         island.mode = island.rest();
         island.set_clock();
         island
@@ -449,7 +432,6 @@ impl Island {
         else { self.capture.map(|c| c.0).or((self.caps_lock && !self.shows_track()).then_some(Alert::CapsLock)) }
     }
 
-    /// Under 20% and not charging.
     pub fn low_battery(&self) -> bool { !self.charging && self.percent.is_some_and(|p| p < 20) }
 
     fn percent_label(&self) -> String { self.percent.map_or(String::new(), |p| format!("{p}%")) }
@@ -532,12 +514,30 @@ impl Island {
     pub fn dock_rect(&self) -> Option<[f32; 4]> {
         if self.mode != Mode::Large { return None }
         let (h, gap, button, space) = DOCK;
-        let n = self.cfg.visible_tabs().len() as f32;
+        let n = self.visible_tabs().len() as f32;
         let w = n * button + (n - 1.0) * space + 2.0 * space;
         let [x, y, iw, ih] = self.rect();
         // Not clamp: a dock wider than the canvas would panic it.
         let left = (x + iw / 2.0 - w / 2.0).min(CANVAS.0 - w - 4.0).max(4.0);
         Some([left, if self.placement.top { y + ih } else { y - gap - h }, w, gap + h])
+    }
+
+    // --- Tabs ---
+
+    /// The dock's tabs: the saved order without the hidden ones and those with nothing to show
+    /// (T3 Code with no device, AI Limits once no signed-in agent was found).
+    pub fn visible_tabs(&self) -> Vec<Tab> {
+        let absent = |t: &Tab| match t {
+            Tab::T3 => self.cfg.t3_devices.is_empty(),
+            Tab::Limits => self.limits.usage.as_ref().is_some_and(Vec::is_empty),
+            _ => false,
+        };
+        self.cfg.tab_order.iter().copied().filter(|t| !self.cfg.hidden_tabs.contains(t) && !absent(t)).collect()
+    }
+
+    pub fn first_tab(&self) -> Tab {
+        let visible = self.visible_tabs();
+        if visible.contains(&self.cfg.default_tab) { self.cfg.default_tab } else { visible.first().copied().unwrap_or(Tab::Search) }
     }
 
     // --- Modes ---
@@ -549,24 +549,18 @@ impl Island {
         if self.cfg.hide_inactive { Mode::Still } else if self.cfg.large_standby { Mode::Large } else if self.cfg.standby { Mode::Quick } else { Mode::Still }
     }
 
-    /// Every mode change but `open_large_on` goes through here; Still means wherever the Island rests.
+    /// Every mode change but a jump straight to a tab (Cmd+number, the Shelf) goes through here;
+    /// Still means wherever the Island rests.
     pub fn set_mode(&mut self, mode: Mode) {
         let was = self.mode;
         self.mode = if mode == Mode::Still { self.rest() } else { mode };
-        if self.mode == Mode::Large && was != Mode::Large { (self.calendar_offset, self.calendar_day) = (0, None) }
         if self.mode == Mode::Large && was != Mode::Large {
-            if self.cfg.open_default_tab { self.tab = self.cfg.first_tab() }
+            if self.cfg.open_default_tab { self.tab = self.first_tab() }
             self.entered_tab();
         }
         // Resting closes an open select even when the Island rests in Large.
         if mode == Mode::Still || self.mode != Mode::Large { self.open_select = None }
         if self.mode != Mode::Large { self.tab_changed = false; self.linger_until = None; self.close_at = None }
-    }
-
-    /// Opens Large straight on `tab`, as a change from the tab shown last; the starred tab doesn't apply.
-    fn open_large_on(&mut self, tab: Tab) {
-        self.mode = Mode::Large;
-        self.open_tab(tab);
     }
 
     pub fn hover(&mut self, hovered: bool, tx: &mut Tx) { self.set_over(0, hovered, tx) }
@@ -586,7 +580,7 @@ impl Island {
             if !self.focused && matches!(self.me, Some(Host::Window(_))) { self.prior = platform::focused_window() }
             #[cfg(target_os = "linux")]
             if !self.focused && self.prior.is_none() && let Some(me @ Host::Window(_)) = self.me.clone() {
-                std::thread::spawn(move || if let Some(w) = platform::gnome_focused_window() { me.update(move |s, _| s.prior = Some(w)) });
+                me.spawn(platform::gnome_focused_window, |s, w| if w.is_some() { s.prior = w });
             }
             if self.mode == Mode::Still && self.cfg.show_info_idle && !self.playing() { self.set_mode(Mode::Large) }
             else if self.mode != Mode::Large { self.set_mode(Mode::Quick) }
@@ -624,7 +618,6 @@ impl Island {
         tx.blur();
         let closing = self.mode == Mode::Large;
         self.set_mode(if closing { Mode::Quick } else { Mode::Large });
-        self.entered_tab();
         if closing { self.give_focus_back() }
     }
 
@@ -647,27 +640,27 @@ impl Island {
 
     /// Switches to `tab`, animating in the direction it sits from the current one.
     pub fn set_tab(&mut self, tab: Tab) {
-        let visible = self.cfg.visible_tabs();
+        let visible = self.visible_tabs();
         let at = |t: Tab| visible.iter().position(|v| *v == t);
         if let (Some(from), Some(to)) = (at(self.tab), at(tab))
             && from != to
         {
             self.tab_dir = if to > from { 1 } else { -1 };
         }
-        if self.tab != tab && self.mode == Mode::Large { self.tab_changed = true }
         self.tab = tab;
     }
 
     pub fn move_tab(&mut self, direction: i32) {
-        let visible = self.cfg.visible_tabs();
+        let visible = self.visible_tabs();
         let Some(i) = visible.iter().position(|t| *t == self.tab) else { return };
         let next = i as i32 + direction;
         if next < 0 || next >= visible.len() as i32 { return }
         self.open_tab(visible[next as usize]);
     }
 
-    /// Switches tab, sliding the way it lies, and loads what the tab needs.
+    /// The user's tab change: slides the way the tab lies, loads what it needs, and earns the linger.
     pub fn open_tab(&mut self, tab: Tab) {
+        if self.tab != tab && self.mode == Mode::Large { self.tab_changed = true }
         self.set_tab(tab);
         self.entered_tab();
     }
@@ -683,10 +676,9 @@ impl Island {
     /// Opens the Shelf in Large without the pointer; a pending close no longer applies.
     fn open_shelf(&mut self) {
         self.close_at = None;
-        // Not the user's tab change: it must not earn the linger.
-        let changed = self.tab_changed;
-        self.open_large_on(Tab::Shelf);
-        self.tab_changed = changed;
+        self.mode = Mode::Large;
+        self.set_tab(Tab::Shelf);
+        self.entered_tab();
     }
 
     /// A file drag over the Island opens the Shelf; one that leaves without dropping lets it rest.
@@ -703,7 +695,7 @@ impl Island {
     /// somewhere else, the Island rests.
     pub fn desktop_drag(&mut self, active: bool) {
         if active {
-            if !self.cfg.visible_tabs().contains(&Tab::Shelf) { return }
+            if !self.visible_tabs().contains(&Tab::Shelf) { return }
             self.desktop_drag = true;
             self.open_shelf();
         } else if std::mem::take(&mut self.desktop_drag) && !self.hovered && !self.dropping {
@@ -727,8 +719,10 @@ impl Island {
             Key::Right => self.move_tab(1),
             Key::Left => self.move_tab(-1),
             Key::Command(c @ '1'..='8') => {
-                let Some(&tab) = self.cfg.visible_tabs().get(c as usize - '1' as usize) else { return false };
-                self.open_large_on(tab);
+                let Some(&tab) = self.visible_tabs().get(c as usize - '1' as usize) else { return false };
+                // Straight on that tab; the starred tab doesn't apply.
+                self.mode = Mode::Large;
+                self.open_tab(tab);
             }
             _ => return false,
         }
@@ -779,10 +773,13 @@ impl Island {
     // --- Settings ---
 
     /// Picks up settings another window changed.
-    pub fn reload(&mut self, _: &mut Tx) {
+    pub fn reload(&mut self) {
         let old = std::mem::replace(&mut self.cfg, self.store.get());
         if self.mode != Mode::Large || !self.hovered { self.set_mode(Mode::Still) }
-        if !self.cfg.visible_tabs().contains(&self.tab) { self.open_tab(self.cfg.first_tab()) }
+        if !self.visible_tabs().contains(&self.tab) {
+            self.set_tab(self.first_tab());
+            self.entered_tab();
+        }
         let size = self.screen().size;
         if old.display != self.cfg.display || Placement::of(&old, size) != Placement::of(&self.cfg, size) { self.place_window() }
         if (old.location != self.cfg.location || old.weather_unit != self.cfg.weather_unit)
@@ -812,12 +809,12 @@ impl Island {
     // --- The clock ---
 
     fn set_clock(&mut self) {
-        let ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64);
+        let ms = crate::date::now_ms();
         // A headless capture reads the same clock on every machine.
         let now = if rune::is_headless() { LocalTime::at_offset(1_767_260_460_000, 0) } else { LocalTime::at(ms) };
         let hour = if self.cfg.hour12 { (now.hour + 11) % 12 + 1 } else { now.hour };
         self.time = format!("{hour}:{:02}", now.minute);
-        self.date = format_date(now.year, now.month, now.day);
+        self.date = crate::date::format_date(now.year, now.month, now.day);
         self.today = (now.year, now.month, now.day);
     }
 
@@ -884,11 +881,10 @@ impl Island {
     pub fn set_capture(&mut self, camera: Option<bool>, microphone: Option<bool>, tx: &mut Tx) -> bool {
         let (camera, microphone) = (camera.unwrap_or(self.camera), microphone.unwrap_or(self.microphone));
         if (camera, microphone) == (self.camera, self.microphone) { return false }
-        (self.camera, self.microphone) = (camera, microphone);
-        for (i, (alert, in_use)) in [(Alert::Camera, camera), (Alert::Microphone, microphone)].into_iter().enumerate() {
-            if in_use && !self.capture_shown[i] { self.capture_queue.push(alert) }
-            self.capture_shown[i] = in_use;
+        for (alert, in_use, was) in [(Alert::Camera, camera, self.camera), (Alert::Microphone, microphone, self.microphone)] {
+            if in_use && !was { self.capture_queue.push(alert) }
         }
+        (self.camera, self.microphone) = (camera, microphone);
         self.capture_queue.retain(|a| if *a == Alert::Camera { camera } else { microphone });
         self.next_capture(tx);
         true
@@ -950,11 +946,11 @@ impl Island {
 
     /// Asks for a poll at the next deadline any timer holds.
     fn schedule(&self, tx: &mut Tx) {
-        let deadlines = [self.level.map(|l| l.1), self.battery_alert_until, self.charging_alert_until, self.bluetooth_alert_until, self.capture.map(|c| c.1), self.paused_until, self.clipboard.copied.map(|c| c.1), self.intro_at, self.close_at];
+        let deadlines = [self.level.map(|l| l.1), self.battery_alert_until, self.charging_alert_until, self.bluetooth_alert_until, self.capture.map(|c| c.1), self.paused_until, tabs::deadline(self), self.intro_at, self.close_at];
         if let Some(due) = deadlines.into_iter().flatten().reduce(f64::min) { tx.wake_at(due) }
     }
 
-    /// Runs before every frame: the clock, the timers, the clipboard and the input region.
+    /// Runs before every frame: the clock, the timers, the tabs' own and the input region.
     pub fn poll(&mut self, now: f64, tx: &mut Tx) -> bool {
         let mut changed = false;
         if now >= self.next_second {
@@ -963,20 +959,9 @@ impl Island {
             changed |= before != (self.time.clone(), self.date.clone());
             self.next_second = now + 1.0;
             tx.wake_at(self.next_second);
-            if self.mode == Mode::Large && self.tab == Tab::Plugins { changed |= self.plugins.tick() }
-            changed |= self.pomodoro.tick(now);
-            // A note being typed saves once a second, and uploads once typing pauses.
-            if self.notes.edited.is_some() { self.store.flush() }
-            if self.notes.edited.is_some_and(|t| t.elapsed().as_secs() >= 2) {
-                self.notes.edited = None;
-                self.nextcloud_sync(crate::nextcloud::Kind::Notes);
-            }
+            changed |= tabs::each_second(self, now);
         }
-        if now >= self.next_clipboard && !rune::is_headless() {
-            self.next_clipboard = now + 2.0;
-            tx.wake_at(self.next_clipboard);
-            tx.read_clipboard(|s: &mut Island, content, _| { s.clipboard.push(content.text()); });
-        }
+        changed |= tabs::poll(self, now, tx);
 
         let due = |t: &mut Option<f64>| t.is_some_and(|d| now >= d) && { *t = None; true };
         let mut alert_ended = due(&mut self.battery_alert_until);
@@ -1006,10 +991,6 @@ impl Island {
         }
         changed |= self.leave(tx);
         changed |= due(&mut self.paused_until);
-        if self.clipboard.copied.is_some_and(|c| now >= c.1) {
-            self.clipboard.copied = None;
-            changed = true;
-        }
         if due(&mut self.intro_at) {
             system::open_external("https://github.com/TopMyster/Ripple/blob/main/instructions.md");
             self.save(|c| c.new_user = false);
@@ -1066,32 +1047,28 @@ impl Island {
         if self.tab != Tab::Limits { self.limits_load() }
         if self.cfg.auto_launch { std::thread::spawn(|| system::set_auto_launch(true)); }
 
-        fn every(seconds: u64, f: impl Fn() + Send + 'static) {
+        fn every(ms: u64, f: impl Fn() + Send + 'static) {
             std::thread::spawn(move || loop {
                 f();
-                std::thread::sleep(std::time::Duration::from_secs(seconds));
+                std::thread::sleep(std::time::Duration::from_millis(ms));
             });
         }
         let h = me.clone();
-        every(2, move || { let t = system::media(); h.update_if(move |s, tx| s.poll_track(t, tx)); });
+        every(2000, move || { let t = system::media(); h.update_if(move |s, tx| s.poll_track(t, tx)); });
         let h = me.clone();
-        every(10, move || { let b = system::bluetooth_connected(); h.update_if(move |s, tx| s.set_bluetooth(b, tx)); });
+        every(10000, move || { let b = system::bluetooth_connected(); h.update_if(move |s, tx| s.set_bluetooth(b, tx)); });
         let h = me.clone();
-        every(3, move || { let c = system::camera_in_use(); h.update_if(move |s, tx| s.set_capture(Some(c), None, tx)); });
+        every(3000, move || { let c = system::camera_in_use(); h.update_if(move |s, tx| s.set_capture(Some(c), None, tx)); });
         let h = me.clone();
-        every(3, move || { let m = system::microphone_in_use(); h.update_if(move |s, tx| s.set_capture(None, Some(m), tx)); });
+        every(3000, move || { let m = system::microphone_in_use(); h.update_if(move |s, tx| s.set_capture(None, Some(m), tx)); });
         let h = me.clone();
         std::thread::spawn(move || system::watch_drags(|active| h.update(move |s, _| s.desktop_drag(active))));
         let h = me.clone();
-        std::thread::spawn(move || loop {
-            let on = system::caps_lock().unwrap_or(false);
-            h.update_if(move |s, _| s.set_caps_lock(on));
-            std::thread::sleep(std::time::Duration::from_millis(250));
-        });
+        every(250, move || { let on = system::caps_lock().unwrap_or(false); h.update_if(move |s, _| s.set_caps_lock(on)); });
         let h = me.clone();
         std::thread::spawn(move || system::watch_levels(|v, b| h.update_if(move |s, tx| s.set_levels(v, b, tx))));
         let h = me.clone();
-        every(5, move || { let b = system::battery(); h.update_if(move |s, tx| s.set_battery(b, tx)); });
+        every(5000, move || { let b = system::battery(); h.update_if(move |s, tx| s.set_battery(b, tx)); });
         let h = me.clone();
         std::thread::spawn(move || {
             let mut monitor = system::Monitor::new();
@@ -1103,7 +1080,6 @@ impl Island {
             }
         });
 
-        // Weather: every 10 minutes, and at once when the location or unit changes.
         let (kick, kicked) = std::sync::mpsc::channel();
         self.weather_kick = Some(kick);
         let store = self.store.clone();
@@ -1121,20 +1097,6 @@ impl Island {
     pub fn set_window(&mut self, window: WindowHandle) {
         self.passthrough.set_window(window);
     }
-}
-
-/// "Thu, Jan 1".
-pub fn format_date(year: i32, month: u32, day: u32) -> String {
-    const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-    const DAYS: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-    format!("{}, {} {}", DAYS[weekday(year, month, day) as usize], MONTHS[(month as usize - 1) % 12], day)
-}
-
-/// 0 for Sunday, by Sakamoto's method.
-pub fn weekday(year: i32, month: u32, day: u32) -> u32 {
-    const T: [i32; 12] = [0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4];
-    let y = if month < 3 { year - 1 } else { year };
-    (y + y / 4 - y / 100 + y / 400 + T[(month as usize - 1) % 12] + day as i32).rem_euclid(7) as u32
 }
 
 /// Fetches an image (blocking) and hands it, loaded, to `put` on the UI thread.
@@ -1171,7 +1133,7 @@ pub fn view(s: &Island, _: &mut Cx<Island>) -> El {
         .on_drag(Island::drag)
         .on_wheel(Island::wheel);
     // A hidden Shelf takes no drops.
-    let shelf = cfg.visible_tabs().contains(&Tab::Shelf);
+    let shelf = s.visible_tabs().contains(&Tab::Shelf);
     if shelf {
         island = island.on_drop_files(Island::drop_files).on_drop_hover(Island::drop_hover);
     }
@@ -1239,7 +1201,7 @@ fn dock(s: &Island, [x, y, w, h]: [f32; 4]) -> El {
     let mut pill = row().key("dock").role("group").label("Tabs").w_full().h(height).px(space).gap(space).center_y()
         .fill(bg).radius(round(height / 2.0)).border(1.0, fg.alpha(0.12 * fg.a))
         .box_shadow(Shadow { x: 0.0, y: 0.0, blur: 24.0, spread: 0.0, color: Color::BLACK.alpha(0.2), inset: false });
-    for tab in cfg.visible_tabs() {
+    for tab in s.visible_tabs() {
         let on = tab == s.tab;
         pill = pill.child(
             el().key(format!("dock-{}", tab as u8)).role("button").label(tab.name()).checked(on).focusable(true)
@@ -1265,18 +1227,21 @@ fn border(s: &Island, radii: [f32; 4], hidden: bool) -> El {
     let ring = el().key("border").pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0)).corners(radii).inert().a11y_hidden();
     if cfg.win95() {
         // A raised Windows 95 edge: light from the top left, shade to the bottom right.
-        let grey = crate::config::parse_color("#808080").unwrap_or(Color::BLACK);
+        let grey = rune::color::hex("#808080").unwrap_or(Color::BLACK);
         return ring.border_sides([2.0, 0.0, 0.0, 2.0], Color::WHITE)
             .child(el().pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0)).border_sides([0.0, 2.0, 2.0, 0.0], grey));
     }
     if !cfg.island_border { return ring }
-    let color = if s.camera { status::camera() }
-        else if s.microphone { status::mic() }
-        else if s.charging || s.alert() == Some(Alert::Charging) { status::charge() }
-        else if s.low_battery() || s.alert() == Some(Alert::Battery) { status::low() }
-        else if s.alert() == Some(Alert::Bluetooth) { status::bluetooth() }
-        else if cfg.hide_inactive || hidden { return ring }
-        else { cfg.text().alpha(0.3 * cfg.text().a) };
+    let state = if s.camera { Some(Alert::Camera) }
+        else if s.microphone { Some(Alert::Microphone) }
+        else if s.charging || s.alert() == Some(Alert::Charging) { Some(Alert::Charging) }
+        else if s.low_battery() || s.alert() == Some(Alert::Battery) { Some(Alert::Battery) }
+        else { s.alert().filter(|a| *a == Alert::Bluetooth) };
+    let color = match state.and_then(Alert::color) {
+        Some(color) => color,
+        None if cfg.hide_inactive || hidden => return ring,
+        None => cfg.text().alpha(0.3 * cfg.text().a),
+    };
     ring.border(1.0, color)
 }
 
@@ -1295,18 +1260,16 @@ fn glance(s: &Island, fg: Color) -> El {
         let percent = percent.unwrap_or(0);
         let glyph = if level == Alert::Volume && percent == 0 { &icons::VOLUME_X } else { level.icon() };
         let label = format!("{} {percent}%", if level == Alert::Volume { "Volume" } else { "Brightness" });
-        let ring = el().key("ring").role("img").label(label).size(24.0, 24.0).center()
-            .child(icon(icons::ring(percent), 24.0).color(fg).pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0)).a11y_hidden())
-            .child(icon(glyph, 12.0).color(fg).a11y_hidden());
+        let ring = el().key("ring").role("img").label(label).child(tabs::ring(24.0, f32::from(percent), fg, icon(glyph, 12.0).color(fg)));
         return row().key(level.key()).w_full().h_full().px(pad - 4.0).center_y().justify_end()
             .transition(Transition::blur_replace()).child(ring);
     }
-    let color = alert.filter(|a| *a != Alert::CapsLock).map_or(fg, Alert::color);
+    let color = alert.and_then(Alert::color).unwrap_or(fg);
     let left = match alert {
         Some(alert) => icon(alert.icon(), 20.0).color(color),
         None => text(&s.time).key("time").font(style.features("'tnum' 1")).color(color),
     };
-    let battery_color = if alert.is_none() && s.low_battery() { status::low() } else { color };
+    let battery_color = if alert.is_none() && s.low_battery() { accent::low() } else { color };
     let percent = || text(s.percent_label()).key("percent").font(style.features("'tnum' 1")).color(battery_color);
     let battery = || if s.charging {
         row().key("battery").gap(2.0).center_y().child(icon(&icons::ZAP, 14.0).color(color)).child(percent())
@@ -1314,19 +1277,11 @@ fn glance(s: &Island, fg: Color) -> El {
     let right = match alert {
         Some(alert) => text(s.alert_label(alert)).key("label").font(style).color(color),
         // A running Pomodoro is a live activity: its ring and time left take the right side.
-        None if s.pomodoro.running() => {
-            let p = &s.pomodoro;
-            let (glyph, tint) = (if p.focus { &icons::TIMER } else { &icons::COFFEE }, tabs::pomodoro_color(p.focus));
-            row().key("pomodoro").role("img").label(format!("{}, {} left", if p.focus { "Focus" } else { "Break" }, p.label())).gap(6.0).center_y()
-                .child(el().size(18.0, 18.0).center().a11y_hidden()
-                    .child(icon(icons::ring(p.percent()), 18.0).color(tint).pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0)))
-                    .child(icon(glyph, 10.0).color(tint)))
-                .child(text(p.label()).font(style.features("'tnum' 1")).color(tint).a11y_hidden())
-        }
+        None if s.pomodoro.running() => tabs::pomodoro_live(&s.pomodoro, style),
         None if cfg.standby && s.percent.is_some() => battery(),
         None => match s.weather.temp {
             Some(temp) => row().key("weather").gap(2.0).center_y()
-                .child(icon(icons::weather(&s.weather.status), 14.0).color(color))
+                .child(icon(icons::weather(s.weather.code), 14.0).color(color))
                 .child(text(format!("{temp}º")).font(style).color(color)),
             None => battery(),
         },
@@ -1354,7 +1309,7 @@ fn capture_dot(s: &Island) -> Option<El> {
     const GAP: f32 = 2.0;
     let mut stack = col().key("capture-dot").role("img").label(label).inert().gap(GAP);
     for (alert, on) in [(Alert::Camera, s.camera), (Alert::Microphone, s.microphone)] {
-        if on { stack = stack.child(icon(alert.icon(), SIZE).color(alert.color()).a11y_hidden()) }
+        if let (true, Some(color)) = (on, alert.color()) { stack = stack.child(icon(alert.icon(), SIZE).color(color).a11y_hidden()) }
     }
     let h = if s.camera && s.microphone { 2.0 * SIZE + GAP } else { SIZE };
     Some(stack.pin(None, Some((s.size().1 - h) / 2.0), Some(4.0), None).transition(Transition::opacity()))
@@ -1404,7 +1359,7 @@ fn now_playing(s: &Island, fg: Color) -> El {
             .child(icon(if track.playing { &icons::PAUSE } else { &icons::PLAY }, 15.0).color(Color::WHITE))
             .on_press(|s: &mut Island| control(s, MediaCommand::PlayPause))
     } else {
-        visualizer(track.playing, tabs::accent::pink())
+        visualizer(track.playing, accent::pink())
     });
     let wrap = el().key("now-playing").w_full().h_full().child(line);
     let Some((position, length)) = track.progress else { return wrap };
@@ -1474,13 +1429,6 @@ mod tests {
     }
 
     #[test]
-    fn dates_read_like_the_short_weekday_month_day() {
-        assert_eq!(format_date(2026, 1, 1), "Thu, Jan 1");
-        assert_eq!(format_date(2024, 2, 29), "Thu, Feb 29");
-        assert_eq!(format_date(2026, 11, 17), "Tue, Nov 17");
-    }
-
-    #[test]
     fn the_window_stays_on_the_display_and_the_island_keeps_its_place() {
         let display = (1920.0, 1080.0);
         let at = |mode: &str| {
@@ -1545,7 +1493,7 @@ mod tests {
         let mut tx = Tx::default();
         assert!(s.set_bluetooth(true, &mut tx));
         assert_eq!((s.alert(), s.alert_label(Alert::Bluetooth).as_str()), (Some(Alert::Bluetooth), "Connected"));
-        s.bluetooth_alert_until = None;
+        s.poll(10.0, &mut tx);
         // One failed poll, then the device again: no alert.
         assert!(!s.set_bluetooth(false, &mut tx));
         assert!(!s.set_bluetooth(true, &mut tx));
@@ -1608,7 +1556,7 @@ mod tests {
         let t3 = crate::config::T3Device { name: "t".into(), url: "u".into(), token: "t".into() };
         let mut s = island(Config { hidden_tabs: Vec::new(), t3_devices: vec![t3], ..Config::default() });
         s.mode = Mode::Large;
-        assert_eq!(s.cfg.visible_tabs().len(), Tab::ALL.len());
+        assert_eq!(s.visible_tabs().len(), Tab::ALL.len());
         let [x, _, w, _] = s.dock_rect().unwrap();
         assert!(x >= 4.0 && x + w <= CANVAS.0 - 4.0, "dock spans {x}..{}", x + w);
     }
@@ -1680,6 +1628,16 @@ mod tests {
         let mut s = island(Config { standby: false, hidden_tabs: vec![Tab::Shelf], ..Config::default() });
         s.desktop_drag(true);
         assert_eq!(s.mode, Mode::Still);
+    }
+
+    #[test]
+    fn tabs_with_nothing_to_show_stay_out_of_the_dock() {
+        let mut s = island(Config { hidden_tabs: Vec::new(), default_tab: Tab::Limits, ..Config::default() });
+        assert!(!s.visible_tabs().contains(&Tab::T3), "T3 Code waits for a device");
+        assert_eq!(s.first_tab(), Tab::Limits, "AI Limits shows until a look finds no agent");
+        s.limits.usage = Some(Vec::new());
+        assert!(!s.visible_tabs().contains(&Tab::Limits));
+        assert_eq!(s.first_tab(), s.cfg.tab_order[0], "a hidden starred tab falls back to the first one shown");
     }
 
     #[test]
@@ -1774,10 +1732,11 @@ mod tests {
         let [left, top, w, h] = s.rect();
         let mut rt = rune::Runtime::new(s, view, CANVAS, rune::Env { system_dark: true, scale: 1.0 });
         for _ in 0..60 { rt.frame(1.0 / 60.0); }
-        let before = rt.find("task-task 0-0").unwrap().1;
+        let first = format!("task-{}", rt.state.cfg.tasks[0].key);
+        let before = rt.find(&first).unwrap().1;
         rt.wheel(left + w / 2.0, top + h / 2.0, -200.0);
         for _ in 0..30 { rt.frame(1.0 / 60.0); }
-        let after = rt.find("task-task 0-0").unwrap().1;
+        let after = rt.find(&first).unwrap().1;
         assert!(after < before - 50.0, "task-0 stayed at {before} -> {after}");
     }
 

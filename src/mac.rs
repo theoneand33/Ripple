@@ -162,7 +162,6 @@ pub fn watch_drags(on: impl Fn(bool)) {
 
 // --- Focus hand-back ---
 
-/// The frontmost app's process id.
 pub fn frontmost_pid() -> Option<i32> {
     // SAFETY: NSWorkspace is safe from any thread; a nil app gives None.
     unsafe {

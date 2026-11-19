@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::net::{TcpStream, ToSocketAddrs};
 use std::path::PathBuf;
 use std::sync::Mutex;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -19,6 +19,8 @@ use sha2::{Digest, Sha256};
 use crate::config::T3Device;
 use crate::net::{percent_decode, percent_encode};
 
+/// T3's runtime mode when its settings name none.
+const DEFAULT_RUNTIME: &str = "full-access";
 const TIMEOUT: Duration = Duration::from_secs(15);
 /// Never opened: the authorization code is read straight from the redirect URL,
 /// the same way T3's own peer links sign in.
@@ -99,10 +101,6 @@ fn path_of(url: &str) -> &str {
     path.split('?').next().unwrap_or(path)
 }
 
-fn now_ms() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
-}
-
 fn random_bytes<const N: usize>() -> Result<[u8; N], String> {
     let mut bytes = [0u8; N];
     getrandom::fill(&mut bytes).map_err(|e| e.to_string())?;
@@ -177,11 +175,7 @@ fn verify_peer(device: &T3Device) -> Result<(), String> {
     {
         // shortcut: only the detected device is re-checked, against a public id; upgrade to a peer-owner check (lsof, GetExtendedTcpTable) per OS.
         let _ = port;
-        if device.name != LOCAL_NAME { return Ok(()) }
-        let id = t3_home().and_then(|h| std::fs::read_to_string(h.join("userdata").join("environment-id")).ok()).unwrap_or_default();
-        let answer = request("GET", &format!("{base}/.well-known/t3/environment"), &[], None)?;
-        if id.trim().is_empty() || answer["environmentId"].as_str() != Some(id.trim()) { return Err("Another program holds T3's port".into()) }
-        Ok(())
+        if device.name != LOCAL_NAME || local_answers(&base)? { Ok(()) } else { Err("Another program holds T3's port".into()) }
     }
 }
 
@@ -323,7 +317,7 @@ impl Client {
         // Renew a day early (or at half-life for short tokens) so a call never races the expiry.
         let lifetime = (expires_in / 2.0).max(expires_in - 86_400.0).max(0.0);
         let mut tokens = self.tokens.lock().unwrap();
-        tokens.insert(Self::token_key(device), CachedToken { token: access.clone(), expires_at: now_ms() + (lifetime * 1000.0) as u64 });
+        tokens.insert(Self::token_key(device), CachedToken { token: access.clone(), expires_at: crate::date::now_ms() as u64 + (lifetime * 1000.0) as u64 });
         self.save(&tokens);
         Ok(access)
     }
@@ -331,7 +325,7 @@ impl Client {
     fn mcp_token(&self, device: &T3Device) -> Result<String, String> {
         let cached = self.tokens.lock().unwrap().get(&Self::token_key(device)).cloned();
         match cached {
-            Some(c) if c.expires_at >= now_ms() => Ok(c.token),
+            Some(c) if c.expires_at >= crate::date::now_ms() as u64 => Ok(c.token),
             _ => self.sign_in_mcp(device),
         }
     }
@@ -369,7 +363,7 @@ impl Client {
                     .unwrap_or_else(|| model.clone());
                 Favorite { instance_id: provider, model, label }
             }).collect(),
-            runtime_mode: settings["defaultRuntimeMode"].as_str().unwrap_or("full-access").into(),
+            runtime_mode: settings["defaultRuntimeMode"].as_str().unwrap_or(DEFAULT_RUNTIME).into(),
             links: links.iter().map(|l| Link { id: text(&l["environmentId"]), label: text(&l["label"]) }).collect(),
         })
     }
@@ -397,7 +391,6 @@ impl Client {
             .collect())
     }
 
-    /// Starts an agent thread; returns its id.
     pub fn start_thread(&self, device: &T3Device, launch: &Launch) -> Result<String, String> {
         let text = launch.message.trim();
         if text.is_empty() { return Err("Message is empty".into()) }
@@ -406,7 +399,7 @@ impl Client {
             "projectId": launch.project_id,
             "title": title,
             "modelSelection": { "instanceId": launch.instance_id, "model": launch.model },
-            "runtimeMode": if launch.runtime_mode.is_empty() { "full-access" } else { &launch.runtime_mode },
+            "runtimeMode": if launch.runtime_mode.is_empty() { DEFAULT_RUNTIME } else { &launch.runtime_mode },
             "interactionMode": "default",
             "workspaceStrategy": if launch.worktree { json!({ "type": "worktree", "baseRef": "HEAD" }) } else { json!({ "type": "root" }) },
         });
@@ -432,11 +425,18 @@ fn t3_home() -> Option<PathBuf> {
     let raw = std::env::var("T3CODE_HOME").unwrap_or_default();
     let raw = raw.trim();
     let home = rune::dirs::home();
-    match raw {
-        "" => home.map(|h| h.join(".t3")),
-        _ if raw.starts_with('~') => home.map(|h| crate::limits::expand(&h, raw)),
-        _ => Some(PathBuf::from(raw)),
+    match (raw, home) {
+        ("", home) => home.map(|h| h.join(".t3")),
+        (raw, Some(h)) => Some(crate::system::expand_home(&h, raw)),
+        (raw, None) => Some(PathBuf::from(raw)),
     }
+}
+
+/// Whether this machine's T3 (by its environment id) is the one answering at `url`.
+fn local_answers(url: &str) -> Result<bool, String> {
+    let id = t3_home().and_then(|h| std::fs::read_to_string(h.join("userdata").join("environment-id")).ok()).unwrap_or_default();
+    let answer = request("GET", &format!("{url}/.well-known/t3/environment"), &[], None)?;
+    Ok(!id.trim().is_empty() && answer["environmentId"].as_str() == Some(id.trim()))
 }
 
 /// The origin the local T3 server last announced in `userdata/server-runtime.json`.
@@ -471,9 +471,7 @@ pub fn detect_local() -> Option<T3Device> {
     let url = local_origin(&home)?;
     // The file outlives the server, and another process may hold its port: mint a token only
     // when this T3's own environment answers there.
-    let id = std::fs::read_to_string(home.join("userdata").join("environment-id")).ok()?;
-    let answer = request("GET", &format!("{url}/.well-known/t3/environment"), &[], None).ok()?;
-    if id.trim().is_empty() || answer["environmentId"].as_str() != Some(id.trim()) { return None }
+    if !local_answers(&url).ok()? { return None }
     let base_dir = home.to_string_lossy();
     let args = ["auth", "session", "issue", "--token-only", "--label", "Ripple", "--ttl", "365d", "--base-dir", &base_dir];
     let token = crate::system::output("t3", &args);
@@ -607,13 +605,13 @@ mod tests {
 
     /// A T3 server: HTTP API, the /mcp OAuth sign-in and tools, and the /ws RPC.
     fn mock_t3(rejected_tokens: usize) -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
-        use crate::testserver::{Response, json, serve};
+        use crate::testserver::{Response, json, serve_ws};
         use std::sync::{Arc, Mutex};
         let log = Arc::new(Mutex::new(Vec::<String>::new()));
         let challenge = Arc::new(Mutex::new(String::new()));
         let rejects = Arc::new(Mutex::new(rejected_tokens));
         let (http_log, ws_log) = (log.clone(), log.clone());
-        let base = serve(move |r| {
+        let base = serve_ws(move |r| {
             http_log.lock().unwrap().push(format!("{} {}", r.method, r.path.split('?').next().unwrap_or_default()));
             let body: Value = serde_json::from_str(&r.body).unwrap_or_default();
             let bearer = r.header("authorization").unwrap_or_default().to_string();
@@ -638,7 +636,7 @@ mod tests {
                     let ok = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes())) == *challenge.lock().unwrap()
                         && query_param(&format!("?{}", r.body), "code").as_deref() == Some("auth-code");
                     if !ok { return json(400, json!({ "error_description": "bad PKCE" })) }
-                    json(200, json!({ "access_token": format!("mcp-{}", now_ms()), "expires_in": 2_592_000 }))
+                    json(200, json!({ "access_token": format!("mcp-{}", crate::date::now_ms()), "expires_in": 2_592_000 }))
                 }
                 "/mcp" => {
                     let mut left = rejects.lock().unwrap();

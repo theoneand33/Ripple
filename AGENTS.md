@@ -20,6 +20,7 @@ Ripple is a Dynamic Island-style bar for Windows, Linux, and macOS. It is one Ru
 | `src/t3.rs` | T3 Code client (HTTP, `/ws` RPC, `/mcp` sign-in) |
 | `src/platform.rs` | Displays, click-through around the Island (X11 input shape), and focus hand-back |
 | `src/mac.rs` | macOS status-bar item and the notch window frame |
+| `src/date.rs` | Calendar date maths and the wall clock |
 | `src/command.rs` | Splits a launch string into argv without a shell |
 | `src/icons.rs` | Lucide icons as Rune icon bodies |
 | `src/testserver.rs` | Local HTTP/WebSocket server for tests |

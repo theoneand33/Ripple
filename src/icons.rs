@@ -78,17 +78,16 @@ solid!(PAUSE, "pause", r#"<rect x="14" y="4" width="4" height="16" rx="1"/><rect
 solid!(SKIP_BACK, "skip-back", r#"<polygon points="19 20 9 12 19 4 19 20"/><line x1="5" x2="5" y1="19" y2="5"/>"#);
 solid!(SKIP_FORWARD, "skip-forward", r#"<polygon points="5 4 15 12 5 20 5 4"/><line x1="19" x2="19" y1="5" y2="19"/>"#);
 
-/// The icon for a weather condition's text, as `net::wmo_status` words it.
-pub fn weather(status: &str) -> &'static Icon {
-    let s = status.to_lowercase();
-    let has = |words: &[&str]| words.iter().any(|w| s.contains(w));
-    if has(&["sunny", "clear"]) { &SUN }
-    else if has(&["partly cloudy"]) { &CLOUD_SUN }
-    else if has(&["cloudy", "overcast", "mist", "fog"]) { &CLOUD }
-    else if has(&["rain", "drizzle", "showers"]) { &CLOUD_RAIN }
-    else if has(&["snow", "sleet", "ice", "blizzard"]) { &CLOUD_SNOW }
-    else if has(&["thunder", "storm"]) { &CLOUD_LIGHTNING }
-    else { &SUN }
+/// The icon for a WMO weather code; the sun while there is none.
+pub fn weather(code: Option<u64>) -> &'static Icon {
+    match code {
+        Some(1 | 2) => &CLOUD_SUN,
+        Some(3 | 45 | 48) => &CLOUD,
+        Some(51..=57 | 61..=67 | 80..=82) => &CLOUD_RAIN,
+        Some(71..=77 | 85 | 86) => &CLOUD_SNOW,
+        Some(95..=99) => &CLOUD_LIGHTNING,
+        _ => &SUN,
+    }
 }
 
 stroke!(VOLUME, "volume-2", r#"<path d="M11 4.702a.705.705 0 0 0-1.203-.498L6.413 7.587A1.4 1.4 0 0 1 5.416 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.416a1.4 1.4 0 0 1 .997.413l3.383 3.384A.705.705 0 0 0 11 19.298z"/><path d="M16 9a5 5 0 0 1 0 6"/><path d="M19.364 18.364a9 9 0 0 0 0-12.728"/>"#);

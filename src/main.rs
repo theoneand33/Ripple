@@ -5,6 +5,7 @@
 
 mod command;
 mod config;
+mod date;
 mod icons;
 mod island;
 mod limits;
@@ -108,7 +109,7 @@ fn island_spec() -> AppSpec<Island> {
                 s.nextcloud[nextcloud::Kind::Tasks as usize].error = Some("Nextcloud refused the user or app password".into());
             }),
             ("calendar", |s| { s.mode = Mode::Large; s.set_tab(Tab::Calendar) }),
-            ("calendar-paged", |s| { s.mode = Mode::Large; s.set_tab(Tab::Calendar); s.calendar_offset = 1 }),
+            ("calendar-paged", |s| { s.mode = Mode::Large; s.set_tab(Tab::Calendar); s.calendar.offset = 1 }),
             ("calendar-events", |s| {
                 s.mode = Mode::Large;
                 s.set_tab(Tab::Calendar);
@@ -150,9 +151,9 @@ fn island_spec() -> AppSpec<Island> {
             ("limits", |s| {
                 s.mode = Mode::Large;
                 s.set_tab(Tab::Limits);
-                let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
+                let now = date::now_secs();
                 let w = |label: &str, used, hours: i64| limits::Window { label: label.into(), used, resets: Some(now + hours * 3600) };
-                s.limits = Some(vec![
+                s.limits.usage = Some(vec![
                     limits::Usage { name: "Claude Code".into(), windows: Ok(vec![w("5 hours", 42.0, 3), w("Week", 71.0, 100)]) },
                     limits::Usage { name: "Codex · me@example.com".into(), windows: Ok(vec![w("5 hours", 8.0, 4), w("Week", 93.0, 30)]) },
                     limits::Usage { name: "OpenCode Go".into(), windows: Ok(vec![w("5 hours", 12.0, 2), w("Week", 55.0, 50), w("Month", 30.0, 400)]) },
