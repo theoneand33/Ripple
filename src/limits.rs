@@ -145,16 +145,35 @@ impl Saved {
 /// Fetches with the token and, when it has expired, once more with a renewed one.
 fn renewing(token: &str, saved: Option<&Saved>, fetch: impl Fn(&str) -> Result<Value, String>) -> Result<Value, String> {
     match (fetch(token), saved) {
-        (Err(e), Some(s)) if e == EXPIRED => fetch(&renew(s)?),
+        (Err(e), Some(s)) if e == EXPIRED => fetch(&renew(s, token)?),
         (r, _) => r,
     }
 }
 
 /// Trades the saved refresh token for new tokens and saves them back in the CLI's file:
 /// refresh tokens are single-use, so the CLI would be signed out with the old one.
-fn renew(s: &Saved) -> Result<String, String> {
+fn renew(s: &Saved, expired: &str) -> Result<String, String> {
+    // Overlapping loads must not spend the same refresh token twice: OpenAI may revoke the whole sign-in.
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _held = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mut file = read_json(s.path.clone()).ok_or(EXPIRED)?;
     let creds = file.pointer_mut(s.at).filter(|c| c.is_object()).ok_or(EXPIRED)?;
+    // Another load (or the CLI) renewed it already.
+    if let Some(t) = creds[s.access].as_str().filter(|t| *t != expired) { return Ok(t.to_string()) }
+    // A copy beside the file keeps its permissions and proves it can be saved before the old token is spent.
+    let tmp = s.path.with_extension("json.ripple-tmp");
+    std::fs::copy(&s.path, &tmp).map_err(|_| EXPIRED.to_string())?;
+    let saved = renew_into(s, creds).and_then(|access| {
+        std::fs::write(&tmp, serde_json::to_string_pretty(&file).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+        std::fs::rename(&tmp, &s.path).map_err(|e| e.to_string())?;
+        Ok(access)
+    });
+    let _ = std::fs::remove_file(&tmp);
+    saved
+}
+
+/// Posts the refresh token and puts the answer's tokens into `creds`; returns the access token.
+fn renew_into(s: &Saved, creds: &mut Value) -> Result<String, String> {
     let refresh = creds[s.refresh].as_str().ok_or(EXPIRED)?.to_string();
     let mut body = serde_json::json!({"grant_type": "refresh_token", "refresh_token": refresh, "client_id": s.oauth.client});
     if let Some(scope) = s.oauth.scope { body["scope"] = scope.into() }
@@ -171,7 +190,6 @@ fn renew(s: &Saved) -> Result<String, String> {
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as i64;
         creds["expiresAt"] = (now + secs * 1000).into();
     }
-    std::fs::write(&s.path, serde_json::to_string_pretty(&file).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
     Ok(access)
 }
 
@@ -377,8 +395,11 @@ mod tests {
         let file = read_json(path.clone()).unwrap();
         assert_eq!((&file["claudeAiOauth"]["accessToken"], &file["claudeAiOauth"]["refreshToken"], &file["claudeAiOauth"]["scopes"]), (&json!("a2"), &json!("r2"), &json!(["x"])));
         assert!(file["claudeAiOauth"]["expiresAt"].as_i64().unwrap() > 0);
+        // A load that still had a1 takes the saved a2 instead of spending r2 (the server would refuse it).
+        assert_eq!(renewing("a1", Some(&saved), fetch), Ok(json!({"ok": true})));
         // A refused refresh token keeps the error and leaves the file as it was.
-        assert_eq!(renewing("a0", Some(&saved), fetch), Err(EXPIRED.to_string()));
+        assert_eq!(renewing("a2", Some(&saved), |_| Err(EXPIRED.to_string())), Err(EXPIRED.to_string()));
+        assert!(!path.with_extension("json.ripple-tmp").exists());
         assert_eq!(read_json(path.clone()).unwrap(), file);
         let _ = std::fs::remove_file(&path);
     }
