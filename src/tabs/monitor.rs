@@ -2,6 +2,7 @@
 
 use rune::{El, col, el, icon, row, text};
 
+use super::{accent, card, ring};
 use crate::icons;
 use crate::island::Island;
 
@@ -11,29 +12,32 @@ pub fn view(s: &Island) -> El {
     let st = s.stats.unwrap_or_default();
     let ready = s.stats.is_some();
     let pct = |used: u64, total: u64| if total == 0 { 0.0 } else { used as f32 / total as f32 * 100.0 };
-    // (key, title, icon, ring percent or None, value, detail, high is good)
-    let mut cards: Vec<(&str, &str, &'static rune::Icon, Option<f32>, String, String, bool)> = vec![
-        ("cpu", "CPU", &icons::CPU, Some(st.cpu), format!("{:.0}%", st.cpu), "Usage".into(), false),
-        ("memory", "Memory", &icons::MEMORY, Some(pct(st.mem_used, st.mem_total)), format!("{:.0}%", pct(st.mem_used, st.mem_total)), of_total(st.mem_used, st.mem_total), false),
-        ("storage", "Storage", &icons::HARD_DRIVE, Some(pct(st.disk_total.saturating_sub(st.disk_free), st.disk_total)), format!("{:.0}%", pct(st.disk_total.saturating_sub(st.disk_free), st.disk_total)), format!("{} free", bytes(st.disk_free)), false),
-        ("network", "Network", &icons::GLOBE, None, format!("{}/s", bytes(st.down)), format!("↑ {}/s", bytes(st.up)), false),
+    // (key, title, icon, accent, ring percent or None, value, detail, high is good)
+    let mut cards: Vec<(&str, &str, &'static rune::Icon, rune::Color, Option<f32>, String, String, bool)> = vec![
+        ("cpu", "CPU", &icons::CPU, accent::indigo(), Some(st.cpu), format!("{:.0}%", st.cpu), "Usage".into(), false),
+        ("memory", "Memory", &icons::MEMORY, accent::teal(), Some(pct(st.mem_used, st.mem_total)), format!("{:.0}%", pct(st.mem_used, st.mem_total)), of_total(st.mem_used, st.mem_total), false),
+        ("storage", "Storage", &icons::HARD_DRIVE, accent::orange(), Some(pct(st.disk_total.saturating_sub(st.disk_free), st.disk_total)), format!("{:.0}%", pct(st.disk_total.saturating_sub(st.disk_free), st.disk_total)), format!("{} free", bytes(st.disk_free)), false),
+        ("network", "Network", &icons::GLOBE, accent::pink(), None, format!("{}/s", bytes(st.down)), format!("↑ {}/s", bytes(st.up)), false),
     ];
     if let Some(p) = s.percent {
-        cards.push(("battery", "Battery", &icons::BATTERY, Some(p as f32), format!("{p}%"), if s.charging { "Charging".into() } else { "On battery".into() }, true));
+        cards.push(("battery", "Battery", &icons::BATTERY, accent::green(), Some(p as f32), format!("{p}%"), if s.charging { "Charging".into() } else { "On battery".into() }, true));
     }
     let mut tiles = Vec::new();
-    for (key, title, glyph, ring, value, detail, high_good) in cards {
+    for (key, title, glyph, tint, percent, value, detail, high_good) in cards {
         let (value, detail) = if ready || key == "battery" { (value, detail) } else { ("—".into(), String::new()) };
+        // Each figure keeps its own colour, as Droppy's widgets do, until it runs high (or a battery low).
+        let tint = match percent { Some(p) if (if high_good { 100.0 - p } else { p }) >= 85.0 => accent::red(), _ => tint };
         let mut body = row().gap(10.0).center_y();
-        if let Some(p) = ring.filter(|_| ready || key == "battery") { body = body.child(gauge(s, p, high_good)) }
+        body = body.child(match percent.filter(|_| ready || key == "battery") {
+            Some(p) => ring(44.0, p, tint, icon(glyph, 18.0).color(tint)),
+            None => el().size(44.0, 44.0).center().radius(s.cfg.radius(22.0)).fill(tint.alpha(0.18)).a11y_hidden().child(icon(glyph, 18.0).color(tint)),
+        });
         tiles.push(
             col().key(format!("monitor-{key}")).role("group").label(format!("{title}: {value} {detail}")).w(0.0).grow(1.0).min_w(0.0).h(92.0).padding(10.0).gap(8.0)
-                .radius(s.cfg.radius(14.0)).fill(fg.alpha(0.06 * fg.a))
-                .child(row().gap(6.0).center_y()
-                    .child(icon(glyph, 14.0).color(muted).a11y_hidden())
-                    .child(text(title).font(s.cfg.font(13.0, 600.0)).color(fg).a11y_hidden()))
-                .child(body.child(col().min_w(0.0).grow(1.0).gap(2.0)
-                    .child(text(value).font(s.cfg.font(17.0, 600.0).features("'tnum' 1")).color(fg).single_line().a11y_hidden())
+                .radius(s.cfg.radius(16.0)).fill(card(fg))
+                .child(text(title).font(s.cfg.font(13.0, 700.0)).color(tint).a11y_hidden())
+                .child(body.child(col().min_w(0.0).grow(1.0).gap(1.0)
+                    .child(text(value).font(s.cfg.font(20.0, 700.0).features("'tnum' 1")).color(fg).single_line().a11y_hidden())
                     .child(text(detail).font(s.cfg.font(11.0, 400.0).features("'tnum' 1")).color(muted).truncate().a11y_hidden()))),
         );
     }
@@ -48,26 +52,13 @@ pub fn view(s: &Island) -> El {
     root
 }
 
-/// A ring of dashes, lit clockwise from the top up to `percent`.
+/// A ring lit clockwise from the top up to `percent`: green, orange, then red as load rises.
 pub(super) fn gauge(s: &Island, percent: f32, high_good: bool) -> El {
-    const SIZE: f32 = 44.0;
-    const DASHES: usize = 24;
     let fg = s.cfg.text();
     let p = percent.clamp(0.0, 100.0);
     let load = if high_good { 100.0 - p } else { p };
-    let lit = if load < 60.0 { rune::oklch(0.75, 0.17, 150.0) } else if load < 85.0 { rune::oklch(0.80, 0.15, 70.0) } else { rune::oklch(0.66, 0.20, 25.0) };
-    let on = (p / 100.0 * DASHES as f32).round() as usize;
-    let (c, r) = (SIZE / 2.0, SIZE / 2.0 - 3.0);
-    let step = std::f32::consts::TAU / DASHES as f32;
-    let mut shape = rune::Shape::new();
-    for i in 0..DASHES {
-        let a = -std::f32::consts::FRAC_PI_2 + i as f32 * step;
-        let arc: Vec<[f32; 2]> = [-0.25, 0.0, 0.25].iter().map(|t| { let b = a + t * step; [c + r * b.cos(), c + r * b.sin()] }).collect();
-        shape = shape.stroke(arc, 3.0, if i < on { lit } else { fg.alpha(0.15 * fg.a) });
-    }
-    el().size(SIZE, SIZE).center().a11y_hidden()
-        .child(rune::canvas(shape).size(SIZE, SIZE).absolute(0.0, 0.0))
-        .child(text(format!("{p:.0}%")).font(s.cfg.font(10.0, 600.0).features("'tnum' 1")).color(fg))
+    let lit = if load < 60.0 { accent::green() } else if load < 85.0 { accent::orange() } else { accent::red() };
+    ring(44.0, p, lit, text(format!("{p:.0}%")).font(s.cfg.font(10.0, 700.0).features("'tnum' 1")).color(fg))
 }
 
 /// "29 / 48 GB", the unit said once when both share it.

@@ -3,7 +3,7 @@
 
 use rune::{El, ScrollSpec, Transition, Tx, col, el, row, text};
 
-use super::{Undo, button, empty, field, pill, tool, undo_button};
+use super::{Undo, accent, button, empty, field, pill, tool, undo_button};
 use crate::config::Item;
 use crate::icons;
 use crate::island::{Island, format_date, weekday};
@@ -56,7 +56,6 @@ fn day_events(s: &Island, day: (i32, u32, u32)) -> Vec<(u64, &str)> {
 
 pub fn view(s: &Island) -> El {
     let fg = s.cfg.text();
-    let ink = s.cfg.bg().alpha(1.0);
     let (ty, tm, td) = s.today;
     let (year, month) = shift(ty, tm, s.calendar_offset);
 
@@ -64,7 +63,7 @@ pub fn view(s: &Island) -> El {
         .child(
             row().key(format!("calendar-title-{year}-{month}")).grow(1.0).min_w(0.0).gap(6.0).center_y()
                 .transition(Transition::blur_replace())
-                .child(text(MONTHS[month as usize - 1]).font(s.cfg.font(17.0, 600.0)).color(fg))
+                .child(text(MONTHS[month as usize - 1]).font(s.cfg.font(17.0, 700.0)).color(accent::red()))
                 .child(text(year.to_string()).font(s.cfg.font(17.0, 400.0).features("'tnum' 1")).color(fg.alpha(0.5 * fg.a))),
         );
     if s.calendar_offset != 0 || s.calendar_day.is_some_and(|d| d != s.today) {
@@ -99,10 +98,10 @@ pub fn view(s: &Island) -> El {
             let date = (dy, dm, day as u32);
             let today = date == (ty, tm, td);
             let busy = busy_days.contains(&date);
-            let color = if today { ink } else if page == 0 { fg } else { fg.alpha(0.25 * fg.a) };
+            let color = if today { rune::Color::WHITE } else if page != 0 { fg.alpha(0.25 * fg.a) } else if col_ == 0 || col_ == 6 { fg.alpha(0.5 * fg.a) } else { fg };
             let mut dot = el().size(28.0, 28.0).center().radius(s.cfg.radius(14.0))
                 .child(text(day.to_string()).font(s.cfg.font(13.0, if today { 700.0 } else { 500.0 }).features("'tnum' 1")).color(color).a11y_hidden());
-            if today { dot = dot.fill(fg) } else if busy { dot = dot.fill(fg.alpha(0.12 * fg.a)) }
+            if today { dot = dot.fill(accent::red()) } else if busy { dot = dot.fill(fg.alpha(0.12 * fg.a)) }
             if date == picked && !today { dot = dot.border(1.5, fg.alpha(0.6 * fg.a)) }
             let label = format!("{}{}{}", format_date(dy, dm, day as u32), if today { ", today" } else { "" }, if busy { ", has events" } else { "" });
             line = line.child(
@@ -119,19 +118,30 @@ pub fn view(s: &Island) -> El {
     }
     let events = day_events(s, picked);
     if events.is_empty() { list = list.child(empty(s, "No events")) }
-    for (key, title) in events {
+    // Each event gets a colour of its own, a bar at its left edge, as Droppy's calendar does.
+    let tints = [accent::indigo(), accent::orange(), accent::green(), accent::teal()];
+    for (i, (key, title)) in events.into_iter().enumerate() {
+        let tint = tints[i % tints.len()];
         list = list.child(
-            row().key(format!("event-{key}")).w_full().pl(12.0).pr(4.0).py(4.0).gap(8.0).center_y()
-                .radius(s.cfg.radius(12.0)).fill(fg.alpha(0.05 * fg.a))
+            row().key(format!("event-{key}")).w_full().pl(8.0).pr(4.0).py(4.0).gap(8.0).center_y()
+                .radius(s.cfg.radius(10.0)).fill(tint.alpha(0.16))
                 .transition(Transition::opacity())
-                .child(text(title).font(s.cfg.font(14.0, 500.0)).color(fg).grow(1.0).min_w(0.0).wrap_anywhere())
+                .child(el().w(3.0).h(22.0).radius(1.5).fill(tint).a11y_hidden())
+                .child(text(title).font(s.cfg.font(14.0, 600.0)).color(tint).grow(1.0).min_w(0.0).wrap_anywhere())
                 .child(tool(s, "delete", &icons::X, &format!("Delete {title}")).on_press(move |s: &mut Island| delete_event(s, key))),
         );
     }
     let (py_, pm_, pd_) = picked;
     let day = col().key("calendar-day").w(0.0).grow(1.0).h_full().gap(8.0)
         .child(row().key("calendar-day-title").w_full().h(28.0).center_y().justify_between()
-            .child(text(format_date(py_, pm_, pd_)).font(s.cfg.font(15.0, 600.0)).color(fg))
+            .child({
+                // "THU Jan 1": the weekday in red capitals, as Droppy heads its day.
+                let date = format_date(py_, pm_, pd_);
+                let (wd, rest) = date.split_once(", ").unwrap_or(("", &date));
+                row().gap(6.0).center_y()
+                    .child(text(wd.to_uppercase()).font(s.cfg.font(15.0, 700.0)).color(accent::red()))
+                    .child(text(rest.to_string()).font(s.cfg.font(15.0, 700.0)).color(fg))
+            })
             .children(undo_button(s)))
         .child(col().key("event-scroll").w_full().grow(1.0).min_h(0.0).scroll(ScrollSpec { stick_bottom: false }).on_wheel(Island::wheel).child(list))
         .child(

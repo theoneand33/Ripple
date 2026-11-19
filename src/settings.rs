@@ -240,7 +240,7 @@ fn drag_tab(s: &mut Settings, from: usize, d: &mut Drag, tx: &mut Tx) {
 fn has_panel(tab: Tab) -> bool {
     match tab {
         Tab::Search | Tab::Workflows | Tab::Overview | Tab::Assistant | Tab::T3 | Tab::Limits | Tab::Tasks | Tab::Notes | Tab::Calendar => true,
-        Tab::Clipboard | Tab::Stremflix | Tab::Shelf | Tab::System | Tab::Plugins => false,
+        Tab::Clipboard | Tab::Stremflix | Tab::Shelf | Tab::System | Tab::Plugins | Tab::Pomodoro | Tab::Calculator => false,
     }
 }
 
@@ -398,7 +398,7 @@ fn panel(s: &Settings, k: &Kit, layer: &mut Vec<El>, tab: Tab) -> Vec<El> {
             }
             sections.push(section(s, "nextcloud", "Nextcloud", rows));
         }
-        Tab::Clipboard | Tab::Stremflix | Tab::Shelf | Tab::System | Tab::Plugins => {}
+        Tab::Clipboard | Tab::Stremflix | Tab::Shelf | Tab::System | Tab::Plugins | Tab::Pomodoro | Tab::Calculator => {}
     }
     sections
 }
@@ -593,7 +593,7 @@ mod tests {
         rt.pointer_up(x, y + 100.0);
         rt.frame(1.0 / 60.0);
         use Tab::*;
-        assert_eq!(store.get().tab_order, [Workflows, Overview, Search, Assistant, Clipboard, Tasks, T3, Notes, Stremflix, Shelf, System, Calendar, Limits, Plugins]);
+        assert_eq!(store.get().tab_order, [Workflows, Overview, Search, Assistant, Clipboard, Tasks, T3, Notes, Stremflix, Shelf, System, Calendar, Limits, Plugins, Pomodoro, Calculator]);
     }
 
     #[test]

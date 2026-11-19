@@ -22,7 +22,7 @@ pub const CANVAS: (f32, f32) = (620.0, 460.0);
 /// Room kept around the Island inside the window for its shadow and hover scale.
 const PAD: f32 = 30.0;
 /// The tab dock under the Large Island: its height, the gap above it, one button and the space between.
-const DOCK: (f32, f32, f32, f32) = (44.0, 12.0, 32.0, 6.0);
+const DOCK: (f32, f32, f32, f32) = (44.0, 12.0, 32.0, 4.0);
 /// Room between the Large Island's edge and its tab's content.
 const LARGE_EDGE: f32 = 12.0;
 /// Framer's spring (stiffness 400, damping 40, mass 2.5) as duration and bounce.
@@ -251,6 +251,8 @@ pub struct Island {
     pub search: TextEdit,
     pub ai: tabs::Assistant,
     pub clipboard: tabs::Clipboard,
+    pub pomodoro: tabs::Pomodoro,
+    pub calc: tabs::Calculator,
     pub task: TextEdit,
     /// The Calendar tab's month, as months from this one.
     pub calendar_offset: i32,
@@ -360,6 +362,8 @@ impl Island {
             search: TextEdit::default(),
             ai: tabs::Assistant::default(),
             clipboard: tabs::Clipboard::default(),
+            pomodoro: tabs::Pomodoro::default(),
+            calc: tabs::Calculator::default(),
             task: TextEdit::default(),
             calendar_offset: 0,
             calendar_day: None,
@@ -433,7 +437,7 @@ impl Island {
     pub fn shows_track(&self) -> bool { self.playing() || self.paused_until.is_some() }
 
     /// Hide when inactive: resting with no track to show.
-    pub fn hidden(&self) -> bool { self.cfg.hide_inactive && self.mode == Mode::Still && !self.shows_track() && !self.caps_lock }
+    pub fn hidden(&self) -> bool { self.cfg.hide_inactive && self.mode == Mode::Still && !self.shows_track() && !self.caps_lock && !self.pomodoro.running() }
 
     pub fn alert(&self) -> Option<Alert> {
         // The level answers a key just pressed, so it goes over the rest.
@@ -488,6 +492,7 @@ impl Island {
         let percent = || label(&self.percent_label());
         let (left, right) = match self.alert() {
             Some(alert) => (20.0, label(&self.alert_label(alert))),
+            None if self.pomodoro.running() => (label(&self.time), 20.0 + label(&self.pomodoro.label())),
             None => (label(&self.time), match self.weather.temp {
                 Some(temp) if !(self.cfg.standby && self.percent.is_some()) => 16.0 + label(&format!("{temp}º")),
                 _ if self.charging && self.percent.is_some() => 16.0 + percent(),
@@ -507,7 +512,8 @@ impl Island {
             _ if self.level.is_some() && !notch => 100.0, // just the ring
             _ if alerting => if notch { self.notch_glance_width() } else { 176.0 }, // fits icon + "Disconnected"
             _ if track => self.now_playing_width(),
-            _ if notch => if self.mode == Mode::Quick || self.cfg.show_info_idle { self.notch_glance_width() } else { 210.0 },
+            _ if notch => if self.mode == Mode::Quick || self.cfg.show_info_idle || self.pomodoro.running() { self.notch_glance_width() } else { 210.0 },
+            _ if self.pomodoro.running() => 168.0, // "23:59" + ring + "24:59"
             Mode::Quick | Mode::Still => 140.0, // fits "23:59" + weather/"100%"
         };
         if notch && track && !alerting && self.mode != Mode::Large { w = (w + 40.0).max(300.0) }
@@ -529,7 +535,8 @@ impl Island {
         let n = self.cfg.visible_tabs().len() as f32;
         let w = n * button + (n - 1.0) * space + 2.0 * space;
         let [x, y, iw, ih] = self.rect();
-        let left = (x + iw / 2.0 - w / 2.0).clamp(4.0, CANVAS.0 - w - 4.0);
+        // Not clamp: a dock wider than the canvas would panic it.
+        let left = (x + iw / 2.0 - w / 2.0).min(CANVAS.0 - w - 4.0).max(4.0);
         Some([left, if self.placement.top { y + ih } else { y - gap - h }, w, gap + h])
     }
 
@@ -955,6 +962,7 @@ impl Island {
             self.next_second = now + 1.0;
             tx.wake_at(self.next_second);
             if self.mode == Mode::Large && self.tab == Tab::Plugins { changed |= self.plugins.tick() }
+            changed |= self.pomodoro.tick(now);
             // A note being typed saves once a second, and uploads once typing pauses.
             if self.notes.edited.is_some() { self.store.flush() }
             if self.notes.edited.is_some_and(|t| t.elapsed().as_secs() >= 2) {
@@ -1195,7 +1203,7 @@ pub fn view(s: &Island, _: &mut Cx<Island>) -> El {
         if s.open_select.is_some() && let Some(menu) = layer.pop() {
             layer.push(menu.on_hover_change(|s: &mut Island, hovered, _| s.menu_hovered = hovered));
         }
-    } else if s.mode == Mode::Quick || s.alert().is_some() || s.shows_track() || cfg.show_info_idle {
+    } else if s.mode == Mode::Quick || s.alert().is_some() || s.shows_track() || cfg.show_info_idle || s.pomodoro.running() {
         island = island.child(if s.shows_track() && s.alert().is_none() { now_playing(s, fg) } else { glance(s, fg) });
     }
 
@@ -1300,6 +1308,16 @@ fn glance(s: &Island, fg: Color) -> El {
     } else { percent() };
     let right = match alert {
         Some(alert) => text(s.alert_label(alert)).key("label").font(style).color(color),
+        // A running Pomodoro is a live activity: its ring and time left take the right side.
+        None if s.pomodoro.running() => {
+            let p = &s.pomodoro;
+            let (glyph, tint) = (if p.focus { &icons::TIMER } else { &icons::COFFEE }, tabs::pomodoro_color(p.focus));
+            row().key("pomodoro").role("img").label(format!("{}, {} left", if p.focus { "Focus" } else { "Break" }, p.label())).gap(6.0).center_y()
+                .child(el().size(18.0, 18.0).center().a11y_hidden()
+                    .child(icon(icons::ring(p.percent()), 18.0).color(tint).pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0)))
+                    .child(icon(glyph, 10.0).color(tint)))
+                .child(text(p.label()).font(style.features("'tnum' 1")).color(tint).a11y_hidden())
+        }
         None if cfg.standby && s.percent.is_some() => battery(),
         None => match s.weather.temp {
             Some(temp) => row().key("weather").gap(2.0).center_y()
@@ -1311,7 +1329,7 @@ fn glance(s: &Island, fg: Color) -> El {
     let row = row().key(alert.map_or("glance", Alert::key)).w_full().h_full().px(pad).center_y()
         .transition(Transition::blur_replace());
     // Mini notch centers the time when there is nothing to show beside it.
-    if cfg.notch_mode && cfg.notch_mini && alert.is_none() && s.weather.temp.is_none() && s.percent.is_none() {
+    if cfg.notch_mode && cfg.notch_mini && alert.is_none() && s.weather.temp.is_none() && s.percent.is_none() && !s.pomodoro.running() {
         return row.justify_center().child(left);
     }
     row.justify_between().child(left).child(right)
@@ -1381,7 +1399,7 @@ fn now_playing(s: &Island, fg: Color) -> El {
             .child(icon(if track.playing { &icons::PAUSE } else { &icons::PLAY }, 15.0).color(Color::WHITE))
             .on_press(|s: &mut Island| control(s, MediaCommand::PlayPause))
     } else {
-        visualizer(track.playing, fg)
+        visualizer(track.playing, tabs::accent::pink())
     });
     let wrap = el().key("now-playing").w_full().h_full().child(line);
     let Some((position, length)) = track.progress else { return wrap };
@@ -1397,7 +1415,7 @@ fn now_playing(s: &Island, fg: Color) -> El {
 
 /// Four bars that jump up and fall back while music plays, and rest low while it is paused.
 /// shortcut: a canned motion, not the real audio level; tap the OS audio output to drive it.
-fn visualizer(playing: bool, fg: Color) -> El {
+pub fn visualizer(playing: bool, fg: Color) -> El {
     // (period, share hidden while paused) per bar; uneven periods keep the bars out of step.
     const BARS: [(f64, f32); 4] = [(0.62, 0.55), (0.81, 0.3), (0.53, 0.45), (0.94, 0.6)];
     let mut bars = row().key("visualizer").a11y_hidden().size(25.0, 24.0).gap(2.0).center()
@@ -1578,6 +1596,15 @@ mod tests {
         assert_eq!(s.size().1, island(Config { notch_mode: true, ..Config::default() }).size().1);
         s.mode = Mode::Large;
         assert_eq!(s.size(), large);
+    }
+
+    #[test]
+    fn the_dock_fits_the_canvas_with_every_tab_visible() {
+        let mut s = island(Config::default());
+        s.mode = Mode::Large;
+        assert_eq!(s.cfg.visible_tabs().len(), Tab::ALL.len());
+        let [x, _, w, _] = s.dock_rect().unwrap();
+        assert!(x >= 4.0 && x + w <= CANVAS.0 - 4.0, "dock spans {x}..{}", x + w);
     }
 
     #[test]

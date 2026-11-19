@@ -38,7 +38,7 @@ pub fn view(s: &Island) -> El {
         let n = s.cfg.tasks[..i].iter().filter(|t| t.text == *task).count();
         list = list.child(
             row().key(format!("task-{task}-{n}")).w_full().px(12.0).py(8.0).gap(10.0).center_y()
-                .radius(s.cfg.radius(12.0)).fill(fg.alpha(0.05 * fg.a))
+                .radius(s.cfg.radius(16.0)).fill(super::card(fg))
                 .transition(Transition::opacity())
                 .child(checkbox(s, "done", &format!("Done: {task}"), false).on_press(move |s: &mut Island| tick(s, key)))
                 .child(text(task).font(s.cfg.font(14.0, 500.0)).color(fg).grow(1.0).min_w(0.0).wrap_anywhere()),

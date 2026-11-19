@@ -36,7 +36,7 @@ pub fn view(s: &Island) -> El {
         // "Codex · me@x.com": the agent bold, the account muted.
         let (name, who) = agent.name.split_once(" · ").unwrap_or((&agent.name, ""));
         let mut card = row().key(format!("limits-{n}")).w_full().padding(10.0).gap(10.0).center_y()
-            .radius(s.cfg.radius(14.0)).fill(fg.alpha(0.06 * fg.a))
+            .radius(s.cfg.radius(16.0)).fill(super::card(fg))
             .child(col().w(120.0).gap(2.0)
                 .child(text(name).font(s.cfg.font(13.0, 600.0)).color(fg).truncate())
                 .children((!who.is_empty()).then(|| text(who).font(s.cfg.font(11.0, 400.0)).color(muted).truncate())));
