@@ -16,6 +16,15 @@ function ui.row(children) return node("row", children) end
 function ui.col(children) return node("col", children) end
 function ui.button(label, on_press, opts) local t = opts or {}; t.label = tostring(label); t.on_press = on_press; return node("button", t) end
 function ui.bar(value) return node("bar", { value = value }) end
+-- Past the time budget, errors pass through pcall, xpcall and coroutine.resume, so a plugin can't catch its stop.
+do
+  local expired = __ripple_expired; __ripple_expired = nil
+  local function check(ok, ...) if not ok and expired() then error((...), 0) end return ok, ... end
+  local pcall0, xpcall0, resume0 = pcall, xpcall, coroutine.resume
+  pcall = function(...) return check(pcall0(...)) end
+  xpcall = function(...) return check(xpcall0(...)) end
+  coroutine.resume = function(...) return check(resume0(...)) end
+end
 "#;
 
 /// How long one call into a plugin may run before it is stopped, so a loop can't freeze the Island.
@@ -54,6 +63,7 @@ impl Plugin {
         let mut p = Plugin { name, path, modified, lua: Lua::new(), spec: None, view: None, error: None, handlers: Vec::new() };
         let spec = guarded(&p.lua, || {
             p.lua.set_memory_limit(64 << 20)?;
+            p.lua.globals().set("__ripple_expired", p.lua.create_function(|lua, ()| Ok(lua.app_data_ref::<Instant>().is_some_and(|d| Instant::now() > *d)))?)?;
             p.lua.load(PRELUDE).exec()?;
             p.lua.load(source).set_name(format!("@{}", p.path.display())).eval::<Table>()
         });
@@ -137,11 +147,12 @@ impl Plugin {
 /// Runs `f` with `BUDGET` to finish.
 fn guarded<R>(lua: &Lua, f: impl FnOnce() -> mlua::Result<R>) -> mlua::Result<R> {
     let deadline = Instant::now() + BUDGET;
-    lua.set_hook(HookTriggers::new().every_nth_instruction(10_000), move |_, _| {
+    lua.set_app_data(deadline);
+    lua.set_global_hook(HookTriggers::new().every_nth_instruction(10_000), move |_, _| {
         if Instant::now() > deadline { Err(mlua::Error::runtime(format!("stopped after {} ms", BUDGET.as_millis()))) } else { Ok(VmState::Continue) }
     })?;
     let r = f();
-    lua.remove_hook();
+    lua.remove_global_hook();
     r
 }
 
@@ -280,6 +291,12 @@ mod tests {
         let mut p = plugin(r#"return { view = function() return ui.button("x", function() while true do end end) end }"#);
         p.press_key("x");
         assert!(p.error.unwrap().contains("stopped"));
+        let mut p = plugin(r#"return { view = function() return ui.button("x", function()
+            while true do pcall(function() while true do end end); coroutine.resume(coroutine.create(function() while true do end end)) end
+        end) end }"#);
+        p.press_key("x");
+        assert!(p.error.unwrap().contains("stopped"), "pcall can't catch the stop");
+        assert!(plugin(r#"return { view = function() local ok = pcall(error, "x"); return ui.text(tostring(ok)) end }"#).error.is_none(), "pcall still works in time");
         assert!(plugin("return { view = function() local t = ui.row {}; t[1] = t; return t end }").error.unwrap().contains("deeper"));
     }
 
