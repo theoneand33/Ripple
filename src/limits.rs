@@ -22,12 +22,14 @@ pub struct Usage {
     pub windows: Result<Vec<Window>, String>,
 }
 
-type Job = Box<dyn FnOnce() -> Result<Vec<Window>, String> + Send>;
+/// Fetches the windows; the flag allows renewing an expired token.
+type Job = Box<dyn FnOnce(bool) -> Result<Vec<Window>, String> + Send>;
 
-/// One signed-in account: its card name, its token (to drop duplicates) and its fetch.
+/// One signed-in account: its card name, its token (to drop duplicates), its account id when it can renew, and its fetch.
 struct Account {
     name: String,
     token: String,
+    renews: Option<String>,
     fetch: Job,
 }
 
@@ -35,8 +37,11 @@ struct Account {
 /// config folders in `extra_dirs`, and CLIProxyAPI's auth files in `cliproxy_dir`.
 pub fn all(extra_dirs: &[String], cliproxy_dir: &str) -> Vec<Usage> {
     let Some(home) = rune::dirs::home() else { return Vec::new() };
-    let handles: Vec<_> = accounts(&home, extra_dirs, cliproxy_dir).into_iter()
-        .map(|a| (a.name, std::thread::spawn(a.fetch))).collect();
+    let accounts = accounts(&home, extra_dirs, cliproxy_dir);
+    // Two files with one account: one may hold an older, already-used refresh token, and spending it can revoke the sign-in.
+    let renew: Vec<bool> = accounts.iter().map(|a| a.renews.as_ref().is_some_and(|id| accounts.iter().filter(|b| b.renews.as_ref() == Some(id)).count() == 1)).collect();
+    let handles: Vec<_> = accounts.into_iter().zip(renew)
+        .map(|(a, renew)| (a.name, std::thread::spawn(move || (a.fetch)(renew)))).collect();
     handles.into_iter().map(|(name, h)| Usage { name, windows: h.join().unwrap_or_else(|_| Err("Couldn't read its limits".into())) }).collect()
 }
 
@@ -49,15 +54,21 @@ fn accounts(home: &Path, extra_dirs: &[String], cliproxy_dir: &str) -> Vec<Accou
         let Some(token) = creds["claudeAiOauth"]["accessToken"].as_str() else { continue };
         // Claude Code keeps the account beside its folder by default, and inside it otherwise.
         let profile = if d == home.join(".claude") { home.join(".claude.json") } else { d.join(".claude.json") };
-        let email = read_json(profile).and_then(|v| v["oauthAccount"]["emailAddress"].as_str().map(str::to_string));
-        out.push(claude(named("Claude Code", email.as_deref()), token));
+        let account = read_json(profile).map(|v| v["oauthAccount"].clone()).unwrap_or_default();
+        let email = account["emailAddress"].as_str();
+        let saved = d.join(".credentials.json").exists().then(|| Saved::claude(d.join(".credentials.json")));
+        // Renew only a known account: an unknown one may be a stale copy of another folder.
+        let id = account["accountUuid"].as_str().or(email).filter(|_| saved.is_some()).map(|id| format!("claude:{id}"));
+        out.push(Account { renews: id, ..claude(named("Claude Code", email), token, saved) });
     }
     for d in std::iter::once(dir("CODEX_HOME", home.join(".codex"))).chain(extra.iter().cloned()) {
         let Some(auth) = read_json(d.join("auth.json")) else { continue };
         let t = &auth["tokens"];
         let Some(token) = t["access_token"].as_str() else { continue };
         let email = t["id_token"].as_str().and_then(jwt_email);
-        out.push(codex(named("Codex", email.as_deref()), token, t["account_id"].as_str().unwrap_or_default()));
+        let saved = Saved { path: d.join("auth.json"), at: "/tokens", access: "access_token", refresh: "refresh_token", oauth: &CODEX };
+        let id = t["account_id"].as_str().filter(|a| !a.is_empty()).map(|a| format!("codex:{a}"));
+        out.push(Account { renews: id, ..codex(named("Codex", email.as_deref()), token, t["account_id"].as_str().unwrap_or_default(), Some(saved)) });
     }
     let proxy = expand(home, if cliproxy_dir.trim().is_empty() { "~/.cli-proxy-api" } else { cliproxy_dir.trim() });
     let mut files: Vec<PathBuf> = std::fs::read_dir(proxy).into_iter().flatten().flatten().map(|e| e.path())
@@ -65,9 +76,10 @@ fn accounts(home: &Path, extra_dirs: &[String], cliproxy_dir: &str) -> Vec<Accou
     files.sort();
     for v in files.into_iter().filter_map(read_json) {
         let (Some(token), email) = (v["access_token"].as_str(), v["email"].as_str()) else { continue };
+        // CLIProxyAPI renews its own tokens.
         match v["type"].as_str().or(v["provider"].as_str()) {
-            Some("claude") => out.push(claude(named("Claude Code", email), token)),
-            Some("codex") => out.push(codex(named("Codex", email), token, v["account_id"].as_str().unwrap_or_default())),
+            Some("claude") => out.push(claude(named("Claude Code", email), token, None)),
+            Some("codex") => out.push(codex(named("Codex", email), token, v["account_id"].as_str().unwrap_or_default(), None)),
             _ => {}
         }
     }
@@ -88,6 +100,10 @@ fn accounts(home: &Path, extra_dirs: &[String], cliproxy_dir: &str) -> Vec<Accou
         }
     }
     // The same account found twice (an extra folder that is the default one, a token copied into CLIProxyAPI).
+    // A token kept in two files shares one refresh token: renewing it would leave the other copy spent.
+    let mut count = std::collections::HashMap::new();
+    for a in &out { *count.entry(a.token.clone()).or_insert(0) += 1 }
+    for a in &mut out { if count[&a.token] > 1 { a.renews = None } }
     let mut seen = std::collections::HashSet::new();
     out.retain(|a| seen.insert(a.token.clone()));
     out
@@ -124,13 +140,93 @@ fn jwt_email(jwt: &str) -> Option<String> {
     serde_json::from_slice::<Value>(&payload).ok()?["email"].as_str().map(str::to_string)
 }
 
+const EXPIRED: &str = "Token expired: run its CLI once to refresh";
+const LOST: &str = "Couldn't save the renewed sign-in: sign in to its CLI again";
+
+/// A CLI's OAuth app, to renew its expired tokens the way the CLI does.
+struct Oauth { url: &'static str, client: &'static str, scope: Option<&'static str> }
+
+const CLAUDE: Oauth = Oauth { url: "https://platform.claude.com/v1/oauth/token", client: "9d1c250a-e61b-44d9-88ed-5944d1962f5e", scope: None };
+const CODEX: Oauth = Oauth { url: "https://auth.openai.com/oauth/token", client: "app_EMoamEEZ73f0CkXaXp7hrann", scope: Some("openid profile email") };
+
+/// Where a sign-in is saved: the file, the JSON pointer to its tokens, their key names, and its app.
+struct Saved { path: PathBuf, at: &'static str, access: &'static str, refresh: &'static str, oauth: &'static Oauth }
+
+impl Saved {
+    fn claude(path: PathBuf) -> Self { Saved { path, at: "/claudeAiOauth", access: "accessToken", refresh: "refreshToken", oauth: &CLAUDE } }
+}
+
+/// Fetches with the token and, when it has expired, once more with a renewed one.
+fn renewing(token: &str, saved: Option<&Saved>, fetch: impl Fn(&str) -> Result<Value, String>) -> Result<Value, String> {
+    match (fetch(token), saved) {
+        (Err(e), Some(s)) if e == EXPIRED => fetch(&renew(s, token)?),
+        (r, _) => r,
+    }
+}
+
+/// Trades the saved refresh token for new tokens and saves them back in the CLI's file:
+/// refresh tokens are single-use, so the CLI would be signed out with the old one.
+fn renew(s: &Saved, expired: &str) -> Result<String, String> {
+    // Overlapping loads must not spend the same refresh token twice: OpenAI may revoke the whole sign-in.
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _held = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut file = read_json(s.path.clone()).ok_or(EXPIRED)?;
+    let creds = file.pointer_mut(s.at).filter(|c| c.is_object()).ok_or(EXPIRED)?;
+    // Another load (or the CLI) renewed it already.
+    if let Some(t) = creds[s.access].as_str().filter(|t| *t != expired) { return Ok(t.to_string()) }
+    // A copy beside the file keeps its permissions and proves it can be saved before the old token is spent.
+    // Through a symlink (a dotfiles manager) to the real file, so the link stays a link.
+    let path = std::fs::canonicalize(&s.path).map_err(|_| EXPIRED.to_string())?;
+    let tmp = path.with_extension("json.ripple-tmp");
+    std::fs::copy(&path, &tmp).map_err(|_| EXPIRED.to_string())?;
+    let saved = renew_into(s, creds).and_then(|access| {
+        let text = serde_json::to_string_pretty(&file).map_err(|e| e.to_string())?;
+        // The old refresh token is spent now, so a failed save falls back to writing the file in place.
+        let ok = std::fs::write(&tmp, &text).and_then(|_| std::fs::rename(&tmp, &path)).or_else(|_| std::fs::write(&path, &text));
+        ok.map(|_| access).map_err(|_| LOST.to_string())
+    });
+    let _ = std::fs::remove_file(&tmp);
+    saved
+}
+
+/// Posts the refresh token and puts the answer's tokens into `creds`; returns the access token.
+fn renew_into(s: &Saved, creds: &mut Value) -> Result<String, String> {
+    let refresh = creds[s.refresh].as_str().ok_or(EXPIRED)?.to_string();
+    let mut body = serde_json::json!({"grant_type": "refresh_token", "refresh_token": refresh, "client_id": s.oauth.client});
+    if let Some(scope) = s.oauth.scope { body["scope"] = scope.into() }
+    let mut res = crate::net::agent().post(s.oauth.url).header("content-type", "application/json").header("user-agent", "Ripple")
+        .send(body.to_string()).map_err(|e| {
+            use ureq::{Error as E, Timeout as T};
+            match e {
+                // The request never left, so the refresh token is unspent.
+                E::HostNotFound | E::ConnectionFailed | E::Timeout(T::Resolve | T::Connect) => "Can't reach the server".to_string(),
+                _ => "Renewal didn't finish: if it stays expired, sign in to its CLI again".to_string(),
+            }
+        })?;
+    if !res.status().is_success() { return Err(EXPIRED.into()) }
+    // From here the old refresh token is spent.
+    let v: Value = res.body_mut().read_to_string().ok().and_then(|b| serde_json::from_str(&b).ok()).ok_or(LOST)?;
+    let access = v["access_token"].as_str().ok_or(LOST)?.to_string();
+    creds[s.access] = access.clone().into();
+    if let Some(r) = v["refresh_token"].as_str() { creds[s.refresh] = r.into() }
+    if let (Some(id), true) = (v["id_token"].as_str(), creds.get("id_token").is_some()) { creds["id_token"] = id.into() }
+    // Claude Code's expiry in ms; without it the CLI would renew again at once.
+    if let (Some(secs), true) = (v["expires_in"].as_i64(), creds.get("expiresAt").is_some()) {
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as i64;
+        creds["expiresAt"] = (now + secs * 1000).into();
+    }
+    Ok(access)
+}
+
 fn get(url: &str, headers: &[(&str, &str)]) -> Result<Value, String> {
     let mut req = crate::net::agent().get(url).header("accept", "application/json").header("user-agent", "Ripple");
     for (k, v) in headers { req = req.header(*k, *v) }
     let mut res = req.call().map_err(|_| "Can't reach the server".to_string())?;
     match res.status().as_u16() {
         200..=299 => {}
-        401 | 403 => return Err("Token expired: run its CLI once to refresh".into()),
+        401 => return Err(EXPIRED.into()),
+        // Refused for another reason: renewing would only spend the refresh token.
+        403 => return Err("Token refused: run its CLI once to refresh".into()),
         code => return Err(format!("The server answered {code}")),
     }
     let body = res.body_mut().read_to_string().map_err(|e| e.to_string())?;
@@ -146,10 +242,11 @@ fn window(label: &str, used: Option<f64>, resets: Option<i64>) -> Option<Window>
     Some(Window { label: label.into(), used: used?.clamp(0.0, 100.0) as f32, resets })
 }
 
-fn claude(name: String, token: &str) -> Account {
-    let auth = format!("Bearer {token}");
-    Account { name, token: token.into(), fetch: Box::new(move || {
-        get("https://api.anthropic.com/api/oauth/usage", &[("authorization", &auth), ("anthropic-beta", "oauth-2025-04-20")]).and_then(|v| found(claude_windows(&v)))
+fn claude(name: String, token: &str, saved: Option<Saved>) -> Account {
+    let token = token.to_string();
+    Account { name, token: token.clone(), renews: None, fetch: Box::new(move |renew| {
+        renewing(&token, saved.as_ref().filter(|_| renew), |t| get("https://api.anthropic.com/api/oauth/usage", &[("authorization", &format!("Bearer {t}")), ("anthropic-beta", "oauth-2025-04-20")]))
+            .and_then(|v| found(claude_windows(&v)))
     }) }
 }
 
@@ -170,10 +267,11 @@ fn claude_windows(v: &Value) -> Vec<Window> {
         .collect()
 }
 
-fn codex(name: String, token: &str, account: &str) -> Account {
-    let (auth, account) = (format!("Bearer {token}"), account.to_string());
-    Account { name, token: token.into(), fetch: Box::new(move || {
-        get("https://chatgpt.com/backend-api/wham/usage", &[("authorization", &auth), ("chatgpt-account-id", &account)]).and_then(|v| found(codex_windows(&v)))
+fn codex(name: String, token: &str, account: &str, saved: Option<Saved>) -> Account {
+    let (token, account) = (token.to_string(), account.to_string());
+    Account { name, token: token.clone(), renews: None, fetch: Box::new(move |renew| {
+        renewing(&token, saved.as_ref().filter(|_| renew), |t| get("https://chatgpt.com/backend-api/wham/usage", &[("authorization", &format!("Bearer {t}")), ("chatgpt-account-id", &account)]))
+            .and_then(|v| found(codex_windows(&v)))
     }) }
 }
 
@@ -195,7 +293,7 @@ fn span(secs: i64) -> String {
 
 fn copilot(name: String, token: &str) -> Account {
     let auth = format!("token {token}");
-    Account { name, token: token.into(), fetch: Box::new(move || {
+    Account { name, token: token.into(), renews: None, fetch: Box::new(move |_| {
         get("https://api.github.com/copilot_internal/user", &[
             ("authorization", &auth),
             ("editor-version", "vscode/1.96.2"),
@@ -220,7 +318,7 @@ fn copilot_windows(v: &Value) -> Vec<Window> {
 
 fn opencode_go(key: String) -> Account {
     let auth = format!("Bearer {key}");
-    Account { name: "OpenCode Go".into(), token: key, fetch: Box::new(move || {
+    Account { name: "OpenCode Go".into(), token: key, renews: None, fetch: Box::new(move |_| {
         get("https://opencode.ai/zen/go/v1/usage", &[("authorization", &auth)]).and_then(|v| found(opencode_windows(&v)))
     }) }
 }
@@ -234,7 +332,7 @@ fn opencode_windows(v: &Value) -> Vec<Window> {
 
 fn grok(name: String, token: &str) -> Account {
     let auth = format!("Bearer {token}");
-    Account { name, token: token.into(), fetch: Box::new(move || {
+    Account { name, token: token.into(), renews: None, fetch: Box::new(move |_| {
         get("https://cli-chat-proxy.grok.com/v1/billing?format=credits", &[("authorization", &auth), ("x-xai-token-auth", "xai-grok-cli")]).and_then(|v| found(grok_windows(&v)))
     }) }
 }
@@ -309,6 +407,39 @@ mod tests {
     }
 
     #[test]
+    fn renews_and_saves_an_expired_token() {
+        use crate::testserver::{json as reply, serve};
+        let url = serve(|r| match r.body.contains("\"refresh_token\":\"r1\"") {
+            true => reply(200, json!({"access_token": "a2", "refresh_token": "r2", "expires_in": 60})),
+            false => reply(400, json!({"error": "invalid_grant"})),
+        }, |_| String::new());
+        let path = std::env::temp_dir().join(format!("ripple-renew-{}.json", std::process::id()));
+        let real = path.with_extension("real.json");
+        std::fs::write(&real, json!({"claudeAiOauth": {"accessToken": "a1", "refreshToken": "r1", "expiresAt": 0, "scopes": ["x"]}}).to_string()).unwrap();
+        // A symlinked file (a dotfiles manager) stays a link.
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&real, &path).unwrap();
+        #[cfg(not(unix))]
+        std::fs::rename(&real, &path).unwrap();
+        let oauth: &'static Oauth = Box::leak(Box::new(Oauth { url: Box::leak(format!("{url}/token").into_boxed_str()), client: "c", scope: None }));
+        let saved = Saved { oauth, ..Saved::claude(path.clone()) };
+        let fetch = |t: &str| if t == "a2" { Ok(json!({"ok": true})) } else { Err(EXPIRED.to_string()) };
+        assert_eq!(renewing("a1", Some(&saved), fetch), Ok(json!({"ok": true})));
+        let file = read_json(path.clone()).unwrap();
+        assert_eq!((&file["claudeAiOauth"]["accessToken"], &file["claudeAiOauth"]["refreshToken"], &file["claudeAiOauth"]["scopes"]), (&json!("a2"), &json!("r2"), &json!(["x"])));
+        assert!(file["claudeAiOauth"]["expiresAt"].as_i64().unwrap() > 0);
+        // A load that still had a1 takes the saved a2 instead of spending r2 (the server would refuse it).
+        assert_eq!(renewing("a1", Some(&saved), fetch), Ok(json!({"ok": true})));
+        // A refused refresh token keeps the error and leaves the file as it was.
+        assert_eq!(renewing("a2", Some(&saved), |_| Err(EXPIRED.to_string())), Err(EXPIRED.to_string()));
+        assert!(!real.with_extension("json.ripple-tmp").exists());
+        assert_eq!(read_json(path.clone()).unwrap(), file);
+        #[cfg(unix)]
+        assert!(std::fs::symlink_metadata(&path).unwrap().file_type().is_symlink());
+        let _ = (std::fs::remove_file(&path), std::fs::remove_file(&real));
+    }
+
+    #[test]
     fn finds_every_account_once() {
         use base64::Engine;
         let home = std::env::temp_dir().join(format!("ripple-limits-{}", std::process::id()));
@@ -321,13 +452,19 @@ mod tests {
         put(".claude/.credentials.json", json!({"claudeAiOauth": {"accessToken": "c1"}}));
         put(".claude.json", json!({"oauthAccount": {"emailAddress": "a@x.com"}}));
         put("work/.credentials.json", json!({"claudeAiOauth": {"accessToken": "c2"}}));
+        put("work/.claude.json", json!({"oauthAccount": {"accountUuid": "u2"}}));
         put("work/auth.json", json!({"tokens": {"access_token": "x1", "account_id": "acc", "id_token": id_token}}));
         put("proxy/claude-a.json", json!({"type": "claude", "email": "a@x.com", "access_token": "c1"}));
         put("proxy/codex-d.json", json!({"type": "codex", "email": "d@x.com", "access_token": "x2"}));
         put("proxy/gemini.json", json!({"type": "gemini", "access_token": "g"}));
         put(".config/github-copilot/apps.json", json!({"github.com:1": {"user": "octo", "oauth_token": "gh1"}, "github.com:2": {"user": "cat", "oauth_token": "gh2"}}));
-        let names: Vec<String> = accounts(&home, &["~/work".into(), " ".into()], &home.join("proxy").to_string_lossy()).into_iter().map(|a| a.name).collect();
+        let found = accounts(&home, &["~/work".into(), " ".into()], &home.join("proxy").to_string_lossy());
         let _ = std::fs::remove_dir_all(&home);
+        // Only a CLI's own file with a known account renews: not CLIProxyAPI or Copilot.
+        let ids: Vec<Option<&str>> = found.iter().map(|a| a.renews.as_deref()).collect();
+        // ~/.claude's token is also in CLIProxyAPI's folder, so it doesn't renew either.
+        assert_eq!(ids, [None, Some("claude:u2"), Some("codex:acc"), None, None, None]);
+        let names: Vec<String> = found.into_iter().map(|a| a.name).collect();
         assert_eq!(names, ["Claude Code · a@x.com", "Claude Code", "Codex · b@x.com", "Codex · d@x.com", "GitHub Copilot · octo", "GitHub Copilot · cat"]);
     }
 }
