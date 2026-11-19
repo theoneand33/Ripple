@@ -31,7 +31,7 @@ pub fn view(s: &Island) -> El {
         .on_input_key(tab_arrows);
     row().key("search").w_full().h_full().center().child(
         row().key("searchbar").w(360.0).h(46.0).px(16.0).gap(10.0).center_y()
-            .radius(s.cfg.radius(16.0))
+            .radius(s.cfg.radius(23.0))
             .fill(fg.alpha(0.06 * fg.a)).border(1.0, fg.alpha(0.1 * fg.a))
             .child(icon(&icons::SEARCH, 16.0).color(fg.alpha(0.5 * fg.a)).a11y_hidden())
             .child(input),

@@ -147,8 +147,9 @@ fn tab_arrows(s: &mut Island, ev: &KeyEvent, tx: &mut Tx) -> bool {
 /// The Island's filled button: the text colour as fill, the Island colour as ink.
 fn button(s: &Island, key: &str, label: &str, enabled: bool) -> El {
     let (bg, fg) = (s.cfg.text(), s.cfg.bg().alpha(1.0));
+    // Round ends, as every one-line control in the Island has.
     el().key(key).role("button").label(label).focusable(enabled).disabled(!enabled)
-        .px(16.0).h(34.0).center().radius(s.cfg.radius(12.0))
+        .px(18.0).h(34.0).center().radius(s.cfg.radius(17.0))
         .fill(bg.alpha(if enabled { bg.a } else { 0.4 * bg.a }))
         .hover(fg.alpha(0.1)).press(fg.alpha(0.2)).press_scale(0.97)
         .child(text(label).font(s.cfg.font(14.0, 600.0)).color(fg).a11y_hidden())
@@ -160,8 +161,8 @@ fn field(s: &Island, key: &str, edit: &TextEdit, placeholder: &str, access: fn(&
     let input = text_input(edit, s.cfg.font(14.0, 400.0).lh(20.0)).key(key).label(placeholder).single_line().grow(1.0).min_w(0.0)
         .color(fg).placeholder(placeholder, fg.alpha(0.5 * fg.a))
         .on_edit(access).on_submit(submit).on_input_key(tab_arrows);
-    row().key(format!("{key}-field")).grow(1.0).min_w(0.0).h(36.0).px(12.0).center_y()
-        .radius(s.cfg.radius(12.0))
+    row().key(format!("{key}-field")).grow(1.0).min_w(0.0).h(36.0).px(14.0).center_y()
+        .radius(s.cfg.radius(18.0))
         .fill(fg.alpha(0.05 * fg.a)).border(1.0, fg.alpha(0.1 * fg.a))
         .child(input)
 }

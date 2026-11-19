@@ -39,7 +39,7 @@ pub fn view(s: &Island) -> El {
         let launch = app.launch.clone();
         apps = apps.child(
             el().key(format!("quick-app-{i}-{}", app.name)).role("button").label(app.name.clone()).focusable(true)
-                .h(34.0).px(14.0).center().radius(radius)
+                .h(34.0).px(16.0).center().radius(s.cfg.radius(17.0))
                 .fill(fg).hover(bg.alpha(0.1)).press(bg.alpha(0.2)).press_scale(0.97)
                 .transition(Transition::opacity())
                 .child(text(&app.name).font(s.cfg.font(13.0, 600.0)).color(bg).single_line().a11y_hidden())
