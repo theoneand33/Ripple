@@ -501,9 +501,12 @@ fn sync_events(c: &Client, want: &str, items: &[Item], pending: &[String], out: 
         }
         out.cleared.push(href.clone());
     }
-    let (stamp, query) = (utc_stamp(0), events_query(&utc_stamp(365)));
+    let (stamp, since) = (utc_stamp(0), utc_stamp(365));
+    let query = events_query(&since);
     let listed = list_objects(c, &calendar, &query, event)?;
-    upload_new(c, items, &listed, out, |uid, text| event_day(text).map(|(day, title)| new_event(uid, day, title, &stamp)))?;
+    // An event before the listed window stays here only: uploaded, the next listing would miss it and drop it.
+    let listable = |(y, m, d): (i32, u32, u32)| format!("{y:04}{m:02}{d:02}").as_str() >= &since[..8];
+    upload_new(c, items, &listed, out, |uid, text| event_day(text).filter(|(day, _)| listable(*day)).map(|(day, title)| new_event(uid, day, title, &stamp)))?;
     out.server = Some(list_objects(c, &calendar, &query, event)?);
     Ok(())
 }
@@ -698,7 +701,7 @@ mod tests {
             }
         }, |_| String::new());
         let nc = Nextcloud { url: base, user: "me".into(), password: "pw".into(), ..Nextcloud::default() };
-        let items = [item("2026-11-19 Launch", 0xcd, None), item("2026-11-20 Review", 2, None)];
+        let items = [item("2026-11-19 Launch", 0xcd, None), item("2026-11-20 Review", 2, None), item("2001-01-01 Long ago", 3, None)];
         let out = sync(&nc, Kind::Events, &items, &["/remote.php/dav/calendars/me/personal/old.ics".into()]);
         assert_eq!(out.error, None);
         assert_eq!(out.cleared, ["/remote.php/dav/calendars/me/personal/old.ics"]);
@@ -708,7 +711,7 @@ mod tests {
         ]);
         let seen = seen.lock().unwrap();
         let puts: Vec<_> = seen.iter().filter(|r| r.0 == "PUT").collect();
-        assert_eq!(puts.len(), 1, "the matching event was claimed, not uploaded again");
+        assert_eq!(puts.len(), 1, "the matching event was claimed, not uploaded again, and the old one stays local");
         assert!(puts[0].2.contains("DTSTART;VALUE=DATE:20261119") && puts[0].2.contains("SUMMARY:Launch"));
         assert!(seen.iter().any(|r| r.0 == "REPORT" && r.2.contains("<c:time-range start=\"")));
     }
