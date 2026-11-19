@@ -171,12 +171,14 @@ fn renew(s: &Saved, expired: &str) -> Result<String, String> {
     // Another load (or the CLI) renewed it already.
     if let Some(t) = creds[s.access].as_str().filter(|t| *t != expired) { return Ok(t.to_string()) }
     // A copy beside the file keeps its permissions and proves it can be saved before the old token is spent.
-    let tmp = s.path.with_extension("json.ripple-tmp");
-    std::fs::copy(&s.path, &tmp).map_err(|_| EXPIRED.to_string())?;
+    // Through a symlink (a dotfiles manager) to the real file, so the link stays a link.
+    let path = std::fs::canonicalize(&s.path).map_err(|_| EXPIRED.to_string())?;
+    let tmp = path.with_extension("json.ripple-tmp");
+    std::fs::copy(&path, &tmp).map_err(|_| EXPIRED.to_string())?;
     let saved = renew_into(s, creds).and_then(|access| {
         let text = serde_json::to_string_pretty(&file).map_err(|e| e.to_string())?;
         // The old refresh token is spent now, so a failed save falls back to writing the file in place.
-        let ok = std::fs::write(&tmp, &text).and_then(|_| std::fs::rename(&tmp, &s.path)).or_else(|_| std::fs::write(&s.path, &text));
+        let ok = std::fs::write(&tmp, &text).and_then(|_| std::fs::rename(&tmp, &path)).or_else(|_| std::fs::write(&path, &text));
         ok.map(|_| access).map_err(|_| LOST.to_string())
     });
     let _ = std::fs::remove_file(&tmp);
@@ -408,7 +410,13 @@ mod tests {
             false => reply(400, json!({"error": "invalid_grant"})),
         }, |_| String::new());
         let path = std::env::temp_dir().join(format!("ripple-renew-{}.json", std::process::id()));
-        std::fs::write(&path, json!({"claudeAiOauth": {"accessToken": "a1", "refreshToken": "r1", "expiresAt": 0, "scopes": ["x"]}}).to_string()).unwrap();
+        let real = path.with_extension("real.json");
+        std::fs::write(&real, json!({"claudeAiOauth": {"accessToken": "a1", "refreshToken": "r1", "expiresAt": 0, "scopes": ["x"]}}).to_string()).unwrap();
+        // A symlinked file (a dotfiles manager) stays a link.
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&real, &path).unwrap();
+        #[cfg(not(unix))]
+        std::fs::rename(&real, &path).unwrap();
         let oauth: &'static Oauth = Box::leak(Box::new(Oauth { url: Box::leak(format!("{url}/token").into_boxed_str()), client: "c", scope: None }));
         let saved = Saved { oauth, ..Saved::claude(path.clone()) };
         let fetch = |t: &str| if t == "a2" { Ok(json!({"ok": true})) } else { Err(EXPIRED.to_string()) };
@@ -420,9 +428,11 @@ mod tests {
         assert_eq!(renewing("a1", Some(&saved), fetch), Ok(json!({"ok": true})));
         // A refused refresh token keeps the error and leaves the file as it was.
         assert_eq!(renewing("a2", Some(&saved), |_| Err(EXPIRED.to_string())), Err(EXPIRED.to_string()));
-        assert!(!path.with_extension("json.ripple-tmp").exists());
+        assert!(!real.with_extension("json.ripple-tmp").exists());
         assert_eq!(read_json(path.clone()).unwrap(), file);
-        let _ = std::fs::remove_file(&path);
+        #[cfg(unix)]
+        assert!(std::fs::symlink_metadata(&path).unwrap().file_type().is_symlink());
+        let _ = (std::fs::remove_file(&path), std::fs::remove_file(&real));
     }
 
     #[test]
