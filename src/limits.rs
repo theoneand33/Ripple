@@ -22,12 +22,14 @@ pub struct Usage {
     pub windows: Result<Vec<Window>, String>,
 }
 
-type Job = Box<dyn FnOnce() -> Result<Vec<Window>, String> + Send>;
+/// Fetches the windows; the flag allows renewing an expired token.
+type Job = Box<dyn FnOnce(bool) -> Result<Vec<Window>, String> + Send>;
 
-/// One signed-in account: its card name, its token (to drop duplicates) and its fetch.
+/// One signed-in account: its card name, its token (to drop duplicates), whether it can renew, and its fetch.
 struct Account {
     name: String,
     token: String,
+    renews: bool,
     fetch: Job,
 }
 
@@ -35,8 +37,12 @@ struct Account {
 /// config folders in `extra_dirs`, and CLIProxyAPI's auth files in `cliproxy_dir`.
 pub fn all(extra_dirs: &[String], cliproxy_dir: &str) -> Vec<Usage> {
     let Some(home) = rune::dirs::home() else { return Vec::new() };
-    let handles: Vec<_> = accounts(&home, extra_dirs, cliproxy_dir).into_iter()
-        .map(|a| (a.name, std::thread::spawn(a.fetch))).collect();
+    let accounts = accounts(&home, extra_dirs, cliproxy_dir);
+    // Two files with one account: one may hold an older, already-used refresh token, and spending it can revoke the sign-in.
+    let sole = |name: &str| accounts.iter().filter(|a| a.renews && a.name == name).count() == 1;
+    let renew: Vec<bool> = accounts.iter().map(|a| a.renews && sole(&a.name)).collect();
+    let handles: Vec<_> = accounts.into_iter().zip(renew)
+        .map(|(a, renew)| (a.name, std::thread::spawn(move || (a.fetch)(renew)))).collect();
     handles.into_iter().map(|(name, h)| Usage { name, windows: h.join().unwrap_or_else(|_| Err("Couldn't read its limits".into())) }).collect()
 }
 
@@ -65,12 +71,12 @@ fn accounts(home: &Path, extra_dirs: &[String], cliproxy_dir: &str) -> Vec<Accou
     let mut files: Vec<PathBuf> = std::fs::read_dir(proxy).into_iter().flatten().flatten().map(|e| e.path())
         .filter(|p| p.extension().is_some_and(|e| e == "json")).collect();
     files.sort();
-    for (path, v) in files.into_iter().filter_map(|p| Some((p.clone(), read_json(p)?))) {
+    for v in files.into_iter().filter_map(read_json) {
         let (Some(token), email) = (v["access_token"].as_str(), v["email"].as_str()) else { continue };
-        let saved = |oauth| Some(Saved { path, at: "", access: "access_token", refresh: "refresh_token", oauth });
+        // CLIProxyAPI renews its own tokens.
         match v["type"].as_str().or(v["provider"].as_str()) {
-            Some("claude") => out.push(claude(named("Claude Code", email), token, saved(&CLAUDE))),
-            Some("codex") => out.push(codex(named("Codex", email), token, v["account_id"].as_str().unwrap_or_default(), saved(&CODEX))),
+            Some("claude") => out.push(claude(named("Claude Code", email), token, None)),
+            Some("codex") => out.push(codex(named("Codex", email), token, v["account_id"].as_str().unwrap_or_default(), None)),
             _ => {}
         }
     }
@@ -199,7 +205,9 @@ fn get(url: &str, headers: &[(&str, &str)]) -> Result<Value, String> {
     let mut res = req.call().map_err(|_| "Can't reach the server".to_string())?;
     match res.status().as_u16() {
         200..=299 => {}
-        401 | 403 => return Err(EXPIRED.into()),
+        401 => return Err(EXPIRED.into()),
+        // Refused for another reason: renewing would only spend the refresh token.
+        403 => return Err("Token refused: run its CLI once to refresh".into()),
         code => return Err(format!("The server answered {code}")),
     }
     let body = res.body_mut().read_to_string().map_err(|e| e.to_string())?;
@@ -217,8 +225,8 @@ fn window(label: &str, used: Option<f64>, resets: Option<i64>) -> Option<Window>
 
 fn claude(name: String, token: &str, saved: Option<Saved>) -> Account {
     let token = token.to_string();
-    Account { name, token: token.clone(), fetch: Box::new(move || {
-        renewing(&token, saved.as_ref(), |t| get("https://api.anthropic.com/api/oauth/usage", &[("authorization", &format!("Bearer {t}")), ("anthropic-beta", "oauth-2025-04-20")]))
+    Account { name, token: token.clone(), renews: saved.is_some(), fetch: Box::new(move |renew| {
+        renewing(&token, saved.as_ref().filter(|_| renew), |t| get("https://api.anthropic.com/api/oauth/usage", &[("authorization", &format!("Bearer {t}")), ("anthropic-beta", "oauth-2025-04-20")]))
             .and_then(|v| found(claude_windows(&v)))
     }) }
 }
@@ -242,8 +250,8 @@ fn claude_windows(v: &Value) -> Vec<Window> {
 
 fn codex(name: String, token: &str, account: &str, saved: Option<Saved>) -> Account {
     let (token, account) = (token.to_string(), account.to_string());
-    Account { name, token: token.clone(), fetch: Box::new(move || {
-        renewing(&token, saved.as_ref(), |t| get("https://chatgpt.com/backend-api/wham/usage", &[("authorization", &format!("Bearer {t}")), ("chatgpt-account-id", &account)]))
+    Account { name, token: token.clone(), renews: saved.is_some(), fetch: Box::new(move |renew| {
+        renewing(&token, saved.as_ref().filter(|_| renew), |t| get("https://chatgpt.com/backend-api/wham/usage", &[("authorization", &format!("Bearer {t}")), ("chatgpt-account-id", &account)]))
             .and_then(|v| found(codex_windows(&v)))
     }) }
 }
@@ -266,7 +274,7 @@ fn span(secs: i64) -> String {
 
 fn copilot(name: String, token: &str) -> Account {
     let auth = format!("token {token}");
-    Account { name, token: token.into(), fetch: Box::new(move || {
+    Account { name, token: token.into(), renews: false, fetch: Box::new(move |_| {
         get("https://api.github.com/copilot_internal/user", &[
             ("authorization", &auth),
             ("editor-version", "vscode/1.96.2"),
@@ -291,7 +299,7 @@ fn copilot_windows(v: &Value) -> Vec<Window> {
 
 fn opencode_go(key: String) -> Account {
     let auth = format!("Bearer {key}");
-    Account { name: "OpenCode Go".into(), token: key, fetch: Box::new(move || {
+    Account { name: "OpenCode Go".into(), token: key, renews: false, fetch: Box::new(move |_| {
         get("https://opencode.ai/zen/go/v1/usage", &[("authorization", &auth)]).and_then(|v| found(opencode_windows(&v)))
     }) }
 }
@@ -305,7 +313,7 @@ fn opencode_windows(v: &Value) -> Vec<Window> {
 
 fn grok(name: String, token: &str) -> Account {
     let auth = format!("Bearer {token}");
-    Account { name, token: token.into(), fetch: Box::new(move || {
+    Account { name, token: token.into(), renews: false, fetch: Box::new(move |_| {
         get("https://cli-chat-proxy.grok.com/v1/billing?format=credits", &[("authorization", &auth), ("x-xai-token-auth", "xai-grok-cli")]).and_then(|v| found(grok_windows(&v)))
     }) }
 }
