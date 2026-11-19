@@ -292,9 +292,12 @@ fn attach_console() {
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    #[cfg(windows)]
-    if !args.is_empty() { attach_console() }
-    if args.first().is_some_and(|a| a == "--test-plugin") { std::process::exit(plugins::test_cli(&args[1..])) }
+    if args.first().is_some_and(|a| a == "--test-plugin") {
+        // Only here: an attached GUI process dies with its terminal, and this path exits at once.
+        #[cfg(windows)]
+        attach_console();
+        std::process::exit(plugins::test_cli(&args[1..]))
+    }
     #[cfg(target_os = "linux")]
     let wayland = {
         let wayland = std::env::var_os("WAYLAND_DISPLAY").is_some();
