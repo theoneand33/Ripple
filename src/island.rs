@@ -1599,6 +1599,15 @@ mod tests {
     }
 
     #[test]
+    fn the_dock_fits_the_canvas_with_every_tab_visible() {
+        let mut s = island(Config::default());
+        s.mode = Mode::Large;
+        assert_eq!(s.cfg.visible_tabs().len(), Tab::ALL.len());
+        let [x, _, w, _] = s.dock_rect().unwrap();
+        assert!(x >= 4.0 && x + w <= CANVAS.0 - 4.0, "dock spans {x}..{}", x + w);
+    }
+
+    #[test]
     fn crossing_from_the_island_to_its_dock_keeps_it_large() {
         let mut s = island(Config { standby: false, ..Config::default() });
         let mut tx = Tx::default();
