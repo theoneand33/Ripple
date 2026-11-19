@@ -7,7 +7,6 @@ mod island;
 mod limits;
 #[cfg(target_os = "macos")]
 mod mac;
-mod migrate;
 mod net;
 mod nextcloud;
 mod platform;
@@ -52,7 +51,8 @@ fn tray_pick(island: &Host, id: &str) {
         // show, not open: bringing the Island back mustn't take focus from the app in use.
         "toggle" => if island.is_visible() { island.hide() } else { island.show() },
         "settings" => island.update(|s, _| if let Some(w) = &s.settings { w.open() }),
-        _ => island.quit(),
+        // Saves a note typed in the last 2 s first; on the UI thread, so the save lands before the quit.
+        _ => { let h = island.clone(); island.update(move |s, _| { s.store.flush(); h.quit() }) }
     }
 }
 

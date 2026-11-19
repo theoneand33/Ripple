@@ -102,7 +102,7 @@ fn dir(var: &str, fallback: PathBuf) -> PathBuf {
 }
 
 /// A path typed by the user, with `~` for the home folder.
-fn expand(home: &Path, p: &str) -> PathBuf {
+pub fn expand(home: &Path, p: &str) -> PathBuf {
     match p.strip_prefix("~/").or_else(|| p.strip_prefix("~\\")) {
         Some(rest) => home.join(rest),
         None if p == "~" => home.into(),
@@ -260,12 +260,7 @@ fn iso(s: &str) -> Option<i64> {
         let m = if s.get(i + 3..i + 4) == Some(":") { i + 4 } else { i + 3 };
         Some((n(i + 1..i + 3)? * 3600 + n(m..m + 2)? * 60) * if &s[i..=i] == "-" { -1 } else { 1 })
     }).unwrap_or(0);
-    // Days from 1970-01-01 to y-m-d (Howard Hinnant's days_from_civil).
-    let y = if m <= 2 { y - 1 } else { y };
-    let era = y.div_euclid(400);
-    let yoe = y - era * 400;
-    let doy = (153 * ((m + 9) % 12) + 2) / 5 + d - 1;
-    let days = era * 146_097 + yoe * 365 + yoe / 4 - yoe / 100 + doy - 719_468;
+    let days = crate::nextcloud::days_from_civil(i32::try_from(y).ok()?, m as u32, d as u32);
     Some(days * 86_400 + secs - offset)
 }
 

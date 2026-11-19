@@ -1,67 +1,24 @@
 ## 👋 Welcome to Ripple
 
-### Island
-
-##### *The part of the interface you interact with is called the Island.*
-
-<img width="183" height="61" alt="Screenshot 2025-12-27 at 5 06 29 PM" src="https://github.com/user-attachments/assets/ab03012c-6ac1-42ed-a85a-b0b31fd6ff58" />
-
-## There are 3 main modes in the interface
-
-### Large Mode
-
-##### *When you click on the Island this mode will be active. It's the mode you will use the most, and it contains all Tabs you use.*
-
-<img width="430" height="227" alt="Screenshot 2025-12-27 at 4 59 29 PM" src="https://github.com/user-attachments/assets/df53bba4-c779-4cae-95c8-3959aaac108c" />
-
-### Quick Mode
-
-##### *When you hover over the Island you'll see this. Information like time, weather, and battery alerts will show here. If music is playing, it will also show "Now Playing" info with a smooth expansion and hover-activated playback controls.*
-
-<img width="364" height="124" alt="Screenshot 2025-12-27 at 5 00 12 PM" src="https://github.com/user-attachments/assets/e17da264-4306-4d77-b071-0d9e5388d074" />
+The bar at the top of your screen is the **Island**. It has three modes.
 
 ### Still Mode
 
-##### *This is the idle mode you see when the Island is inactive. It's now more subtle and smaller (170px) to stay out of your way until needed.*
+The small idle state. With standby mode on (the default), the Island rests in Quick Mode instead. With "Hide when inactive" on, it disappears until something happens.
 
-<img width="268" height="103" alt="Screenshot 2025-12-27 at 4 59 51 PM" src="https://github.com/user-attachments/assets/244077b5-f63b-4492-a0d0-743dbaf5526a" />
+### Quick Mode
 
-## These are 2 optional modes
+Hover over the Island. It shows the time, weather and battery, or the current track with playback controls while music plays.
 
-### Stealth Mode 
+### Large Mode
 
-##### *A mode that hides the Island when it's inactive (completely transparent).*
+Click the Island. It shows the tabs: Browser Search, Workflows & QA, Overview, AI Assistant, Clipboard, Tasks, Calendar, Notes, System, AI Limits, Shelf, T3 Code, Plugins and more.
 
-https://github.com/user-attachments/assets/44316ba5-34a7-4eca-9fe0-6ce6bad3c257
-
-### Standby Mode 
-
-##### *A mode that keeps the Quick View (time/weather/battery) always visible, replacing the idle Still mode.*
-
-https://github.com/user-attachments/assets/95317766-8599-4da4-9078-6b2a48af64f8
-
-## These are the parts of the Island
-
-### Tabs
-
-##### *The Tabs are tiles that you switch through in the interface using the arrow keys or by scrolling horizontally with your mouse/trackpad.*
-
-https://github.com/user-attachments/assets/048ef089-c975-4a08-81e6-1f62f1795d12
-
-### Quick Apps
-
-##### *A Tab with 4 apps of your choosing, so you can quickly access them.*
-
-<img width="443" height="217" alt="Screenshot 2025-12-27 at 5 02 41 PM" src="https://github.com/user-attachments/assets/e2569751-f892-472c-8df6-ae2a3effd4ce" />
+- Left and Right arrows, or the mouse wheel, switch tabs.
+- Ctrl + 1 to 8 jumps to one of the first eight tabs.
 
 ### Settings
 
-##### *It's the last Tab and it allows you to adjust everything from colors and positioning to features like **Auto Launch on Boot** (available for Windows and Linux).*
+Settings open in their own window: click the gear on the Overview tab, or pick Settings in the tray menu. Changes apply right away. There you can reorder and hide tabs, pick a theme and position, set your weather location, and connect Nextcloud, an AI provider or T3 Code.
 
-https://github.com/user-attachments/assets/303dbcd0-37c8-457c-9372-73f756dbd472
-
-### Shortcuts
-
-##### *Just press Control + the number of the Tab to jump to it.*
-
-https://github.com/user-attachments/assets/e13465af-ea02-4986-9283-e8a0ff23f5dd
+See the [README](README.md) for every feature.

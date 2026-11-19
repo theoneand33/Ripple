@@ -945,7 +945,8 @@ impl Island {
             self.next_second = now + 1.0;
             tx.wake_at(self.next_second);
             if self.mode == Mode::Large && self.tab == Tab::Plugins { changed |= self.plugins.tick() }
-            // A note uploads once typing in it pauses.
+            // A note being typed saves once a second, and uploads once typing pauses.
+            if self.notes.edited.is_some() { self.store.flush() }
             if self.notes.edited.is_some_and(|t| t.elapsed().as_secs() >= 2) {
                 self.notes.edited = None;
                 self.nextcloud_sync(crate::nextcloud::Kind::Notes);

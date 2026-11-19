@@ -77,7 +77,7 @@ impl TryFrom<u8> for Tab {
 }
 
 /// A saved list of tab ids, without the ones this version no longer has.
-pub fn known_tabs<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<Tab>, D::Error> {
+fn known_tabs<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<Tab>, D::Error> {
     Ok(Vec::<u8>::deserialize(d)?.into_iter().filter_map(|id| Tab::try_from(id).ok()).collect())
 }
 
@@ -462,6 +462,18 @@ pub fn parse_color(s: &str) -> Option<Color> {
     }
 }
 
+/// The saved settings. Settings this version can't read (a hand edit, a newer version's) are
+/// copied to `prefs.json.bad` first, as the next save replaces them with the defaults.
+fn saved(prefs: &Prefs) -> Config {
+    if let Some(cfg) = prefs.get::<Config>("settings") { return cfg }
+    if prefs.contains("settings") && let Some(path) = prefs.path() {
+        let mut bad = path.as_os_str().to_owned();
+        bad.push(".bad");
+        if let Err(e) = std::fs::copy(path, &bad) { eprintln!("Ripple: could not back up unreadable settings: {e}") }
+    }
+    Config::default()
+}
+
 struct Inner {
     cfg: Config,
     prefs: Prefs,
@@ -475,12 +487,7 @@ impl Store {
     /// Headless runs (snapshots, tests) keep nothing on disk.
     pub fn open() -> Store {
         let prefs = if rune::is_headless() { Prefs::memory() } else { Prefs::open(APP_ID) };
-        let saved = prefs.get::<Config>("settings");
-        // First launch after the Electron app: its settings live in the same folder.
-        let imported = saved.is_none().then(|| prefs.path().and_then(|p| p.parent()).and_then(crate::migrate::electron_settings)).flatten();
-        let store = Store(Arc::new(Mutex::new(Inner { cfg: saved.or(imported.clone()).unwrap_or_default().normalized(), prefs })));
-        if imported.is_some() { store.update(|_| {}); }
-        store
+        Store(Arc::new(Mutex::new(Inner { cfg: saved(&prefs).normalized(), prefs })))
     }
 
     #[cfg(test)]
@@ -506,6 +513,17 @@ impl Store {
         }
         inner.cfg.clone()
     }
+
+    /// Changes the settings in memory only, for edits made per keystroke; `flush` or the next
+    /// `update` saves them, so each key doesn't rewrite the file and wait for the disk.
+    pub fn update_unsaved(&self, f: impl FnOnce(&mut Config)) -> Config {
+        let mut inner = self.0.lock().unwrap();
+        f(&mut inner.cfg);
+        inner.cfg.clone()
+    }
+
+    /// Saves what `update_unsaved` changed.
+    pub fn flush(&self) { self.update(|_| {}); }
 
     /// Where Rune keeps this app's files, for the T3 token cache and the app cache.
     pub fn dir(&self) -> Option<std::path::PathBuf> {
@@ -557,6 +575,32 @@ mod tests {
         let mode = std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(mode, 0o700);
+    }
+
+    #[test]
+    fn unsaved_changes_reach_the_file_on_flush() {
+        let dir = std::env::temp_dir().join(format!("ripple-flush-{}", std::process::id()));
+        let file = dir.join("prefs.json");
+        let store = Store(Arc::new(Mutex::new(Inner { cfg: Config::default(), prefs: Prefs::at(&file) })));
+        store.update_unsaved(|c| c.notes.push(Item::new("typed")));
+        let before = std::fs::read_to_string(&file).unwrap_or_default();
+        store.flush();
+        let after = std::fs::read_to_string(&file).unwrap_or_default();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(!before.contains("typed") && after.contains("typed"));
+    }
+
+    #[test]
+    fn unreadable_settings_are_backed_up_before_defaults_replace_them() {
+        let dir = std::env::temp_dir().join(format!("ripple-bad-prefs-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("prefs.json");
+        std::fs::write(&file, r#"{"settings": {"island_x": "50", "notes": ["keep me"]}}"#).unwrap();
+        let cfg = saved(&Prefs::at(&file));
+        let backup = std::fs::read_to_string(dir.join("prefs.json.bad")).unwrap_or_default();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(cfg, Config::default());
+        assert!(backup.contains("keep me"));
     }
 
     #[test]

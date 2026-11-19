@@ -73,7 +73,7 @@ solid!(PAUSE, "pause", r#"<rect x="14" y="4" width="4" height="16" rx="1"/><rect
 solid!(SKIP_BACK, "skip-back", r#"<polygon points="19 20 9 12 19 4 19 20"/><line x1="5" x2="5" y1="19" y2="5"/>"#);
 solid!(SKIP_FORWARD, "skip-forward", r#"<polygon points="5 4 15 12 5 20 5 4"/><line x1="19" x2="19" y1="5" y2="19"/>"#);
 
-/// The icon for a weather condition's text, as weatherapi.com words it.
+/// The icon for a weather condition's text, as `net::wmo_status` words it.
 pub fn weather(status: &str) -> &'static Icon {
     let s = status.to_lowercase();
     let has = |words: &[&str]| words.iter().any(|w| s.contains(w));

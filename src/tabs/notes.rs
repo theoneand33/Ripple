@@ -51,7 +51,8 @@ impl Island {
     pub fn note_edited(&mut self) {
         let (i, text) = (self.notes.index, self.notes.editor.text.clone());
         if self.cfg.notes.get(i).is_some_and(|n| n.text != text) {
-            self.save(|c| c.notes[i].text = text);
+            // Saved to disk once a second by `Island::poll`, not on every key.
+            self.cfg = self.store.update_unsaved(|c| c.notes[i].text = text);
             self.notes.edited = Some(std::time::Instant::now());
         }
     }

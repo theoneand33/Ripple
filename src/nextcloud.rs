@@ -573,7 +573,7 @@ fn new_event(uid: &str, (y, m, d): (i32, u32, u32), title: &str, stamp: &str) ->
 }
 
 /// Days since 1970-01-01, from Howard Hinnant's `days_from_civil`.
-fn days_from_civil(y: i32, m: u32, d: u32) -> i64 {
+pub fn days_from_civil(y: i32, m: u32, d: u32) -> i64 {
     let y = i64::from(y) - i64::from(m <= 2);
     let era = y.div_euclid(400);
     let yoe = y - era * 400;

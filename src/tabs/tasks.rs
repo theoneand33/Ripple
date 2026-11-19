@@ -16,9 +16,10 @@ fn add_task(s: &mut Island, _: &mut Tx) {
     s.nextcloud_sync(Kind::Tasks);
 }
 
-fn tick(s: &mut Island, i: usize) {
+/// By key, not index: a sync may have removed a task above it since the list was drawn.
+fn tick(s: &mut Island, key: u64) {
     s.save(|c| {
-        if i >= c.tasks.len() { return }
+        let Some(i) = c.tasks.iter().position(|t| t.key == key) else { return };
         if let Some(r) = c.tasks.remove(i).remote { c.nextcloud.done_tasks.push(r.id) }
     });
     s.nextcloud_sync(Kind::Tasks);
@@ -32,14 +33,14 @@ pub fn view(s: &Island) -> El {
     }
     if s.cfg.tasks.is_empty() { list = list.child(empty(s, "No tasks yet")) }
     for (i, task) in s.cfg.tasks.iter().enumerate() {
-        let task = &task.text;
+        let (key, task) = (task.key, &task.text);
         // Keyed by text and occurrence, not index, so ticking one off leaves the rows below in place.
         let n = s.cfg.tasks[..i].iter().filter(|t| t.text == *task).count();
         list = list.child(
             row().key(format!("task-{task}-{n}")).w_full().px(12.0).py(8.0).gap(10.0).center_y()
                 .radius(s.cfg.radius(12.0)).fill(fg.alpha(0.05 * fg.a))
                 .transition(Transition::opacity())
-                .child(checkbox(s, "done", &format!("Done: {task}"), false).on_press(move |s: &mut Island| tick(s, i)))
+                .child(checkbox(s, "done", &format!("Done: {task}"), false).on_press(move |s: &mut Island| tick(s, key)))
                 .child(text(task).font(s.cfg.font(14.0, 500.0)).color(fg).grow(1.0).min_w(0.0).wrap_anywhere()),
         );
     }

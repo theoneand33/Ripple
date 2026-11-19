@@ -23,20 +23,54 @@ pub struct Weather {
     pub status: String,
 }
 
+/// The current weather from Open-Meteo, which needs no API key.
 pub fn weather(location: &str, unit: &str) -> Option<Weather> {
-    let mut res = agent()
-        .get("https://api.weatherapi.com/v1/current.json")
-        .query("key", "0b18c67c443543e0a6045401250911")
-        .query("q", location)
-        .query("aqi", "no")
-        .call()
-        .ok()?;
-    let data: Value = serde_json::from_str(&res.body_mut().read_to_string().ok()?).ok()?;
-    let key = if unit == "f" { "temp_f" } else { "temp_c" };
+    weather_from("https://geocoding-api.open-meteo.com", "https://api.open-meteo.com", location, unit)
+}
+
+fn get_json(req: ureq::RequestBuilder<ureq::typestate::WithoutBody>) -> Option<Value> {
+    let mut res = req.call().ok()?;
+    if !res.status().is_success() { return None }
+    serde_json::from_str(&res.body_mut().read_to_string().ok()?).ok()
+}
+
+/// `location` is `lat,lon` or a place name; only the part before a comma is looked up
+/// ("Paris, France" finds Paris), as Open-Meteo's search takes one name.
+fn weather_from(geocoding: &str, forecast: &str, location: &str, unit: &str) -> Option<Weather> {
+    let coords = location.split_once(',').and_then(|(a, b)| Some((a.trim().parse::<f64>().ok()?, b.trim().parse::<f64>().ok()?)));
+    let (lat, lon) = match coords {
+        Some(c) => c,
+        None => {
+            let name = location.split(',').next().unwrap_or(location).trim();
+            let found = get_json(agent().get(format!("{geocoding}/v1/search")).query("name", name).query("count", "1"))?;
+            let place = &found["results"][0];
+            (place["latitude"].as_f64()?, place["longitude"].as_f64()?)
+        }
+    };
+    let data = get_json(agent().get(format!("{forecast}/v1/forecast"))
+        .query("latitude", lat.to_string()).query("longitude", lon.to_string())
+        .query("current", "temperature_2m,weather_code")
+        .query("temperature_unit", if unit == "f" { "fahrenheit" } else { "celsius" }))?;
+    let current = &data["current"];
     Some(Weather {
-        temp: data["current"][key].as_f64().map(|t| t.round() as i32),
-        status: data["current"]["condition"]["text"].as_str().unwrap_or_default().into(),
+        temp: current["temperature_2m"].as_f64().map(|t| t.round() as i32),
+        status: current["weather_code"].as_u64().map_or("", wmo_status).into(),
     })
+}
+
+/// A WMO weather code in the words `icons::weather` reads.
+fn wmo_status(code: u64) -> &'static str {
+    match code {
+        0 => "Clear",
+        1 | 2 => "Partly cloudy",
+        3 => "Overcast",
+        45 | 48 => "Fog",
+        51..=57 => "Drizzle",
+        61..=67 | 80..=82 => "Rain",
+        71..=77 | 85 | 86 => "Snow",
+        95..=99 => "Thunderstorm",
+        _ => "",
+    }
 }
 
 const SYSTEM_PROMPT: &str = "You are Ripple, a sleek and helpful desktop AI assistant. Your goal is to provide accurate, concise, and beautifully formatted answers that fit well in a compact desktop widget. \n- For general inquiries: Keep it to 2-4 sentences.\n- For complex or code-related questions: Provide detailed answers with Markdown code blocks, but stay as efficient as possible.\n- Use Markdown for bolding, lists, and headers to make information easy to scan.";
@@ -163,6 +197,24 @@ mod tests {
         assert_eq!(sse_delta(r#"data: {"choices":[{"delta":{"content":"say [DONE]"}}]}"#), Sse::Delta("say [DONE]".into()));
         assert_eq!(sse_delta(": keep-alive"), Sse::Other);
         assert_eq!(sse_delta("data: {broken"), Sse::Other);
+    }
+
+    #[test]
+    fn weather_looks_up_the_place_then_its_current_weather() {
+        use crate::testserver::{json, serve};
+        let base = serve(|r| match r.path.as_str() {
+            "/v1/search?name=Paris&count=1" => json(200, json!({ "results": [{ "latitude": 48.85, "longitude": 2.35 }] })),
+            "/v1/search?name=Nowhere&count=1" => json(200, json!({})),
+            p if p.starts_with("/v1/forecast?latitude=48.85&longitude=2.35&") && p.contains("temperature_unit=celsius") =>
+                json(200, json!({ "current": { "temperature_2m": 17.6, "weather_code": 61 } })),
+            p if p.starts_with("/v1/forecast?latitude=1.5&longitude=-2&") && p.contains("temperature_unit=fahrenheit") =>
+                json(200, json!({ "current": { "temperature_2m": 70.2, "weather_code": 2 } })),
+            _ => json(404, json!({})),
+        }, |_| String::new());
+        assert_eq!(weather_from(&base, &base, "Paris, France", "c"), Some(Weather { temp: Some(18), status: "Rain".into() }));
+        assert_eq!(weather_from(&base, &base, "1.5, -2", "f"), Some(Weather { temp: Some(70), status: "Partly cloudy".into() }));
+        assert_eq!(weather_from(&base, &base, "Nowhere", "c"), None);
+        assert!(std::ptr::eq(crate::icons::weather(wmo_status(0)), crate::icons::weather("sunny")));
     }
 
     #[test]
