@@ -189,7 +189,14 @@ fn renew_into(s: &Saved, creds: &mut Value) -> Result<String, String> {
     let mut body = serde_json::json!({"grant_type": "refresh_token", "refresh_token": refresh, "client_id": s.oauth.client});
     if let Some(scope) = s.oauth.scope { body["scope"] = scope.into() }
     let mut res = crate::net::agent().post(s.oauth.url).header("content-type", "application/json").header("user-agent", "Ripple")
-        .send(body.to_string()).map_err(|_| "Can't reach the server".to_string())?;
+        .send(body.to_string()).map_err(|e| {
+            use ureq::{Error as E, Timeout as T};
+            match e {
+                // The request never left, so the refresh token is unspent.
+                E::HostNotFound | E::ConnectionFailed | E::Timeout(T::Resolve | T::Connect) => "Can't reach the server".to_string(),
+                _ => "Renewal didn't finish: if it stays expired, sign in to its CLI again".to_string(),
+            }
+        })?;
     if !res.status().is_success() { return Err(EXPIRED.into()) }
     // From here the old refresh token is spent.
     let v: Value = res.body_mut().read_to_string().ok().and_then(|b| serde_json::from_str(&b).ok()).ok_or(LOST)?;
