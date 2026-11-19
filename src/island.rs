@@ -791,7 +791,7 @@ impl Island {
         let url = self.cfg.bg_image.trim().to_string();
         let Some(me) = self.me.clone() else { return };
         if url.is_empty() || url == "none" { return }
-        std::thread::spawn(move || fetch_image(&me, url.clone(), move |s, image| if s.cfg.bg_image.trim() == url { s.background = Some(image) }));
+        std::thread::spawn(move || fetch_image(&me, url.clone(), false, move |s, image| if s.cfg.bg_image.trim() == url { s.background = Some(image) }));
     }
 
     // --- The clock ---
@@ -920,7 +920,7 @@ impl Island {
         if old_art != new_art {
             self.art = None;
             if let (Some(url), Some(me)) = (new_art, self.me.clone()) {
-                std::thread::spawn(move || fetch_image(&me, url.clone(), move |s, image| {
+                std::thread::spawn(move || fetch_image(&me, url.clone(), true, move |s, image| {
                     // The track may have changed while the cover loaded.
                     if s.track.as_ref().and_then(|t| t.artwork_url.as_deref()) == Some(url.as_str()) { s.art = Some(image) }
                 }));
@@ -1117,8 +1117,11 @@ pub fn weekday(year: i32, month: u32, day: u32) -> u32 {
 }
 
 /// Fetches an image (blocking) and hands it, loaded, to `put` on the UI thread.
-pub fn fetch_image(me: &Host, url: String, put: impl FnOnce(&mut Island, Image) + Send + 'static) {
+/// `foreign` images come from other apps or hosts: raster only, since Rune bounds neither SVGZ
+/// expansion nor the local files an SVG may reference.
+pub fn fetch_image(me: &Host, url: String, foreign: bool, put: impl FnOnce(&mut Island, Image) + Send + 'static) {
     let Some(bytes) = crate::net::fetch_image(&url) else { return };
+    if foreign && crate::net::is_vector(&bytes) { return }
     me.update(move |s, _| if let Some(image) = s.images.as_ref().map(|i| i.load(bytes)) { put(s, image) });
 }
 

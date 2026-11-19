@@ -151,7 +151,50 @@ fn request(method: &str, url: &str, headers: &[(&str, &str)], body: Option<&str>
     Ok(data)
 }
 
+/// Loopback ports are open to every user on the machine: before a token goes to one, make sure
+/// the program listening there is ours.
+fn verify_peer(device: &T3Device) -> Result<(), String> {
+    let base = base(device);
+    let Some(port) = loopback_port(origin_of(&base)) else { return Ok(()) };
+    #[cfg(target_os = "linux")]
+    {
+        // The real uid from status: /proc/self itself belongs to root in non-dumpable processes.
+        let status = std::fs::read_to_string("/proc/self/status").map_err(|e| e.to_string())?;
+        let uid = status.lines().find_map(|l| l.strip_prefix("Uid:")?.split_whitespace().next()?.parse().ok()).ok_or("Unknown user")?;
+        let tables: Vec<String> = ["/proc/net/tcp", "/proc/net/tcp6"].iter().filter_map(|p| std::fs::read_to_string(p).ok()).collect();
+        match listeners_ours(&tables, port, uid) {
+            Some(true) => Ok(()),
+            Some(false) => Err("Another user's program holds T3's port".into()),
+            None => Err(format!("Could not reach {}", origin_of(&base))),
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        // shortcut: only the detected device is re-checked, against a public id; upgrade to a peer-owner check (lsof, GetExtendedTcpTable) per OS.
+        let _ = port;
+        if device.name != LOCAL_NAME { return Ok(()) }
+        let id = t3_home().and_then(|h| std::fs::read_to_string(h.join("userdata").join("environment-id")).ok()).unwrap_or_default();
+        let answer = request("GET", &format!("{base}/.well-known/t3/environment"), &[], None)?;
+        if id.trim().is_empty() || answer["environmentId"].as_str() != Some(id.trim()) { return Err("Another program holds T3's port".into()) }
+        Ok(())
+    }
+}
+
+/// Whether every TCP listener on `port` in /proc/net/tcp{,6} belongs to `uid` (or root, which
+/// owns Docker's port proxy and outranks us anyway). None when nothing listens there.
+#[cfg(target_os = "linux")]
+fn listeners_ours(tables: &[String], port: u16, uid: u32) -> Option<bool> {
+    let owners: Vec<u32> = tables.iter().flat_map(|t| t.lines().skip(1)).filter_map(|line| {
+        let f: Vec<&str> = line.split_whitespace().collect();
+        let local_port = u16::from_str_radix(f.get(1)?.rsplit(':').next()?, 16).ok()?;
+        // State 0A is LISTEN.
+        (local_port == port && *f.get(3)? == "0A").then(|| f.get(7)?.parse().ok()).flatten()
+    }).collect();
+    (!owners.is_empty()).then(|| owners.iter().all(|&o| o == uid || o == 0))
+}
+
 fn authed(device: &T3Device, method: &str, path: &str, body: Option<&Value>) -> Result<Value, String> {
+    verify_peer(device)?;
     let auth = bearer(device);
     let mut headers = vec![("authorization", auth.as_str())];
     if body.is_some() { headers.push(("content-type", "application/json")) }
@@ -393,10 +436,24 @@ fn local_origin(home: &std::path::Path) -> Option<String> {
     let runtime: Value = serde_json::from_str(&std::fs::read_to_string(home.join("userdata").join("server-runtime.json")).ok()?).ok()?;
     let origin = runtime["origin"].as_str()?.trim().trim_end_matches('/');
     // Loopback only: the token minted for it must never leave this machine.
-    // Exactly a loopback host and an optional numeric port: no userinfo, path or query to smuggle another host in.
+    loopback_port(origin).map(|_| origin.to_string())
+}
+
+/// The port of an `http://` origin that is exactly a loopback host and an optional numeric port:
+/// no userinfo, path or query to smuggle another host in.
+fn loopback_port(origin: &str) -> Option<u16> {
     let authority = origin.strip_prefix("http://")?;
-    let port_ok = |p: &str| p.is_empty() || p.strip_prefix(':').is_some_and(|d| !d.is_empty() && d.bytes().all(|b| b.is_ascii_digit()));
-    ["127.0.0.1", "localhost", "[::1]"].iter().any(|h| authority.strip_prefix(h).is_some_and(port_ok)).then(|| origin.to_string())
+    let (host, port) = match authority.rsplit_once(':') {
+        Some((h, p)) if !h.ends_with(':') => (h, Some(p)),
+        _ => (authority, None),
+    };
+    let ip = host.strip_prefix('[').and_then(|h| h.strip_suffix(']')).unwrap_or(host);
+    let loopback = host.eq_ignore_ascii_case("localhost") || ip.parse::<std::net::IpAddr>().is_ok_and(|a| a.is_loopback());
+    if !loopback { return None }
+    match port {
+        None => Some(80),
+        Some(p) => p.bytes().all(|b| b.is_ascii_digit()).then(|| p.parse().ok()).flatten(),
+    }
 }
 
 /// The T3 Code installed on this machine, with a token minted by its own `t3` CLI.
@@ -422,6 +479,7 @@ pub fn detect_local() -> Option<T3Device> {
 
 /// initialize, initialized, tools/call. `Ok(None)` means the token was refused (401).
 fn mcp_call(device: &T3Device, token: &str, name: &str, args: &Value) -> Result<Option<Value>, String> {
+    verify_peer(device)?;
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .timeout_global(Some(Duration::from_secs(30)))
         .http_status_as_error(false)
@@ -501,6 +559,32 @@ mod tests {
             assert_eq!(local_origin(&home), None, "{bad}");
         }
         let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn loopback_ports_are_read_from_exact_origins() {
+        assert_eq!(loopback_port("http://127.0.0.1:3773"), Some(3773));
+        assert_eq!(loopback_port("http://localhost"), Some(80));
+        assert_eq!(loopback_port("http://[::1]:8080"), Some(8080));
+        assert_eq!(loopback_port("http://LOCALHOST:1"), Some(1));
+        assert_eq!(loopback_port("http://127.0.0.2:3773"), Some(3773));
+        for other in ["https://127.0.0.1:3773", "http://127.0.0.1.evil.example", "http://127.0.0.1:99999", "http://t3.example:3773", "http://127.0.0.1:3773@evil.example", "http://127.0.0.1:3773/x", "http://127.0.0.1:"] {
+            assert_eq!(loopback_port(other), None, "{other}");
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn only_our_own_listeners_get_the_token() {
+        let header = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n";
+        let row = |port: &str, st: &str, uid: u32| format!("   0: 0100007F:{port} 00000000:0000 {st} 00000000:00000000 00:00000000 00000000  {uid}        0 1 1 0000000000000000 100 0 0 10 0\n");
+        let ours = format!("{header}{}{}", row("0EBD", "0A", 1000), row("0EBD", "01", 1001));
+        assert_eq!(listeners_ours(&[ours], 3773, 1000), Some(true), "a connection by someone else is not a listener");
+        let squatted = format!("{header}{}", row("0EBD", "0A", 1001));
+        assert_eq!(listeners_ours(&[squatted], 3773, 1000), Some(false));
+        let docker = format!("{header}{}", row("0EBD", "0A", 0));
+        assert_eq!(listeners_ours(&[docker], 3773, 1000), Some(true));
+        assert_eq!(listeners_ours(&[format!("{header}{}", row("0EBE", "0A", 1000))], 3773, 1000), None, "nothing on 3773");
     }
 
     #[test]
