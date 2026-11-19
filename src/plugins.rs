@@ -16,14 +16,15 @@ function ui.row(children) return node("row", children) end
 function ui.col(children) return node("col", children) end
 function ui.button(label, on_press, opts) local t = opts or {}; t.label = tostring(label); t.on_press = on_press; return node("button", t) end
 function ui.bar(value) return node("bar", { value = value }) end
--- Past the time budget, errors pass through pcall, xpcall and coroutine.resume, so a plugin can't catch its stop.
+-- Past the time budget, errors pass through pcall, xpcall, coroutine.resume and load's reader, so a plugin can't catch its stop.
 do
   local expired = __ripple_expired; __ripple_expired = nil
   local function check(ok, ...) if not ok and expired() then error((...), 0) end return ok, ... end
-  local pcall0, xpcall0, resume0 = pcall, xpcall, coroutine.resume
+  local pcall0, xpcall0, resume0, load0 = pcall, xpcall, coroutine.resume, load
   pcall = function(...) return check(pcall0(...)) end
   xpcall = function(...) return check(xpcall0(...)) end
   coroutine.resume = function(...) return check(resume0(...)) end
+  load = function(...) return check(load0(...)) end -- fails as nil, msg
 end
 "#;
 
@@ -302,11 +303,12 @@ mod tests {
         p.press_key("x");
         assert!(p.error.unwrap().contains("stopped"));
         let mut p = plugin(r#"return { view = function() return ui.button("x", function()
-            while true do pcall(function() while true do end end); coroutine.resume(coroutine.create(function() while true do end end)) end
+            while true do pcall(function() while true do end end); coroutine.resume(coroutine.create(function() while true do end end)); load(function() while true do end end) end
         end) end }"#);
         p.press_key("x");
         assert!(p.error.unwrap().contains("stopped"), "pcall can't catch the stop");
         assert!(plugin(r#"return { view = function() local ok = pcall(error, "x"); return ui.text(tostring(ok)) end }"#).error.is_none(), "pcall still works in time");
+        assert!(plugin(r#"return { view = function() return ui.text(tostring(load("return 1")())) end }"#).error.is_none(), "load still works");
         assert!(plugin("return { view = function() local t = ui.row {}; t[1] = t; return t end }").error.unwrap().contains("deeper"));
         assert!(plugin(r#"return { view = function() local a = ui.text("x"); for _ = 1, 32 do a = ui.row { a, a } end; return a end }"#).error.unwrap().contains("more than"));
     }
