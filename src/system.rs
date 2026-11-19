@@ -41,6 +41,15 @@ fn command(program: &str) -> Command {
     cmd
 }
 
+/// A path typed by the user, with `~` for the home folder.
+pub fn expand_home(home: &std::path::Path, p: &str) -> std::path::PathBuf {
+    match p.strip_prefix("~/").or_else(|| p.strip_prefix("~\\")) {
+        Some(rest) => home.join(rest),
+        None if p == "~" => home.into(),
+        None => p.into(),
+    }
+}
+
 /// A status tool that runs longer than this is killed, so a hung one can't stall its poller.
 const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
@@ -188,6 +197,7 @@ pub struct Track {
     pub artwork_url: Option<String>,
     pub playing: bool,
     pub paused: bool,
+    /// The app it plays in, which a cover press opens; empty when unknown.
     pub source: String,
     /// Position and length in whole seconds, when the player reports a length.
     pub progress: Option<(u32, u32)>,
@@ -246,7 +256,7 @@ pub fn media() -> Option<Track> {
         playing: status == "playing",
         paused: status == "paused",
         // Not the MPRIS name: any bus client can claim one, and a cover press would launch it.
-        source: "System".into(),
+        source: String::new(),
         // playerctl reports microseconds.
         progress: progress(micros(6), micros(7)),
     })
@@ -348,7 +358,7 @@ pub fn media() -> Option<Track> {
             artwork_url: Some(field("Artwork")).filter(|a| !a.is_empty()),
             playing,
             paused: !playing,
-            source: or(field("Source"), "System"),
+            source: field("Source"),
             progress: progress(data["Position"].as_f64(), data["Length"].as_f64()),
         });
     }
@@ -709,7 +719,6 @@ fn parse_pmset(out: &str) -> Option<(u8, bool)> {
     Some((first_percent(out)?.min(100), out.contains("AC Power")))
 }
 
-/// The number before the first '%'.
 #[cfg_attr(not(any(target_os = "macos", target_os = "linux", test)), allow(dead_code))]
 fn first_percent(out: &str) -> Option<u8> {
     let end = out.find('%')?;
@@ -964,10 +973,9 @@ fn classify(app: &str) -> Target {
     Target::App
 }
 
-/// Opens the player a track came from.
 pub fn open_music_player(source: &str) {
     if source.is_empty() { return }
-    if source == "music.apple.com" || source.contains("Apple") { open_app("Music") } else { open_app(source) }
+    if source.contains("Apple") { open_app("Music") } else { open_app(source) }
 }
 
 // --- Installed apps (Windows: suggestions for the quick apps field) ---

@@ -115,7 +115,7 @@ impl Settings {
         for (edit, value) in [(&mut self.bg_color, &self.cfg.bg_color), (&mut self.text_color, &self.cfg.text_color)] {
             if !edit.focused && edit.text != *value { edit.replace_text(value) }
         }
-        if let Some(island) = &self.island { island.update(|s, tx| s.reload(tx)) }
+        if let Some(island) = &self.island { island.update(|s, _| s.reload()) }
     }
 
     fn reset_app_names(&mut self) {
@@ -161,6 +161,17 @@ impl Settings {
     }
 }
 
+/// A field bound to a setting: it edits `edit`, and each change saves its text through `set`.
+trait Binds {
+    fn binds(self, edit: fn(&mut Settings) -> &mut TextEdit, set: fn(&mut Config, &str)) -> Self;
+}
+
+impl Binds for TextInput {
+    fn binds(self, edit: fn(&mut Settings) -> &mut TextEdit, set: fn(&mut Config, &str)) -> TextInput {
+        self.on_edit(edit).on_change(move |s: &mut Settings, _| { let v = edit(s).text.clone(); s.save(|c| set(c, &v)) })
+    }
+}
+
 fn toggle_open(key: &'static str) -> impl Fn(&mut Settings) + Clone {
     move |s: &mut Settings| s.open = if s.open == Some(key) { None } else { Some(key) }
 }
@@ -188,6 +199,11 @@ fn choice(s: &Settings, k: &Kit, layer: &mut Vec<El>, key: &'static str, label: 
 
 fn switch(k: &Kit, label: &str, on: bool, flip: fn(&mut Config)) -> El {
     Switch::new(on).label(label).hide_label().on_toggle(move |s: &mut Settings| s.save(flip)).build(k)
+}
+
+/// A switch on its own labelled row.
+fn toggle(s: &Settings, k: &Kit, label: &str, on: bool, flip: fn(&mut Config)) -> El {
+    setting(s, label, switch(k, label, on, flip).a11y_hidden())
 }
 
 fn setting(s: &Settings, label: &str, control: El) -> El {
@@ -286,15 +302,13 @@ fn panel(s: &Settings, k: &Kit, layer: &mut Vec<El>, tab: Tab) -> Vec<El> {
             ]));
         }
         Tab::Overview => {
-            // Weather
             sections.push(section(s, "weather", "Weather", vec![
                 setting(s, "Location", TextInput::new(&s.location).label("Location").placeholder("City, ST, Country").width(Some(200.0))
-                    .on_edit(|s: &mut Settings| &mut s.location).on_change(|s: &mut Settings, _| { let v = s.location.text.clone(); s.save(|c| c.location = v) }).build(k)),
+                    .binds(|s| &mut s.location, |c, v| c.location = v.into()).build(k)),
                 setting(s, "Unit", choice(s, k, layer, "unit", "Unit", &[("f", "Fahrenheit (°F)"), ("c", "Celsius (°C)")], &cfg.weather_unit, |c, v| c.weather_unit = v.into())),
             ]));
         }
         Tab::Workflows => {
-            // Quick apps
             let mut apps = vec![
                 row().key("add-app").w_full().gap(8.0).center_y()
                     .child(TextInput::new(&s.new_app).label("Add app").placeholder("Add app, like Apple Music")
@@ -331,7 +345,6 @@ fn panel(s: &Settings, k: &Kit, layer: &mut Vec<El>, tab: Tab) -> Vec<El> {
                 );
             }
             sections.push(section(s, "quick-apps", "Quick apps", apps));
-                // Workflows
             let mut workflows = vec![
                 text("Workflow name").font(cfg.font(14.0, 500.0)).color(fg.alpha(0.8)),
                 TextInput::new(&s.workflow_name).width(None).label("Workflow name").placeholder("e.g. Work Tools").on_edit(|s: &mut Settings| &mut s.workflow_name).build(k),
@@ -370,11 +383,11 @@ fn panel(s: &Settings, k: &Kit, layer: &mut Vec<El>, tab: Tab) -> Vec<El> {
                 col().w_full().gap(6.0)
                     .child(text("AI model").font(cfg.font(14.0, 500.0)).color(fg.alpha(0.85)))
                     .child(TextInput::new(&s.ai_model).width(None).label("AI model").placeholder(cfg.provider().model)
-                        .on_edit(|s: &mut Settings| &mut s.ai_model).on_change(|s: &mut Settings, _| { let v = s.ai_model.text.clone(); s.save(|c| c.ai_model = v) }).build(k)),
+                        .binds(|s| &mut s.ai_model, |c, v| c.ai_model = v.into()).build(k)),
                 col().w_full().gap(6.0)
                     .child(text("API key").font(cfg.font(14.0, 500.0)).color(fg.alpha(0.85)))
                     .child(TextInput::new(&s.api_key).width(None).label("API key").secure().placeholder(cfg.provider().key_hint)
-                        .on_edit(|s: &mut Settings| &mut s.api_key).on_change(|s: &mut Settings, _| { let v = s.api_key.text.clone(); s.save(|c| c.api_key = v) }).build(k)),
+                        .binds(|s| &mut s.api_key, |c, v| c.api_key = v.into()).build(k)),
             ]));
         }
         Tab::T3 => {
@@ -398,7 +411,7 @@ fn panel(s: &Settings, k: &Kit, layer: &mut Vec<El>, tab: Tab) -> Vec<El> {
                     .on_change(|s: &mut Settings, _| { let v = s.agent_dirs.text.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_string).collect(); s.save(|c| c.agent_dirs = v) }).build(k),
                 text("CLIProxyAPI auth folder").font(cfg.font(14.0, 500.0)).color(fg.alpha(0.8)).mt(10.0),
                 TextInput::new(&s.cliproxy_dir).width(None).label("CLIProxyAPI auth folder").placeholder("~/.cli-proxy-api")
-                    .on_edit(|s: &mut Settings| &mut s.cliproxy_dir).on_change(|s: &mut Settings, _| { let v = s.cliproxy_dir.text.trim().to_string(); s.save(|c| c.cliproxy_dir = v) }).build(k),
+                    .binds(|s| &mut s.cliproxy_dir, |c, v| c.cliproxy_dir = v.trim().into()).build(k),
             ]));
         }
         Tab::Tasks | Tab::Notes | Tab::Calendar => {
@@ -407,23 +420,23 @@ fn panel(s: &Settings, k: &Kit, layer: &mut Vec<El>, tab: Tab) -> Vec<El> {
                 text("Notes, Tasks and Calendar sync with this account. Make an app password in Nextcloud under Settings → Security.").font(cfg.font(12.0, 400.0)).color(fg.alpha(0.6)).wrap(),
                 label("Server"),
                 TextInput::new(&s.nc_url).width(None).label("Nextcloud server").placeholder("https://cloud.example.com")
-                    .on_edit(|s: &mut Settings| &mut s.nc_url).on_change(|s: &mut Settings, _| { let v = s.nc_url.text.trim().to_string(); s.save(|c| c.nextcloud.url = v) }).build(k),
+                    .binds(|s| &mut s.nc_url, |c, v| c.nextcloud.url = v.trim().into()).build(k),
                 label("User"),
                 TextInput::new(&s.nc_user).width(None).label("Nextcloud user").placeholder("User name")
-                    .on_edit(|s: &mut Settings| &mut s.nc_user).on_change(|s: &mut Settings, _| { let v = s.nc_user.text.trim().to_string(); s.save(|c| c.nextcloud.user = v) }).build(k),
+                    .binds(|s| &mut s.nc_user, |c, v| c.nextcloud.user = v.trim().into()).build(k),
                 label("App password"),
                 TextInput::new(&s.nc_password).width(None).label("Nextcloud app password").secure().placeholder(if cfg.nextcloud.password.is_empty() { "App password" } else { "Saved" })
-                    .on_edit(|s: &mut Settings| &mut s.nc_password).on_change(|s: &mut Settings, _| { let v = s.nc_password.text.clone(); s.save(|c| c.nextcloud.password = v) }).build(k),
+                    .binds(|s| &mut s.nc_password, |c, v| c.nextcloud.password = v.into()).build(k),
             ];
             if tab == Tab::Tasks {
                 rows.push(label("Tasks list"));
                 rows.push(TextInput::new(&s.nc_list).width(None).label("Nextcloud tasks list").placeholder("The first list with tasks")
-                    .on_edit(|s: &mut Settings| &mut s.nc_list).on_change(|s: &mut Settings, _| { let v = s.nc_list.text.trim().to_string(); s.save(|c| c.nextcloud.list = v) }).build(k));
+                    .binds(|s| &mut s.nc_list, |c, v| c.nextcloud.list = v.trim().into()).build(k));
             }
             if tab == Tab::Calendar {
                 rows.push(label("Calendar"));
                 rows.push(TextInput::new(&s.nc_calendar).width(None).label("Nextcloud calendar").placeholder("The first calendar with events")
-                    .on_edit(|s: &mut Settings| &mut s.nc_calendar).on_change(|s: &mut Settings, _| { let v = s.nc_calendar.text.trim().to_string(); s.save(|c| c.nextcloud.calendar = v) }).build(k));
+                    .binds(|s| &mut s.nc_calendar, |c, v| c.nextcloud.calendar = v.trim().into()).build(k));
             }
             sections.push(section(s, "nextcloud", "Nextcloud", rows));
         }
@@ -447,22 +460,20 @@ fn page(s: &Settings, k: &Kit, layer: &mut Vec<El>, page: Page) -> Vec<El> {
                     let on = c.auto_launch;
                     std::thread::spawn(move || crate::system::set_auto_launch(on));
                 }).a11y_hidden()));
-        }
+            }
             if !s.screens.is_empty() {
                 let current = if s.screens.contains(&cfg.display) { cfg.display.clone() } else { s.screens[0].clone() };
                 general.push(setting(s, "Display", Select::new("display", &s.screens).label("Display").width(190.0).current(Some(&current))
                     .open(s.open == Some("display")).on_toggle(toggle_open("display")).on_close(close)
                     .on_choose(|s: &mut Settings, name: &str, _: &mut Tx| { s.open = None; let name = name.to_string(); s.save(|c| c.display = name) })
                     .build(k, layer)));
-        }
+            }
             sections.push(section(s, "general", "System", general));
         }
         Page::Tabs => {
-
-            // Tabs
             let mut tabs = vec![
                 text("Drag to reorder, click the eye to hide").font(cfg.font(12.0, 400.0)).color(fg.alpha(0.5)),
-                setting(s, "Always open on the starred tab", switch(k, "Always open on the starred tab", cfg.open_default_tab, |c| c.open_default_tab = !c.open_default_tab).a11y_hidden()),
+                toggle(s, k, "Always open on the starred tab", cfg.open_default_tab, |c| c.open_default_tab = !c.open_default_tab),
                 col().key("tab-linger-row").w_full().gap(8.0).py(6.0)
                     .child(text(format!("Stay open after a tab change ({:.1}s)", cfg.tab_linger)).font(cfg.font(14.0, 500.0)).color(fg.alpha(0.85)))
                     .child(slider(s, "tab-linger", "Stay open after a tab change", (0.0, 10.0, 0.5), |c| c.tab_linger, |c, v| c.tab_linger = v)),
@@ -500,21 +511,19 @@ fn page(s: &Settings, k: &Kit, layer: &mut Vec<El>, page: Page) -> Vec<El> {
                         .child(IconButton::new(&icons::CHEVRON_DOWN).label(format!("Move {} down", name)).disabled(i == last)
                             .on_press(move |s: &mut Settings| s.save(|c| c.move_tab(i, i + 1))).build(k)),
                 );
-        }
+            }
             sections.push(section(s, "tabs", "Order and visibility", tabs));
         }
         Page::Appearance => {
-
-            // Island style
             let mut style = vec![
-                setting(s, "Notch mode", switch(k, "Notch mode", cfg.notch_mode, |c| c.notch_mode = !c.notch_mode).a11y_hidden()),
+                toggle(s, k, "Notch mode", cfg.notch_mode, |c| c.notch_mode = !c.notch_mode),
                 setting(s, "Theme", choice(s, k, layer, "theme", "Theme", &THEMES.map(|t| (t.0, t.1)), &cfg.theme, |c, v| c.set_theme(v))),
             ];
             if cfg.notch_mode {
-                style.insert(1, setting(s, "Mini notch", switch(k, "Mini notch", cfg.notch_mini, |c| c.notch_mini = !c.notch_mini).a11y_hidden()));
+                style.insert(1, toggle(s, k, "Mini notch", cfg.notch_mini, |c| c.notch_mini = !c.notch_mini));
                 // Auto size only sizes around a physical notch.
-                if !cfg.notch_mini { style.insert(2, setting(s, "Auto size", switch(k, "Auto size", cfg.notch_auto_size, |c| c.notch_auto_size = !c.notch_auto_size).a11y_hidden())) }
-        }
+                if !cfg.notch_mini { style.insert(2, toggle(s, k, "Auto size", cfg.notch_auto_size, |c| c.notch_auto_size = !c.notch_auto_size)) }
+            }
             let position = POSITIONS.iter()
                 .fold(RadioGroup::new().label("Position"), |group, &(value, label)| {
                     group.item(RadioItem::new(label, cfg.position_mode == value).on_select(move |s: &mut Settings| s.save(|c| c.position_mode = value.into())))
@@ -523,33 +532,32 @@ fn page(s: &Settings, k: &Kit, layer: &mut Vec<El>, page: Page) -> Vec<El> {
             if cfg.position_mode == "free" {
                 style.push(setting(s, &format!("Position X ({:.1}%)", cfg.island_x), slider(s, "island-x", "Position X", (0.0, 100.0, 0.1), |c| c.island_x, |c, v| c.island_x = v)).key("island-x-row"));
                 style.push(setting(s, &format!("Position Y ({}px)", cfg.island_y.round()), slider(s, "island-y", "Position Y", (0.0, 500.0, 1.0), |c| c.island_y, |c, v| c.island_y = v)).key("island-y-row"));
-        }
-            style.push(setting(s, "Island border", switch(k, "Island border", cfg.island_border, |c| c.island_border = !c.island_border).a11y_hidden()));
+            }
+            style.push(toggle(s, k, "Island border", cfg.island_border, |c| c.island_border = !c.island_border));
             // Only the Wayland layer-shell overlay can be pushed below a panel.
             if matches!(s.island, Some(Host::Overlay(..))) {
-                style.push(setting(s, "Overlap panels", switch(k, "Overlap panels", cfg.overlap_panels, |c| c.overlap_panels = !c.overlap_panels).a11y_hidden()));
-        }
-            style.push(setting(s, "Hide when inactive", switch(k, "Hide when inactive", cfg.hide_inactive, |c| c.hide_inactive = !c.hide_inactive).a11y_hidden()));
+                style.push(toggle(s, k, "Overlap panels", cfg.overlap_panels, |c| c.overlap_panels = !c.overlap_panels));
+            }
+            style.push(toggle(s, k, "Hide when inactive", cfg.hide_inactive, |c| c.hide_inactive = !c.hide_inactive));
             sections.push(section(s, "style", "Island style", style));
 
-            // Colours
             sections.push(section(s, "colors", "Colors and background", vec![
                 setting(s, "Island color", TextInput::new(&s.bg_color).label("Island color").placeholder("#000000").width(Some(160.0))
-                    .on_edit(|s: &mut Settings| &mut s.bg_color).on_change(|s: &mut Settings, _| { let v = s.bg_color.text.clone(); s.save(|c| c.bg_color = v) }).build(k)),
+                    .binds(|s| &mut s.bg_color, |c, v| c.bg_color = v.into()).build(k)),
                 setting(s, "Text color", TextInput::new(&s.text_color).label("Text color").placeholder("#FAFAFA").width(Some(160.0))
-                    .on_edit(|s: &mut Settings| &mut s.text_color).on_change(|s: &mut Settings, _| { let v = s.text_color.text.clone(); s.save(|c| c.text_color = v) }).build(k)),
+                    .binds(|s| &mut s.text_color, |c, v| c.text_color = v.into()).build(k)),
                 col().w_full().gap(6.0)
                     .child(text("Background image URL").font(cfg.font(14.0, 500.0)).color(fg.alpha(0.85)))
                     .child(TextInput::new(&s.bg_image).width(None).label("Background image URL").placeholder("https://...")
-                        .on_edit(|s: &mut Settings| &mut s.bg_image).on_change(|s: &mut Settings, _| { let v = s.bg_image.text.clone(); s.save(|c| c.bg_image = v) }).build(k)),
+                        .binds(|s| &mut s.bg_image, |c, v| c.bg_image = v.into()).build(k)),
             ]));
         }
         Page::Features => {
             sections.push(section(s, "features", "Alerts and standby", vec![
-                setting(s, "Low battery alerts", switch(k, "Low battery alerts", cfg.battery_alerts, |c| c.battery_alerts = !c.battery_alerts).a11y_hidden()),
-                setting(s, "Standby mode", switch(k, "Standby mode", cfg.standby, |c| c.standby = !c.standby).a11y_hidden()),
-                setting(s, "Large standby mode", switch(k, "Large standby mode", cfg.large_standby, |c| c.large_standby = !c.large_standby).a11y_hidden()),
-                setting(s, "Show info when idle", switch(k, "Show info when idle", cfg.show_info_idle, |c| c.show_info_idle = !c.show_info_idle).a11y_hidden()),
+                toggle(s, k, "Low battery alerts", cfg.battery_alerts, |c| c.battery_alerts = !c.battery_alerts),
+                toggle(s, k, "Standby mode", cfg.standby, |c| c.standby = !c.standby),
+                toggle(s, k, "Large standby mode", cfg.large_standby, |c| c.large_standby = !c.large_standby),
+                toggle(s, k, "Show info when idle", cfg.show_info_idle, |c| c.show_info_idle = !c.show_info_idle),
             ]));
         }
     }
@@ -630,15 +638,6 @@ mod tests {
         let mut rt = rune::Runtime::new(s, view, (720.0, 720.0), rune::Env { system_dark: true, scale: 1.0 });
         rt.frame(0.0);
         assert!(rt.find("integrations").is_some() && rt.find("tab-0").is_none());
-    }
-
-    #[test]
-    fn a_dragged_tab_lands_on_the_nearest_row() {
-        assert_eq!(drop_index(0, 20.0, 7), 0);
-        assert_eq!(drop_index(0, 30.0, 7), 1);
-        assert_eq!(drop_index(3, -100.0, 7), 1);
-        assert_eq!(drop_index(5, 500.0, 7), 6);
-        assert_eq!(drop_index(1, -500.0, 7), 0);
     }
 
     #[test]

@@ -1,9 +1,10 @@
 //! Pomodoro: 25 minutes of focus, then a 5 minute break, round after round. While it runs, the
 //! compact Island shows the time left beside a ring, as a live activity.
 
-use rune::{El, Tx, col, el, row, text};
+use rune::tok::TextStyle;
+use rune::{El, Tx, col, el, icon, row, text};
 
-use super::{accent, chip, tinted, tool};
+use super::{accent, chip, ring, tinted, tool};
 use crate::icons;
 use crate::island::Island;
 
@@ -65,8 +66,15 @@ impl Pomodoro {
     }
 }
 
-/// Orange while focusing, green on a break.
-pub fn color(focus: bool) -> rune::Color { if focus { accent::orange() } else { accent::green() } }
+fn color(focus: bool) -> rune::Color { if focus { accent::orange() } else { accent::green() } }
+
+/// The compact Island's live activity while it runs: a ring and the time left.
+pub fn live(p: &Pomodoro, style: TextStyle) -> El {
+    let (glyph, tint) = (if p.focus { &icons::TIMER } else { &icons::COFFEE }, color(p.focus));
+    row().key("pomodoro").role("img").label(format!("{}, {} left", if p.focus { "Focus" } else { "Break" }, p.label())).gap(6.0).center_y()
+        .child(ring(18.0, f32::from(p.percent()), tint, icon(glyph, 10.0).color(tint)))
+        .child(text(p.label()).font(style.features("'tnum' 1")).color(tint).a11y_hidden())
+}
 
 pub fn view(s: &Island) -> El {
     let fg = s.cfg.text();

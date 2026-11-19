@@ -32,7 +32,10 @@ type Handler = dyn Fn(&Request) -> Response + Send + Sync;
 type WsHandler = dyn Fn(&str) -> String + Send + Sync;
 
 /// Serves until the test process ends; returns `http://127.0.0.1:<port>`.
-pub fn serve(handler: impl Fn(&Request) -> Response + Send + Sync + 'static, on_ws: impl Fn(&str) -> String + Send + Sync + 'static) -> String {
+pub fn serve(handler: impl Fn(&Request) -> Response + Send + Sync + 'static) -> String { serve_ws(handler, |_| String::new()) }
+
+/// `serve`, with `on_ws` answering each text message on `/ws`.
+pub fn serve_ws(handler: impl Fn(&Request) -> Response + Send + Sync + 'static, on_ws: impl Fn(&str) -> String + Send + Sync + 'static) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let (handler, on_ws): (Arc<Handler>, Arc<WsHandler>) = (Arc::new(handler), Arc::new(on_ws));

@@ -1,24 +1,28 @@
 //! AI Limits: how much of each signed-in coding agent's plan is left, and when it resets.
 
-use rune::{El, ScrollSpec, col, row, text};
+use rune::{El, col, row, text};
 
-use super::empty;
+use super::{Scrolls, empty};
 use super::monitor::gauge;
 use crate::island::Island;
 use crate::limits;
+
+#[derive(Default)]
+pub struct Limits {
+    /// Each signed-in agent's windows; None until the first answer. Empty hides the tab.
+    pub usage: Option<Vec<limits::Usage>>,
+    /// Bumped on every load, so an earlier answer is dropped.
+    generation: u64,
+}
 
 impl Island {
     /// Asks every signed-in agent for its limits; the last answer stays up while it refreshes.
     pub fn limits_load(&mut self) {
         let Some(me) = self.me.clone() else { return };
         let (dirs, proxy) = (self.cfg.agent_dirs.clone(), self.cfg.cliproxy_dir.clone());
-        self.limits_generation += 1;
-        let generation = self.limits_generation;
-        std::thread::spawn(move || {
-            let usage = limits::all(&dirs, &proxy);
-            limits::NONE_FOUND.store(usage.is_empty(), std::sync::atomic::Ordering::Relaxed);
-            me.update(move |s, _| if s.limits_generation == generation { s.limits = Some(usage) });
-        });
+        self.limits.generation += 1;
+        let generation = self.limits.generation;
+        me.spawn(move || limits::all(&dirs, &proxy), move |s, usage| if s.limits.generation == generation { s.limits.usage = Some(usage) });
     }
 }
 
@@ -26,12 +30,12 @@ pub fn view(s: &Island) -> El {
     let fg = s.cfg.text();
     let muted = fg.alpha(0.55 * fg.a);
     let root = col().key("limits").w_full().h_full().px(16.0).pt(14.0).pb(14.0);
-    let usage = match &s.limits {
+    let usage = match &s.limits.usage {
         None => return root.child(empty(s, "Loading…")),
         Some(u) if u.is_empty() => return root.child(empty(s, "Sign in to Claude Code, Codex, Copilot, OpenCode Go or Grok Build")),
         Some(u) => u,
     };
-    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
+    let now = crate::date::now_secs();
     let mut list = col().key("limits-list").w_full().gap(8.0);
     for (n, agent) in usage.iter().enumerate() {
         // "Codex · me@x.com": the agent bold, the account muted.
@@ -58,5 +62,5 @@ pub fn view(s: &Island) -> El {
         }
         list = list.child(card);
     }
-    root.child(col().key("limits-scroll").w_full().grow(1.0).min_h(0.0).scroll(ScrollSpec { stick_bottom: false }).scroll_edge_fade(10.0).child(list))
+    root.child(col().key("limits-scroll").w_full().grow(1.0).min_h(0.0).scrolls().scroll_edge_fade(10.0).child(list))
 }

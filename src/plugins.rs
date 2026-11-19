@@ -126,7 +126,6 @@ impl Plugin {
         }
     }
 
-    /// Runs the handler of the button pressed.
     pub fn press(&mut self, action: usize) {
         let (Some(f), Some(spec)) = (self.handlers.get(action).cloned(), &self.spec) else { return };
         // The handler and the view after it share one budget.

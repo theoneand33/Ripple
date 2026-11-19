@@ -22,9 +22,6 @@ pub struct Usage {
     pub windows: Result<Vec<Window>, String>,
 }
 
-/// Set once a look found no signed-in agent: the AI Limits tab then hides.
-pub static NONE_FOUND: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
 /// Fetches the windows; the flag allows renewing an expired token.
 type Job = Box<dyn FnOnce(bool) -> Result<Vec<Window>, String> + Send>;
 
@@ -50,7 +47,7 @@ pub fn all(extra_dirs: &[String], cliproxy_dir: &str) -> Vec<Usage> {
 
 fn accounts(home: &Path, extra_dirs: &[String], cliproxy_dir: &str) -> Vec<Account> {
     let mut out = Vec::new();
-    let extra: Vec<PathBuf> = extra_dirs.iter().map(|d| d.trim()).filter(|d| !d.is_empty()).map(|d| expand(home, d)).collect();
+    let extra: Vec<PathBuf> = extra_dirs.iter().map(|d| d.trim()).filter(|d| !d.is_empty()).map(|d| crate::system::expand_home(home, d)).collect();
     let claude_dirs = std::iter::once(dir("CLAUDE_CONFIG_DIR", home.join(".claude"))).chain(extra.iter().cloned());
     for (i, d) in claude_dirs.enumerate() {
         let Some(creds) = read_json(d.join(".credentials.json")).or_else(|| if i == 0 { claude_keychain() } else { None }) else { continue };
@@ -73,7 +70,7 @@ fn accounts(home: &Path, extra_dirs: &[String], cliproxy_dir: &str) -> Vec<Accou
         let id = t["account_id"].as_str().filter(|a| !a.is_empty()).map(|a| format!("codex:{a}"));
         out.push(Account { renews: id, ..codex(named("Codex", email.as_deref()), token, t["account_id"].as_str().unwrap_or_default(), Some(saved)) });
     }
-    let proxy = expand(home, if cliproxy_dir.trim().is_empty() { "~/.cli-proxy-api" } else { cliproxy_dir.trim() });
+    let proxy = crate::system::expand_home(home, if cliproxy_dir.trim().is_empty() { "~/.cli-proxy-api" } else { cliproxy_dir.trim() });
     let mut files: Vec<PathBuf> = std::fs::read_dir(proxy).into_iter().flatten().flatten().map(|e| e.path())
         .filter(|p| p.extension().is_some_and(|e| e == "json")).collect();
     files.sort();
@@ -118,15 +115,6 @@ fn read_json(path: PathBuf) -> Option<Value> {
 
 fn dir(var: &str, fallback: PathBuf) -> PathBuf {
     std::env::var_os(var).filter(|v| !v.is_empty()).map_or(fallback, PathBuf::from)
-}
-
-/// A path typed by the user, with `~` for the home folder.
-pub fn expand(home: &Path, p: &str) -> PathBuf {
-    match p.strip_prefix("~/").or_else(|| p.strip_prefix("~\\")) {
-        Some(rest) => home.join(rest),
-        None if p == "~" => home.into(),
-        None => p.into(),
-    }
 }
 
 fn named(agent: &str, who: Option<&str>) -> String {
@@ -215,8 +203,7 @@ fn renew_into(s: &Saved, creds: &mut Value) -> Result<String, String> {
     if let (Some(id), true) = (v["id_token"].as_str(), creds.get("id_token").is_some()) { creds["id_token"] = id.into() }
     // Claude Code's expiry in ms; without it the CLI would renew again at once.
     if let (Some(secs), true) = (v["expires_in"].as_i64(), creds.get("expiresAt").is_some()) {
-        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as i64;
-        creds["expiresAt"] = (now + secs * 1000).into();
+        creds["expiresAt"] = (crate::date::now_ms() + secs * 1000).into();
     }
     Ok(access)
 }
@@ -236,7 +223,6 @@ fn get(url: &str, headers: &[(&str, &str)]) -> Result<Value, String> {
     serde_json::from_str(&body).map_err(|e| e.to_string())
 }
 
-/// The windows, or an error when the answer had none.
 fn found(windows: Vec<Window>) -> Result<Vec<Window>, String> {
     if windows.is_empty() { Err("Unknown answer; Ripple may need an update".into()) } else { Ok(windows) }
 }
@@ -255,6 +241,7 @@ fn claude(name: String, token: &str, saved: Option<Saved>) -> Account {
 
 /// macOS keeps Claude Code's sign-in in the login Keychain instead of a file.
 fn claude_keychain() -> Option<Value> {
+    // Not `system::output`: its timeout would cut off the Keychain's permission prompt.
     #[cfg(target_os = "macos")]
     {
         let out = std::process::Command::new("security").args(["find-generic-password", "-s", "Claude Code-credentials", "-w"]).output().ok()?;
@@ -351,9 +338,8 @@ fn grok_windows(v: &Value) -> Vec<Window> {
 fn iso(s: &str) -> Option<i64> {
     let n = |r: std::ops::Range<usize>| s.get(r)?.parse::<i64>().ok();
     let (y, m, d) = (n(0..4)?, n(5..7)?, n(8..10)?);
-    let leap = y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
-    let last = match m { 2 => 28 + leap as i64, 4 | 6 | 9 | 11 => 30, _ => 31 };
-    if !(1..=12).contains(&m) || !(1..=last).contains(&d) { return None }
+    let (y, m, d) = (i32::try_from(y).ok()?, u32::try_from(m).ok()?, u32::try_from(d).ok()?);
+    if !(1..=12).contains(&m) || !(1..=crate::date::days_in(y, m)).contains(&d) { return None }
     let secs = if s.len() > 10 { n(11..13)? * 3600 + n(14..16)? * 60 + n(17..19)? } else { 0 };
     let tz = s[10..].rfind(['+', '-']).filter(|_| s.len() > 19).map(|i| i + 10);
     let offset = tz.and_then(|i| {
@@ -361,7 +347,7 @@ fn iso(s: &str) -> Option<i64> {
         let m = if s.get(i + 3..i + 4) == Some(":") { i + 4 } else { i + 3 };
         Some((n(i + 1..i + 3)? * 3600 + n(m..m + 2)? * 60) * if &s[i..=i] == "-" { -1 } else { 1 })
     }).unwrap_or(0);
-    let days = crate::nextcloud::days_from_civil(i32::try_from(y).ok()?, m as u32, d as u32);
+    let days = crate::date::days_from_civil(y, m, d);
     Some(days * 86_400 + secs - offset)
 }
 
@@ -415,7 +401,7 @@ mod tests {
         let url = serve(|r| match r.body.contains("\"refresh_token\":\"r1\"") {
             true => reply(200, json!({"access_token": "a2", "refresh_token": "r2", "expires_in": 60})),
             false => reply(400, json!({"error": "invalid_grant"})),
-        }, |_| String::new());
+        });
         let path = std::env::temp_dir().join(format!("ripple-renew-{}.json", std::process::id()));
         let real = path.with_extension("real.json");
         std::fs::write(&real, json!({"claudeAiOauth": {"accessToken": "a1", "refreshToken": "r1", "expiresAt": 0, "scopes": ["x"]}}).to_string()).unwrap();

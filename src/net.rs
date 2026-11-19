@@ -20,7 +20,8 @@ pub fn agent() -> ureq::Agent {
 pub struct Weather {
     /// Rounded degrees in the chosen unit; None until the first answer.
     pub temp: Option<i32>,
-    pub status: String,
+    /// The WMO weather code, for `icons::weather`.
+    pub code: Option<u64>,
 }
 
 /// The current weather from Open-Meteo, which needs no API key.
@@ -54,23 +55,8 @@ fn weather_from(geocoding: &str, forecast: &str, location: &str, unit: &str) -> 
     let current = &data["current"];
     Some(Weather {
         temp: current["temperature_2m"].as_f64().map(|t| t.round() as i32),
-        status: current["weather_code"].as_u64().map_or("", wmo_status).into(),
+        code: current["weather_code"].as_u64(),
     })
-}
-
-/// A WMO weather code in the words `icons::weather` reads.
-fn wmo_status(code: u64) -> &'static str {
-    match code {
-        0 => "Clear",
-        1 | 2 => "Partly cloudy",
-        3 => "Overcast",
-        45 | 48 => "Fog",
-        51..=57 => "Drizzle",
-        61..=67 | 80..=82 => "Rain",
-        71..=77 | 85 | 86 => "Snow",
-        95..=99 => "Thunderstorm",
-        _ => "",
-    }
 }
 
 const SYSTEM_PROMPT: &str = "You are Ripple, a sleek and helpful desktop AI assistant. Your goal is to provide accurate, concise, and beautifully formatted answers that fit well in a compact desktop widget. \n- For general inquiries: Keep it to 2-4 sentences.\n- For complex or code-related questions: Provide detailed answers with Markdown code blocks, but stay as efficient as possible.\n- Use Markdown for bolding, lists, and headers to make information easy to scan.";
@@ -142,7 +128,7 @@ fn sse_delta(line: &str) -> Sse {
     }
 }
 
-/// An image's bytes from an `http(s):`, `file:` or `data:` URL, at most 16 MiB.
+/// An image's bytes from an `http(s):`, `file:` or `data:` URL.
 pub fn fetch_image(url: &str) -> Option<Vec<u8>> {
     const LIMIT: u64 = 16 * 1024 * 1024;
     if let Some(data) = url.strip_prefix("data:") {
@@ -227,11 +213,10 @@ mod tests {
             p if p.starts_with("/v1/forecast?latitude=1.5&longitude=-2&") && p.contains("temperature_unit=fahrenheit") =>
                 json(200, json!({ "current": { "temperature_2m": 70.2, "weather_code": 2 } })),
             _ => json(404, json!({})),
-        }, |_| String::new());
-        assert_eq!(weather_from(&base, &base, "Paris, France", "c"), Some(Weather { temp: Some(18), status: "Rain".into() }));
-        assert_eq!(weather_from(&base, &base, "1.5, -2", "f"), Some(Weather { temp: Some(70), status: "Partly cloudy".into() }));
+        });
+        assert_eq!(weather_from(&base, &base, "Paris, France", "c"), Some(Weather { temp: Some(18), code: Some(61) }));
+        assert_eq!(weather_from(&base, &base, "1.5, -2", "f"), Some(Weather { temp: Some(70), code: Some(2) }));
         assert_eq!(weather_from(&base, &base, "Nowhere", "c"), None);
-        assert!(std::ptr::eq(crate::icons::weather(wmo_status(0)), crate::icons::weather("sunny")));
     }
 
     #[test]
@@ -263,7 +248,7 @@ mod tests {
                 .map(|d| format!("data: {}\n\n", json!({ "choices": [{ "delta": { "content": d } }] })))
                 .collect::<String>() + "data: [DONE]\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"late\"}}]}\n\n";
             Response { status: 200, headers: vec![("content-type".into(), "text/event-stream".into())], body: events }
-        }, |_| String::new());
+        });
         let mut answer = String::new();
         assert_eq!(ask_ai(&format!("{base}/v1"), "m", "gsk_test", "Hi?", |d| answer.push_str(d)), Ok(true));
         assert_eq!(answer, "Hello **you** [DONE]");

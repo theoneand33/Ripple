@@ -1,49 +1,39 @@
 //! Calendar: a month at a glance, today marked; the arrows page through months. Beside it, the
 //! picked day's events. With a Nextcloud account, events sync with a Nextcloud calendar.
 
-use rune::{El, ScrollSpec, Transition, Tx, col, el, row, text};
+use rune::{El, TextEdit, Transition, Tx, col, el, row, text};
 
-use super::{Undo, accent, button, empty, field, pill, tool, undo_button};
+use super::{Scrolls, Undo, accent, button, empty, field, pill, tool, undo_button};
 use crate::config::Item;
 use crate::icons;
-use crate::island::{Island, format_date, weekday};
-use crate::nextcloud::{Kind, event_day};
+use crate::date::{days_in, format_date, shift_month, weekday};
+use crate::island::Island;
+use crate::nextcloud::{self, Kind, event_day};
+
+#[derive(Default)]
+pub struct Calendar {
+    /// The month shown, as months from this one.
+    pub offset: i32,
+    /// The picked day; None is today.
+    pub day: Option<(i32, u32, u32)>,
+    pub event: TextEdit,
+}
 
 const MONTHS: [&str; 12] = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 
-/// The month `offset` months from (year, month).
-fn shift(year: i32, month: u32, offset: i32) -> (i32, u32) {
-    let i = year * 12 + month as i32 - 1 + offset;
-    (i.div_euclid(12), i.rem_euclid(12) as u32 + 1)
-}
-
-fn days_in(year: i32, month: u32) -> u32 {
-    match month {
-        2 if (year % 4 == 0 && year % 100 != 0) || year % 400 == 0 => 29,
-        2 => 28,
-        4 | 6 | 9 | 11 => 30,
-        _ => 31,
-    }
-}
-
 fn add_event(s: &mut Island, _: &mut Tx) {
-    let title = s.event.text.trim().to_string();
+    let title = s.calendar.event.text.trim().to_string();
     if title.is_empty() { return }
-    let (y, m, d) = s.calendar_day.unwrap_or(s.today);
+    let (y, m, d) = s.calendar.day.unwrap_or(s.today);
     s.save(|c| c.events.push(Item::new(format!("{y:04}-{m:02}-{d:02} {title}"))));
-    s.event.clear();
+    s.calendar.event.clear();
     s.nextcloud_sync(Kind::Events);
 }
 
 fn delete_event(s: &mut Island, key: u64) {
     let mut gone = None;
-    s.save(|c| {
-        let Some(i) = c.events.iter().position(|e| e.key == key) else { return };
-        let item = c.events.remove(i);
-        if let Some(r) = &item.remote { c.nextcloud.deleted_events.push(r.id.clone()) }
-        gone = Some(item);
-    });
-    if let Some(item) = gone { s.undo = Some(Undo::Event(item)) }
+    s.save(|c| gone = nextcloud::remove(c, Kind::Events, key));
+    if let Some((i, item)) = gone { s.undo = Some(Undo::Item(Kind::Events, i, item)) }
     s.nextcloud_sync(Kind::Events);
 }
 
@@ -57,7 +47,7 @@ fn day_events(s: &Island, day: (i32, u32, u32)) -> Vec<(u64, &str)> {
 pub fn view(s: &Island) -> El {
     let fg = s.cfg.text();
     let (ty, tm, td) = s.today;
-    let (year, month) = shift(ty, tm, s.calendar_offset);
+    let (year, month) = shift_month(ty, tm, s.calendar.offset);
 
     let mut header = row().key("calendar-header").w_full().h(28.0).gap(6.0).center_y()
         .child(
@@ -66,13 +56,13 @@ pub fn view(s: &Island) -> El {
                 .child(text(MONTHS[month as usize - 1]).font(s.cfg.font(17.0, 700.0)).color(fg))
                 .child(text(year.to_string()).font(s.cfg.font(17.0, 400.0).features("'tnum' 1")).color(fg.alpha(0.5 * fg.a))),
         );
-    if s.calendar_offset != 0 || s.calendar_day.is_some_and(|d| d != s.today) {
+    if s.calendar.offset != 0 || s.calendar.day.is_some_and(|d| d != s.today) {
         // Shaped like `tool`, so it sits quietly beside the arrows.
-        header = header.child(pill(s, "calendar-today", "Today").on_press(|s: &mut Island| (s.calendar_offset, s.calendar_day) = (0, None)));
+        header = header.child(pill(s, "calendar-today", "Today").on_press(|s: &mut Island| (s.calendar.offset, s.calendar.day) = (0, None)));
     }
     header = header
-        .child(tool(s, "calendar-prev", &icons::CHEVRON_LEFT, "Previous month").on_press(|s: &mut Island| s.calendar_offset -= 1))
-        .child(tool(s, "calendar-next", &icons::CHEVRON_RIGHT, "Next month").on_press(|s: &mut Island| s.calendar_offset += 1));
+        .child(tool(s, "calendar-prev", &icons::CHEVRON_LEFT, "Previous month").on_press(|s: &mut Island| s.calendar.offset -= 1))
+        .child(tool(s, "calendar-next", &icons::CHEVRON_RIGHT, "Next month").on_press(|s: &mut Island| s.calendar.offset += 1));
 
     let mut names = row().key("calendar-weekdays").w_full();
     for (i, d) in ["S", "M", "T", "W", "T", "F", "S"].into_iter().enumerate() {
@@ -82,9 +72,9 @@ pub fn view(s: &Island) -> El {
 
     // Six weeks always, so the Island keeps one height; days of the months around are dimmed.
     let first = weekday(year, month, 1) as i32;
-    let picked = s.calendar_day.unwrap_or(s.today);
+    let picked = s.calendar.day.unwrap_or(s.today);
     let busy_days: Vec<_> = s.cfg.events.iter().filter_map(|e| Some(event_day(&e.text)?.0)).collect();
-    let (py, pm) = shift(year, month, -1);
+    let (py, pm) = shift_month(year, month, -1);
     let (len, prev_len) = (days_in(year, month) as i32, days_in(py, pm) as i32);
     let mut grid = col().key(format!("calendar-grid-{year}-{month}")).role("group").label(format!("{} {year}", MONTHS[month as usize - 1]))
         .w_full().gap(2.0).transition(Transition::opacity());
@@ -94,7 +84,7 @@ pub fn view(s: &Island) -> El {
             let n = week * 7 + col_ - first + 1;
             // A day of the month before or after pages there as it is picked.
             let (day, page) = if n < 1 { (prev_len + n, -1) } else if n > len { (n - len, 1) } else { (n, 0) };
-            let (dy, dm) = shift(year, month, page);
+            let (dy, dm) = shift_month(year, month, page);
             let date = (dy, dm, day as u32);
             let today = date == (ty, tm, td);
             let busy = busy_days.contains(&date);
@@ -106,7 +96,7 @@ pub fn view(s: &Island) -> El {
             let label = format!("{}{}{}", format_date(dy, dm, day as u32), if today { ", today" } else { "" }, if busy { ", has events" } else { "" });
             line = line.child(
                 el().key(format!("day-{week}-{col_}")).role("button").label(label).focusable(true).w(0.0).grow(1.0).h(28.0).center().child(dot)
-                    .on_press(move |s: &mut Island| { s.calendar_day = Some(date); s.calendar_offset += page }),
+                    .on_press(move |s: &mut Island| { s.calendar.day = Some(date); s.calendar.offset += page }),
             );
         }
         grid = grid.child(line);
@@ -143,28 +133,14 @@ pub fn view(s: &Island) -> El {
                     .child(text(rest.to_string()).font(s.cfg.font(15.0, 700.0)).color(fg))
             })
             .children(undo_button(s)))
-        .child(col().key("event-scroll").w_full().grow(1.0).min_h(0.0).scroll(ScrollSpec { stick_bottom: false }).on_wheel(Island::wheel).child(list))
+        .child(col().key("event-scroll").w_full().grow(1.0).min_h(0.0).scrolls().child(list))
         .child(
             row().key("event-input").w_full().gap(8.0).center_y()
-                .child(field(s, "new-event", &s.event, "New event…", |s: &mut Island| &mut s.event, add_event))
+                .child(field(s, "new-event", &s.calendar.event, "New event…", |s: &mut Island| &mut s.calendar.event, add_event))
                 .child(button(s, "add-event", "Add", true).on_press_tx(add_event)),
         );
 
     row().key("calendar").w_full().h_full().px(16.0).pt(14.0).pb(14.0).gap(16.0)
         .child(col().key("calendar-month").w(280.0).h_full().gap(8.0).child(header).child(names).child(grid))
         .child(day)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn months_page_across_years() {
-        assert_eq!(shift(2026, 1, -1), (2025, 12));
-        assert_eq!(shift(2026, 12, 1), (2027, 1));
-        assert_eq!(shift(2026, 11, -23), (2024, 12));
-        assert_eq!((days_in(2024, 2), days_in(2026, 2), days_in(2000, 2), days_in(1900, 2)), (29, 28, 29, 28));
-        assert_eq!(weekday(2026, 11, 18), 3);
-    }
 }

@@ -3,10 +3,10 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use rune::{El, Key, KeyEvent, ScrollSpec, TextEdit, Tx, col, row, text, text_input};
+use rune::{El, Key, KeyEvent, TextEdit, Tx, col, row, text, text_input};
 use rune_kit::Select;
 
-use super::{button, checkbox, empty};
+use super::{Scrolls, button, checkbox, empty};
 use crate::config::T3Device;
 use crate::island::Island;
 use crate::t3::{self as client, Client};
@@ -61,16 +61,13 @@ impl Island {
         let Some(me) = self.me.clone() else { return };
         self.t3.detecting = true;
         self.t3.status = "Looking for T3 Code on this computer…".into();
-        std::thread::spawn(move || {
-            let found = client::detect_local();
-            me.update(move |s, _| {
-                s.t3.detecting = false;
-                s.t3.status.clear();
-                let Some(device) = found else { return };
-                // Kept even if a device was added meanwhile: a dropped token would stay live in T3.
-                s.save(|c| { c.t3_detected = true; c.t3_devices.push(device) });
-                s.t3_load();
-            });
+        me.spawn(client::detect_local, move |s, found| {
+            s.t3.detecting = false;
+            s.t3.status.clear();
+            let Some(device) = found else { return };
+            // Kept even if a device was added meanwhile: a dropped token would stay live in T3.
+            s.save(|c| { c.t3_detected = true; c.t3_devices.push(device) });
+            s.t3_load();
         });
     }
 
@@ -79,26 +76,18 @@ impl Island {
         self.t3.generation += 1;
         self.t3.data = None;
         self.t3.projects = None;
-        // Retried on each open until found: T3 may not be installed or running yet.
-        if self.cfg.t3_devices.is_empty() && !self.cfg.t3_detected {
-            self.t3_detect();
-            return;
-        }
         let (Some(device), Some(me)) = (self.t3_device().map(|d| d.1.clone()), self.me.clone()) else { return };
         self.t3.status = "Loading…".into();
         let (client, generation) = (self.t3.client.clone(), self.t3.generation);
-        std::thread::spawn(move || {
-            let result = client.load(&device);
-            me.update(move |s, _| {
-                if s.t3.generation != generation { return }
-                match result {
-                    Ok(data) => {
-                        s.t3.data = Some(data);
-                        s.t3_load_projects();
-                    }
-                    Err(e) => s.t3.status = e,
+        me.spawn(move || client.load(&device), move |s, result| {
+            if s.t3.generation != generation { return }
+            match result {
+                Ok(data) => {
+                    s.t3.data = Some(data);
+                    s.t3_load_projects();
                 }
-            });
+                Err(e) => s.t3.status = e,
+            }
         });
     }
 
@@ -108,18 +97,15 @@ impl Island {
         let (Some(device), Some(me)) = (self.t3_device().map(|d| d.1.clone()), self.me.clone()) else { return };
         self.t3.status = "Loading folders…".into();
         let (client, generation, env) = (self.t3.client.clone(), self.t3.generation, self.t3_env().to_string());
-        std::thread::spawn(move || {
-            let result = client.projects(&device, &env);
-            me.update(move |s, _| {
-                if s.t3.generation != generation { return }
-                match result {
-                    Ok(list) => {
-                        s.t3.projects = Some(list);
-                        s.t3.status.clear();
-                    }
-                    Err(e) => s.t3.status = e,
+        me.spawn(move || client.projects(&device, &env), move |s, result| {
+            if s.t3.generation != generation { return }
+            match result {
+                Ok(list) => {
+                    s.t3.projects = Some(list);
+                    s.t3.status.clear();
                 }
-            });
+                Err(e) => s.t3.status = e,
+            }
         });
     }
 
@@ -143,16 +129,13 @@ impl Island {
         let (device, client, title) = (device.clone(), self.t3.client.clone(), project.title.clone());
         self.t3.status = "Starting…".into();
         self.t3.starting = true;
-        std::thread::spawn(move || {
-            let result = client.start_thread(&device, &launch);
-            me.update(move |s, _| { s.t3.starting = false; match result {
-                Ok(_) => {
-                    s.t3.message.clear();
-                    s.t3.status = format!("Thread started in {title}");
-                }
-                Err(e) => s.t3.status = e,
-            } });
-        });
+        me.spawn(move || client.start_thread(&device, &launch), move |s, result| { s.t3.starting = false; match result {
+            Ok(_) => {
+                s.t3.message.clear();
+                s.t3.status = format!("Thread started in {title}");
+            }
+            Err(e) => s.t3.status = e,
+        } });
     }
 }
 
@@ -249,7 +232,7 @@ pub fn view(s: &Island, layer: &mut Vec<El>) -> El {
                 .fill(fg.alpha(0.05 * fg.a)).border(1.0, fg.alpha(0.1 * fg.a))
                 // The input is only as tall as its text: a press on the rest of the box types into it too.
                 .on_press(|s: &mut Island| s.t3.message.focused = true)
-                .scroll(ScrollSpec { stick_bottom: false }).on_wheel(Island::wheel).child(message),
+                .scrolls().child(message),
         )
         .child(
             row().key("t3-actions").w_full().gap(8.0).center_y()

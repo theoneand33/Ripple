@@ -1,12 +1,13 @@
 //! Notes: plain-text notes, each titled by its first line, saved as they are typed and synced
 //! with Nextcloud Notes when an account is set.
 
-use rune::{Color, El, ScrollSpec, TextEdit, Transition, col, el, row, text, text_input};
+use rune::{Color, El, TextEdit, Transition, col, el, row, text, text_input};
 
-use super::{Undo, empty, tool, undo_button};
+use super::{Scrolls, Undo, empty, tool, undo_button};
 use crate::config::{Config, Item};
 use crate::icons;
 use crate::island::Island;
+use crate::nextcloud::{self, Kind};
 
 pub struct Notes {
     /// The open note's editor.
@@ -38,24 +39,27 @@ impl Island {
     }
 
     pub fn delete_note(&mut self) {
-        let i = self.notes.index;
         let mut gone = None;
-        self.save(|c| {
-            if i >= c.notes.len() { return }
-            let item = c.notes.remove(i);
-            // Nextcloud deletes it on the next sync.
-            if let Some(r) = &item.remote { c.nextcloud.deleted_notes.push(r.id.clone()) }
-            gone = Some(item);
-        });
-        if let Some(item) = gone { self.undo = Some(Undo::Note(i, item)) }
-        self.open_note(i);
-        self.nextcloud_sync(crate::nextcloud::Kind::Notes);
+        if let Some(key) = self.cfg.notes.get(self.notes.index).map(|n| n.key) { self.save(|c| gone = nextcloud::remove(c, Kind::Notes, key)) }
+        if let Some((i, item)) = gone { self.undo = Some(Undo::Item(Kind::Notes, i, item)) }
+        self.open_note(self.notes.index);
+        self.nextcloud_sync(Kind::Notes);
+    }
+
+    /// A note being typed saves once a second, and uploads once typing pauses.
+    pub fn notes_tick(&mut self) {
+        let Some(edited) = self.notes.edited else { return };
+        self.store.flush();
+        if edited.elapsed().as_secs() >= 2 {
+            self.notes.edited = None;
+            self.nextcloud_sync(Kind::Notes);
+        }
     }
 
     pub fn note_edited(&mut self) {
         let (i, text) = (self.notes.index, self.notes.editor.text.clone());
         if self.cfg.notes.get(i).is_some_and(|n| n.text != text) {
-            // Saved to disk once a second by `Island::poll`, not on every key.
+            // Saved to disk once a second by `notes_tick`, not on every key.
             self.cfg = self.store.update_unsaved(|c| c.notes[i].text = text);
             self.notes.edited = Some(std::time::Instant::now());
         }
@@ -71,12 +75,12 @@ fn note_heading(note: &str) -> (&str, String) {
 pub fn view(s: &Island) -> El {
     let fg = s.cfg.text();
     let muted = fg.alpha(0.55 * fg.a);
-    let accent = crate::config::parse_color("#4c9aff").unwrap_or(fg);
+    let accent = super::accent::blue();
     let mut header = row().key("notes-header").w_full().h(28.0).gap(8.0).center_y()
         .child(text("Notes").font(s.cfg.font(17.0, 700.0)).color(fg))
         .child(text(s.cfg.notes.len().to_string()).font(s.cfg.font(15.0, 500.0).features("'tnum' 1")).color(muted))
         .child(el().grow(1.0));
-    if let Some(e) = &s.nextcloud[crate::nextcloud::Kind::Notes as usize].error {
+    if let Some(e) = &s.nextcloud[Kind::Notes as usize].error {
         header = header.child(text(e).font(s.cfg.font(12.0, 400.0)).color(muted).shrink().min_w(0.0).truncate());
     }
     if let Some(undo) = undo_button(s) { header = header.child(undo) }
@@ -114,14 +118,14 @@ pub fn view(s: &Island) -> El {
         .on_input_change(|s: &mut Island, _| s.note_edited());
     root.child(
         row().key("notes-body").w_full().grow(1.0).min_h(0.0).gap(12.0)
-            .child(col().key("note-scroll").w(160.0).h_full().scroll(ScrollSpec { stick_bottom: false }).on_wheel(Island::wheel).scroll_edge_fade(8.0).child(list))
+            .child(col().key("note-scroll").w(160.0).h_full().scrolls().scroll_edge_fade(8.0).child(list))
             .child(
                 col().key(format!("note-card-{}", s.notes.index)).grow(1.0).min_w(0.0).h_full().px(14.0).py(10.0)
                     .radius(s.cfg.radius(18.0)).fill(super::card(fg))
                     .transition(Transition::opacity())
                     // The editor is only as tall as its text: a press on the rest of the card types into it too.
                     .on_press(|s: &mut Island| s.notes.editor.focused = true)
-                    .scroll(ScrollSpec { stick_bottom: false }).on_wheel(Island::wheel).scroll_edge_fade(10.0).child(editor),
+                    .scrolls().scroll_edge_fade(10.0).child(editor),
             ),
     )
 }

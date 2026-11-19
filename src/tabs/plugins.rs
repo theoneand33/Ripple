@@ -1,8 +1,8 @@
 //! Plugins: one panel per Lua file in the plugins folder (src/plugins.rs runs them).
 
-use rune::{El, ScrollSpec, col, el, row, text};
+use rune::{El, col, el, row, text};
 
-use super::empty;
+use super::{Scrolls, empty};
 use crate::island::Island;
 use crate::plugins::Node;
 
@@ -35,7 +35,7 @@ pub fn view(s: &Island) -> El {
         body = body.child(text(e).key("plugin-error").font(s.cfg.font(12.0, 400.0)).color(fg.alpha(0.6 * fg.a)).wrap_anywhere());
     }
     if let Some(v) = &open.view { body = body.child(node(s, v, "n".into())) }
-    root.child(col().key("plugin-scroll").w_full().grow(1.0).min_h(0.0).scroll(ScrollSpec { stick_bottom: false }).on_wheel(Island::wheel).child(body))
+    root.child(col().key("plugin-scroll").w_full().grow(1.0).min_h(0.0).scrolls().child(body))
 }
 
 /// A plugin's node as Island elements; `key` is its path, so siblings stay apart.

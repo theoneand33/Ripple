@@ -1,8 +1,8 @@
 //! Clipboard: the last 50 texts copied anywhere, newest first, each one copyable again.
 
-use rune::{Color, El, ScrollSpec, Transition, col, el, row, text};
+use rune::{Color, El, Transition, Tx, col, el, row, text};
 
-use super::empty;
+use super::{Scrolls, empty};
 use crate::island::Island;
 
 #[derive(Default)]
@@ -10,6 +10,21 @@ pub struct Clipboard {
     pub items: Vec<String>,
     /// The row whose button reads "Copied", and until when.
     pub copied: Option<(usize, f64)>,
+    next_read: f64,
+}
+
+impl Island {
+    /// Reads the clipboard every 2 s, and ends the "Copied" label.
+    pub fn clipboard_poll(&mut self, now: f64, tx: &mut Tx) -> bool {
+        if now >= self.clipboard.next_read && !rune::is_headless() {
+            self.clipboard.next_read = now + 2.0;
+            tx.wake_at(self.clipboard.next_read);
+            tx.read_clipboard(|s: &mut Island, content, _| { s.clipboard.push(content.text()); });
+        }
+        let ended = self.clipboard.copied.is_some_and(|c| now >= c.1);
+        if ended { self.clipboard.copied = None }
+        ended
+    }
 }
 
 impl Clipboard {
@@ -49,7 +64,7 @@ pub fn view(s: &Island) -> El {
                 .child(copy),
         );
     }
-    col().key("clipboard").w_full().h_full().scroll(ScrollSpec { stick_bottom: false }).on_wheel(Island::wheel).scroll_edge_fade(12.0).child(list)
+    col().key("clipboard").w_full().h_full().scrolls().scroll_edge_fade(12.0).child(list)
 }
 
 #[cfg(test)]

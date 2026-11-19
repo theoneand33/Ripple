@@ -1,9 +1,9 @@
 //! AI Assistant: one question to an OpenAI-compatible service, its answer streamed in as Markdown.
 
-use rune::{El, ScrollSpec, TextEdit, Transition, col, el, row, text, text_input};
+use rune::{El, TextEdit, Transition, col, el, row, text, text_input};
 use rune_kit::Markdown;
 
-use super::{button, tab_arrows};
+use super::{Scrolls, button, tab_arrows};
 use crate::island::Island;
 
 #[derive(Default)]
@@ -63,7 +63,7 @@ pub fn view(s: &Island) -> El {
             .on_input_key(tab_arrows);
         return col().key("ask").w_full().h_full().pt(16.0).px(24.0).pb(20.0).gap(8.0)
             .transition(Transition::blur_replace())
-            .child(col().w_full().grow(1.0).min_h(0.0).padding(8.0).scroll(ScrollSpec { stick_bottom: false }).on_wheel(Island::wheel).child(input))
+            .child(col().w_full().grow(1.0).min_h(0.0).padding(8.0).scrolls().child(input))
             .child(row().w_full().justify_end().child(button(s, "chatsubmit", "Ask", true).on_press(|s: &mut Island| s.ask_ai())));
     }
     let answer = match &s.ai.answer {
@@ -73,7 +73,7 @@ pub fn view(s: &Island) -> El {
     el().key("result").w_full().h_full()
         .transition(Transition::blur_replace())
         .child(
-            col().key("answer-scroll").w_full().h_full().scroll(ScrollSpec { stick_bottom: false }).on_wheel(Island::wheel).scroll_edge_fade(16.0)
+            col().key("answer-scroll").w_full().h_full().scrolls().scroll_edge_fade(16.0)
                 .child(col().w_full().px(24.0).pt(28.0).pb(56.0).child(answer)),
         )
         .child(button(s, "ask-another", "Ask another", true).pin(None, None, Some(16.0), Some(15.0))

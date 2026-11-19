@@ -8,7 +8,8 @@ use std::time::Duration;
 use base64::Engine;
 use serde_json::{Value, json};
 
-use crate::config::{Item, Nextcloud, Remote};
+use crate::config::{Config, Item, Nextcloud, Remote};
+use crate::date::days_from_civil;
 use crate::island::Island;
 use crate::net::percent_encode;
 
@@ -17,6 +18,46 @@ pub enum Kind {
     Notes = 0,
     Tasks = 1,
     Events = 2,
+}
+
+impl Kind {
+    const ALL: [Kind; 3] = [Kind::Notes, Kind::Tasks, Kind::Events];
+
+    /// The kind's items, and what Nextcloud is still to hear of: deletes (notes, events) or
+    /// completions (tasks), by remote id.
+    pub fn lists(self, c: &mut Config) -> (&mut Vec<Item>, &mut Vec<String>) {
+        match self {
+            Kind::Notes => (&mut c.notes, &mut c.nextcloud.deleted_notes),
+            Kind::Tasks => (&mut c.tasks, &mut c.nextcloud.done_tasks),
+            Kind::Events => (&mut c.events, &mut c.nextcloud.deleted_events),
+        }
+    }
+}
+
+/// Takes an item out, and where it sat; one Nextcloud has goes there too on the next sync
+/// (a task is marked done).
+pub fn remove(c: &mut Config, kind: Kind, key: u64) -> Option<(usize, Item)> {
+    let (items, pending) = kind.lists(c);
+    let i = items.iter().position(|item| item.key == key)?;
+    let item = items.remove(i);
+    if let Some(r) = &item.remote { pending.push(r.id.clone()) }
+    Some((i, item))
+}
+
+/// Puts a removed item back at `at`. A removal not yet sent is called off and the item keeps its
+/// Nextcloud link. One sent, or maybe in the sync running now, goes through, and the item
+/// uploads afresh: a kept link to a deleted copy would make `apply` drop it.
+pub fn restore(c: &mut Config, kind: Kind, at: usize, item: Item, syncing: bool) {
+    let (items, pending) = kind.lists(c);
+    let item = match &item.remote {
+        Some(r) if !syncing && pending.contains(&r.id) => {
+            pending.retain(|id| *id != r.id);
+            item
+        }
+        Some(_) => Item { remote: None, ..item },
+        None => item,
+    };
+    items.insert(at.min(items.len()), item);
 }
 
 /// One kind's sync: whether one runs, whether another was asked for meanwhile, and the last error.
@@ -86,11 +127,8 @@ impl Island {
         state.running = true;
         let account = self.cfg.nextcloud.account();
         let nc = self.cfg.nextcloud.clone();
-        let (mut items, mut pending) = match kind {
-            Kind::Notes => (self.cfg.notes.clone(), nc.deleted_notes.clone()),
-            Kind::Tasks => (self.cfg.tasks.clone(), nc.done_tasks.clone()),
-            Kind::Events => (self.cfg.events.clone(), nc.deleted_events.clone()),
-        };
+        let (items, pending) = kind.lists(&mut self.cfg);
+        let (mut items, mut pending) = (items.clone(), pending.clone());
         // Ids from another account mean nothing to this one: everything uploads as new. The saved
         // ids are only dropped once this account answers, so a half-typed URL loses nothing.
         let fresh = nc.synced_with != account;
@@ -98,10 +136,7 @@ impl Island {
             for i in &mut items { i.remote = None }
             pending.clear();
         }
-        std::thread::spawn(move || {
-            let out = sync(&nc, kind, &items, &pending);
-            me.update(move |s, _| s.nextcloud_synced(kind, &account, fresh, out));
-        });
+        me.spawn(move || sync(&nc, kind, &items, &pending), move |s, out| s.nextcloud_synced(kind, &account, fresh, out));
     }
 
     fn nextcloud_synced(&mut self, kind: Kind, account: &str, fresh: bool, out: Outcome) {
@@ -110,35 +145,30 @@ impl Island {
         self.nextcloud[kind as usize].error = out.error.clone();
         // A new account that failed at once has nothing of ours: keep the old ids.
         let answered = !fresh || out.server.is_some() || !out.pushed.is_empty();
-        match out {
-            out if current && answered => {
-                let open = self.cfg.notes.get(self.notes.index).map(|n| (n.key, n.text.clone()));
-                self.save(|c| {
-                    if c.nextcloud.synced_with != account {
-                        for i in c.notes.iter_mut().chain(&mut c.tasks).chain(&mut c.events) { i.remote = None }
-                        c.nextcloud.deleted_notes.clear();
-                        c.nextcloud.done_tasks.clear();
-                        c.nextcloud.deleted_events.clear();
-                        c.nextcloud.synced_with = account.to_string();
+        // Otherwise the account changed while it ran, or a new one never answered.
+        if current && answered {
+            let open = self.cfg.notes.get(self.notes.index).map(|n| (n.key, n.text.clone()));
+            self.save(|c| {
+                if c.nextcloud.synced_with != account {
+                    for k in Kind::ALL {
+                        let (items, pending) = k.lists(c);
+                        for i in items { i.remote = None }
+                        pending.clear();
                     }
-                    match kind {
-                        Kind::Notes => apply(&mut c.notes, &mut c.nextcloud.deleted_notes, out),
-                        Kind::Tasks => apply(&mut c.tasks, &mut c.nextcloud.done_tasks, out),
-                        Kind::Events => apply(&mut c.events, &mut c.nextcloud.deleted_events, out),
-                    }
-                });
-                // Keep the open note open where it went, and show Nextcloud's text if it changed.
-                if kind == Kind::Notes {
-                    let at = open.as_ref().and_then(|(key, _)| self.cfg.notes.iter().position(|n| n.key == *key));
-                    match at {
-                        Some(i) if open.as_ref().is_some_and(|(_, text)| self.cfg.notes[i].text == *text) => self.notes.index = i,
-                        Some(i) => { let focused = self.notes.editor.focused; self.open_note(i); self.notes.editor.focused = focused }
-                        None => self.open_note(self.notes.index),
-                    }
+                    c.nextcloud.synced_with = account.to_string();
+                }
+                let (items, pending) = kind.lists(c);
+                apply(items, pending, out);
+            });
+            // Keep the open note open where it went, and show Nextcloud's text if it changed.
+            if kind == Kind::Notes {
+                let at = open.as_ref().and_then(|(key, _)| self.cfg.notes.iter().position(|n| n.key == *key));
+                match at {
+                    Some(i) if open.as_ref().is_some_and(|(_, text)| self.cfg.notes[i].text == *text) => self.notes.index = i,
+                    Some(i) => { let focused = self.notes.editor.focused; self.open_note(i); self.notes.editor.focused = focused }
+                    None => self.open_note(self.notes.index),
                 }
             }
-            // The account changed while it ran, or a new one never answered.
-            _ => {}
         }
         // A changed account waits for the next sync asked of it, so no resync chases a URL that is still being typed.
         if std::mem::take(&mut self.nextcloud[kind as usize].again) && current { self.nextcloud_sync(kind) }
@@ -576,19 +606,9 @@ fn new_event(uid: &str, (y, m, d): (i32, u32, u32), title: &str, stamp: &str) ->
     format!("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Ripple//EN\r\nBEGIN:VEVENT\r\nUID:{uid}\r\nDTSTAMP:{stamp}\r\nCREATED:{stamp}\r\n{when}\r\nSUMMARY:{}\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n", escape_text(summary))
 }
 
-/// Days since 1970-01-01, from Howard Hinnant's `days_from_civil`.
-pub fn days_from_civil(y: i32, m: u32, d: u32) -> i64 {
-    let y = i64::from(y) - i64::from(m <= 2);
-    let era = y.div_euclid(400);
-    let yoe = y - era * 400;
-    let doy = (153 * ((i64::from(m) + 9) % 12) + 2) / 5 + i64::from(d) - 1;
-    era * 146_097 + yoe * 365 + yoe / 4 - yoe / 100 + doy - 719_468
-}
-
 /// Now, or `days_ago` days back, in UTC.
 fn utc_stamp(days_ago: i64) -> String {
-    let ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64);
-    let t = rune::time::LocalTime::at_offset(ms - days_ago * 86_400_000, 0);
+    let t = rune::time::LocalTime::at_offset(crate::date::now_ms() - days_ago * 86_400_000, 0);
     format!("{:04}{:02}{:02}T{:02}{:02}{:02}Z", t.year, t.month, t.day, t.hour, t.minute, t.second)
 }
 
@@ -603,6 +623,29 @@ mod tests {
         Item { text: text.into(), key, remote: remote.map(|(id, etag, text)| Remote { id: id.into(), etag: etag.into(), text: text.into() }) }
     }
     fn remote(id: &str, etag: &str, text: &str) -> Remote { Remote { id: id.into(), etag: etag.into(), text: text.into() } }
+
+    #[test]
+    fn undoing_a_removal_calls_off_an_unsent_delete_and_lets_a_sent_one_go() {
+        let linked = |c: &mut Config| { c.notes = vec![item("a", 1, Some(("n1", "", "a")))]; c.nextcloud.deleted_notes = vec!["n0".into()] };
+        let mut c = Config::default();
+        linked(&mut c);
+        // Not sent: the delete is dropped and the link kept, so no copy is made.
+        let (at, gone) = remove(&mut c, Kind::Notes, 1).unwrap();
+        assert_eq!(c.nextcloud.deleted_notes, ["n0", "n1"]);
+        restore(&mut c, Kind::Notes, at, gone, false);
+        assert_eq!((c.notes[0].remote.is_some(), c.nextcloud.deleted_notes.as_slice()), (true, ["n0".to_string()].as_slice()));
+        // Maybe in the running sync: the delete stays and the item uploads afresh.
+        let (at, gone) = remove(&mut c, Kind::Notes, 1).unwrap();
+        restore(&mut c, Kind::Notes, at, gone, true);
+        assert_eq!((c.notes[0].remote.is_none(), c.nextcloud.deleted_notes.len()), (true, 2));
+        // Already sent: nothing is pending, the item uploads afresh.
+        let mut c = Config::default();
+        linked(&mut c);
+        let (at, gone) = remove(&mut c, Kind::Notes, 1).unwrap();
+        c.nextcloud.deleted_notes.clear();
+        restore(&mut c, Kind::Notes, at, gone, false);
+        assert!(c.notes[0].remote.is_none());
+    }
 
     #[test]
     fn a_sync_merges_without_losing_edits() {
@@ -692,9 +735,6 @@ mod tests {
         assert_eq!(event(&new_event("u", (2026, 11, 19), "25:00 Odd", "s")).as_deref(), Some("2026-11-19 25:00 Odd"));
         assert_eq!(event_day("2026-02-03 9:00 Standup"), Some(((2026, 2, 3), "9:00 Standup")));
         assert_eq!((event_day("2026-13-01 x"), event_day("Standup")), (None, None));
-        assert_eq!(days_from_civil(1970, 1, 1), 0);
-        let t = rune::time::LocalTime::at_offset(days_from_civil(2024, 2, 29) * 86_400_000, 0);
-        assert_eq!((t.year, t.month, t.day), (2024, 2, 29));
     }
 
     #[test]
@@ -711,7 +751,7 @@ mod tests {
                 ("REPORT", "/remote.php/dav/calendars/me/personal/") => ok(207, "<d:multistatus xmlns:d=\"DAV:\" xmlns:cal=\"urn:ietf:params:xml:ns:caldav\"><d:response><d:href>/remote.php/dav/calendars/me/personal/a.ics</d:href><d:propstat><d:prop><d:getetag>&quot;1&quot;</d:getetag><cal:calendar-data>BEGIN:VCALENDAR\nBEGIN:VEVENT\nDTSTART;VALUE=DATE:20261120\nSUMMARY:Review\nEND:VEVENT\nEND:VCALENDAR\n</cal:calendar-data></d:prop></d:propstat></d:response></d:multistatus>"),
                 _ => ok(500, ""),
             }
-        }, |_| String::new());
+        });
         let nc = Nextcloud { url: base, user: "me".into(), password: "pw".into(), ..Nextcloud::default() };
         let items = [item("2026-11-19 Launch", 0xcd, None), item("2026-11-20 Review", 2, None), item("2001-01-01 Long ago", 3, None)];
         let out = sync(&nc, Kind::Events, &items, &["/remote.php/dav/calendars/me/personal/old.ics".into()]);
@@ -748,7 +788,7 @@ mod tests {
                 ("PUT", "/3") if r.header("if-match") != Some("\"new\"") => reply(412, json!({})),
                 _ => Response { status: 500, headers: vec![], body: String::new() },
             }
-        }, |_| String::new());
+        });
         let nc = Nextcloud { url: format!("{base}/nc/"), user: "me".into(), password: "pw".into(), ..Nextcloud::default() };
         // Item 6 matches note 1, unclaimed: it takes that note rather than uploading a copy.
         let items = [item("Mine", 7, Some(("3", "old", "Before"))), item("Local", 8, None), item("  ", 9, None), item("Server", 6, None)];
@@ -777,7 +817,7 @@ mod tests {
                 ("REPORT", "/remote.php/dav/calendars/me%40x/todo/") => ok(207, "<d:multistatus xmlns:d=\"DAV:\" xmlns:cal=\"urn:ietf:params:xml:ns:caldav\"><d:response><d:href>/remote.php/dav/calendars/me%40x/todo/a.ics</d:href><d:propstat><d:prop><d:getetag>&quot;1&quot;</d:getetag><cal:calendar-data>BEGIN:VCALENDAR&#13;\nBEGIN:VTODO&#13;\nSUMMARY:Water &amp; plants&#13;\nEND:VTODO&#13;\nEND:VCALENDAR&#13;\n</cal:calendar-data></d:prop></d:propstat></d:response></d:multistatus>"),
                 _ => ok(500, ""),
             }
-        }, |_| String::new());
+        });
         let nc = Nextcloud { url: base, user: "me@x".into(), password: "pw".into(), ..Nextcloud::default() };
         // "Water & plants" is already there, unclaimed: it takes that task rather than uploading a copy.
         let items = [item("New one", 0xab, None), item("Synced", 2, Some(("/remote.php/dav/calendars/me%40x/todo/b.ics", "\"1\"", "Synced"))), item("Water & plants", 3, None)];

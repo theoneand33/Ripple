@@ -66,7 +66,7 @@ mod tests {
             ])),
             ("POST", "/api/play?type=file&id=%2Fhome%2Fme%2Fa+b.mkv&name=a+b" | "/api/play?type=file&id=%2Fhome%2Fme%2Fa%20b.mkv&name=a%20b") => json(200, serde_json::json!({"ok": true})),
             _ => json(404, serde_json::json!({"error": format!("no {}", r.path)})),
-        }, |_| String::new());
+        });
         let base = format!("{base}/api");
         let list = continue_watching(&base).unwrap();
         assert_eq!((list.len(), list[0].progress(), list[1].poster.clone(), list[1].progress()), (2, 0.25, None, 0.0));
