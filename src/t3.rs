@@ -289,6 +289,8 @@ impl Client {
         let client_id = client["client_id"].as_str().unwrap_or_default();
         let verifier = URL_SAFE_NO_PAD.encode(random_bytes::<32>()?);
         let state = URL_SAFE_NO_PAD.encode(random_bytes::<16>()?);
+        // The pairing code and, below, the code and verifier are credentials too: check the peer before each.
+        verify_peer(device)?;
         let decided = request("POST", &format!("{origin}/oauth/mcp/decision"), &json_headers, Some(&json!({
             "authorization": {
                 "response_type": "code",
@@ -308,6 +310,7 @@ impl Client {
         };
         let form: String = [("grant_type", "authorization_code"), ("code", &code), ("redirect_uri", REDIRECT_URI), ("client_id", client_id), ("code_verifier", &verifier), ("resource", &resource)]
             .iter().map(|(k, v)| format!("{k}={}", percent_encode(v))).collect::<Vec<_>>().join("&");
+        verify_peer(device)?;
         let token = request("POST", &format!("{origin}/oauth/mcp/token"), &[("content-type", "application/x-www-form-urlencoded")], Some(&form))?;
         let access = token["access_token"].as_str().ok_or("T3 gave no MCP token")?.to_string();
         // T3's tokens last 30 days; assume that when the answer doesn't say.
