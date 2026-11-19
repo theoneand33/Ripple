@@ -42,7 +42,7 @@ impl Island {
                 .filter(|p| (p.starts_with("https://") || p.starts_with("http://")) && !cached.contains(p)).collect();
             me.update(move |s, _| if s.stremflix.generation == generation { s.stremflix.entries = Some(result) });
             for url in posters {
-                fetch_image(&me, url.clone(), move |s, image| { s.stremflix.posters.insert(url, image); });
+                fetch_image(&me, url.clone(), true, move |s, image| { s.stremflix.posters.insert(url, image); });
             }
         });
     }

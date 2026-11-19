@@ -140,7 +140,8 @@ impl Island {
             // The account changed while it ran, or a new one never answered.
             _ => {}
         }
-        if std::mem::take(&mut self.nextcloud[kind as usize].again) || !current { self.nextcloud_sync(kind) }
+        // A changed account waits for the next sync asked of it, so no resync chases a URL that is still being typed.
+        if std::mem::take(&mut self.nextcloud[kind as usize].again) && current { self.nextcloud_sync(kind) }
     }
 }
 
@@ -380,10 +381,12 @@ fn elements<'a>(xml: &'a str, name: &str) -> Vec<&'a str> {
     let mut rest = xml;
     while let Some(i) = rest.find('<') {
         rest = &rest[i + 1..];
-        let end = rest.find(|c: char| c.is_whitespace() || c == '>' || c == '/').unwrap_or(rest.len());
+        // Every scan stops at the next '<', so a hostile answer parses in linear time.
+        let end = rest.find(|c: char| c.is_whitespace() || matches!(c, '>' | '/' | '<')).unwrap_or(rest.len());
         let tag = &rest[..end];
         if tag.is_empty() || tag.rsplit(':').next() != Some(name) { continue }
-        let Some(close) = rest.find('>') else { break };
+        let Some(close) = rest.find(['>', '<']) else { break };
+        if rest[close..].starts_with('<') { continue }
         if rest[..close].ends_with('/') {
             out.push("");
             continue;
@@ -402,7 +405,8 @@ fn unescape(s: &str) -> String {
     while let Some(i) = rest.find('&') {
         out.push_str(&rest[..i]);
         rest = &rest[i..];
-        let entity = rest[1..].split_once(';').map(|(e, _)| e).unwrap_or_default();
+        // Look no further than the next '&': a run of them must not rescan the rest each time.
+        let entity = rest[1..].find([';', '&']).filter(|&j| rest[1 + j..].starts_with(';')).map(|j| &rest[1..1 + j]).unwrap_or_default();
         let c = match entity {
             "lt" => Some('<'),
             "gt" => Some('>'),
@@ -652,6 +656,14 @@ mod tests {
         let birthdays = xml.replace("/dav/cal/personal/", "/dav/cal/contact_birthdays/");
         assert_eq!(pick_list(&birthdays, "", "VEVENT"), None);
         assert_eq!(unescape("a&lt;b&#13;&#x41;&bogus;"), "a<b\rA&bogus;");
+        assert_eq!(unescape("&&amp;;&"), "&&;&");
+        // Hostile answers that once took quadratic time.
+        let start = std::time::Instant::now();
+        assert!(elements(&"<x".repeat(100_000), "response").is_empty());
+        assert_eq!(elements(&format!("{}/>", "<response ".repeat(20_000)), "response").len(), 1);
+        assert_eq!(unescape(&"&".repeat(200_000)).len(), 200_000);
+        // Linear takes milliseconds; the old quadratic scan took minutes on these inputs.
+        assert!(start.elapsed() < std::time::Duration::from_secs(10), "linear parse took {:?}", start.elapsed());
     }
 
     #[test]

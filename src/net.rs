@@ -157,12 +157,29 @@ pub fn fetch_image(url: &str) -> Option<Vec<u8>> {
         // file:///C:/a.png names C:/a.png on Windows.
         #[cfg(windows)]
         let path = match path.strip_prefix('/') { Some(p) if p.get(1..2) == Some(":") => p.to_string(), _ => path };
-        return (std::fs::metadata(&path).ok()?.len() <= LIMIT).then(|| std::fs::read(&path).ok()).flatten();
+        // A FIFO blocks on open and /dev/zero never ends: regular files only, checked on the handle
+        // that is read. O_NONBLOCK (values from libc) keeps the open itself from waiting on a FIFO.
+        if !std::fs::metadata(&path).ok()?.is_file() { return None }
+        let mut open = std::fs::OpenOptions::new();
+        open.read(true);
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        std::os::unix::fs::OpenOptionsExt::custom_flags(&mut open, if cfg!(target_os = "linux") { 0o4000 } else { 0x4 });
+        let file = open.open(&path).ok()?;
+        if !file.metadata().ok()?.is_file() { return None }
+        let mut bytes = Vec::new();
+        std::io::Read::read_to_end(&mut std::io::Read::take(file, LIMIT + 1), &mut bytes).ok()?;
+        return (bytes.len() as u64 <= LIMIT).then_some(bytes);
     }
     if !(url.starts_with("http://") || url.starts_with("https://")) { return None }
     let mut res = agent().get(url).call().ok()?;
     if !res.status().is_success() { return None }
     res.body_mut().with_config().limit(LIMIT).read_to_vec().ok()
+}
+
+/// SVG or SVGZ, sniffed the way Rune's decoder does: gzip magic, or `<` after an optional BOM.
+pub fn is_vector(bytes: &[u8]) -> bool {
+    let text = bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(bytes);
+    bytes.starts_with(&[0x1f, 0x8b]) || text.iter().find(|b| !b.is_ascii_whitespace()) == Some(&b'<')
 }
 
 pub fn percent_decode(s: &str) -> String {
@@ -230,6 +247,8 @@ mod tests {
         assert_eq!(fetch_image("data:text/plain,hi"), None);
         assert_eq!(fetch_image(&format!("data:image/png;base64,{}", "A".repeat(23 << 20))), None, "over 16 MiB decoded");
         assert_eq!(fetch_image("ftp://example.com/a.png"), None);
+        assert!(is_vector(b"\xef\xbb\xbf \n<svg/>") && is_vector(&[0x1f, 0x8b, 8]));
+        assert!(!is_vector(b"\x89PNG\r\n") && !is_vector(b"GIF89a") && !is_vector(b""));
     }
 
     #[test]
