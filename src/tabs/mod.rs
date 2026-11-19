@@ -24,7 +24,8 @@ pub use t3::T3;
 
 use rune::{Color, El, Key, KeyEvent, TextEdit, Tx, el, icon, row, text, text_input};
 
-use crate::config::{Config, Tab};
+use crate::config::{Config, Item, Tab};
+use crate::nextcloud::Kind;
 use crate::icons;
 use crate::island::{Island, Mode};
 
@@ -83,6 +84,60 @@ pub fn reloaded(s: &mut Island, old: &Config) {
     if s.mode == Mode::Large && s.tab == Tab::T3 && old.t3_devices != s.cfg.t3_devices { s.t3_load() }
 }
 
+/// What a delete took: a note and where it sat, an event, or the cleared Shelf.
+pub enum Undo {
+    Note(usize, Item),
+    Event(Item),
+    Shelf(Vec<std::path::PathBuf>),
+}
+
+/// An item back from the bin. A delete not yet sent is called off and the item keeps its
+/// Nextcloud link. One sent, or maybe in the sync running now, goes through, and the item
+/// uploads afresh: a kept link to a deleted copy would make `nextcloud::apply` drop it.
+fn restore(deleted: &mut Vec<String>, item: Item, syncing: bool) -> Item {
+    let Some(r) = &item.remote else { return item };
+    if !syncing && deleted.contains(&r.id) {
+        deleted.retain(|id| *id != r.id);
+        return item;
+    }
+    Item { remote: None, ..item }
+}
+
+impl Island {
+    pub fn undo(&mut self) {
+        match self.undo.take() {
+            Some(Undo::Note(i, item)) => {
+                let (key, syncing) = (item.key, self.nextcloud[Kind::Notes as usize].running);
+                self.save(|c| { let item = restore(&mut c.nextcloud.deleted_notes, item, syncing); c.notes.insert(i.min(c.notes.len()), item) });
+                self.open_note(self.cfg.notes.iter().position(|n| n.key == key).unwrap_or(0));
+                self.nextcloud_sync(Kind::Notes);
+            }
+            Some(Undo::Event(item)) => {
+                let syncing = self.nextcloud[Kind::Events as usize].running;
+                self.save(|c| { let item = restore(&mut c.nextcloud.deleted_events, item, syncing); c.events.push(item) });
+                self.nextcloud_sync(Kind::Events);
+            }
+            // Files dropped since stay in front.
+            Some(Undo::Shelf(files)) => self.save(|c| { let back: Vec<_> = files.into_iter().filter(|f| !c.shelf.contains(f)).collect(); c.shelf.extend(back) }),
+            None => {}
+        }
+    }
+}
+
+/// A text button shaped like `tool`, so it sits quietly in a tab's header.
+fn pill(s: &Island, key: &str, label: &str) -> El {
+    let fg = s.cfg.text();
+    el().key(key).role("button").label(label).focusable(true)
+        .h(28.0).px(12.0).center().radius(s.cfg.radius(14.0)).fill(fg.alpha(0.1 * fg.a))
+        .hover(fg.alpha(0.18 * fg.a)).press(fg.alpha(0.26 * fg.a))
+        .child(text(label).font(s.cfg.font(13.0, 600.0)).color(fg).a11y_hidden())
+}
+
+/// Undo for the last delete, while the tab it happened on stays open.
+fn undo_button(s: &Island) -> Option<El> {
+    s.undo.is_some().then(|| pill(s, "undo", "Undo").on_press(Island::undo))
+}
+
 /// Left and Right switch tabs even while typing, as the Electron app's window-wide key
 /// handler did. The T3 message box keeps them for its caret.
 fn tab_arrows(s: &mut Island, ev: &KeyEvent, tx: &mut Tx) -> bool {
@@ -103,7 +158,7 @@ fn button(s: &Island, key: &str, label: &str, enabled: bool) -> El {
 fn field(s: &Island, key: &str, edit: &TextEdit, placeholder: &str, access: fn(&mut Island) -> &mut TextEdit, submit: fn(&mut Island, &mut Tx)) -> El {
     let fg = s.cfg.text();
     let input = text_input(edit, s.cfg.font(14.0, 400.0).lh(20.0)).key(key).label(placeholder).single_line().grow(1.0).min_w(0.0)
-        .color(fg).placeholder(placeholder, fg.alpha(0.4 * fg.a))
+        .color(fg).placeholder(placeholder, fg.alpha(0.5 * fg.a))
         .on_edit(access).on_submit(submit).on_input_key(tab_arrows);
     row().key(format!("{key}-field")).grow(1.0).min_w(0.0).h(36.0).px(12.0).center_y()
         .radius(s.cfg.radius(12.0))
@@ -133,4 +188,25 @@ fn checkbox(s: &Island, key: &str, label: &str, checked: bool) -> El {
         .hover(fg.alpha(0.15 * fg.a));
     if checked { b = b.child(icon(&icons::CHECK, 12.0).color(bg)) }
     b
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Remote;
+
+    #[test]
+    fn restore_calls_off_an_unsent_delete_and_lets_a_sent_one_go() {
+        let linked = || Item { remote: Some(Remote { id: "n1".into(), ..Default::default() }), ..Item::new("a") };
+        // Not sent: the delete is dropped and the link kept, so no copy is made.
+        let mut deleted = vec!["n0".to_string(), "n1".to_string()];
+        assert!(restore(&mut deleted, linked(), false).remote.is_some());
+        assert_eq!(deleted, ["n0"]);
+        // Maybe in the running sync: the delete stays and the item uploads afresh.
+        let mut deleted = vec!["n1".to_string()];
+        assert_eq!(restore(&mut deleted, linked(), true).remote, None);
+        assert_eq!(deleted, ["n1"]);
+        // Already sent: nothing is pending, the item uploads afresh.
+        assert_eq!(restore(&mut Vec::new(), linked(), false).remote, None);
+    }
 }

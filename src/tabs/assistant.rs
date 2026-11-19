@@ -68,7 +68,7 @@ pub fn view(s: &Island) -> El {
     }
     let answer = match &s.ai.answer {
         Some(answer) if !answer.is_empty() => Markdown::new(answer.as_str()).selectable(true).streaming(true).build(&s.cfg.kit()),
-        _ => text("Thinking...").font(s.cfg.font(14.0, 400.0).italic()).color(fg.alpha(0.5 * fg.a)),
+        _ => text("Thinking…").font(s.cfg.font(14.0, 400.0).italic()).color(fg.alpha(0.5 * fg.a)),
     };
     el().key("result").w_full().h_full()
         .transition(Transition::blur_replace())

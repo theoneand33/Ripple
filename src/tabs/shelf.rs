@@ -2,7 +2,7 @@
 
 use rune::{DragItem, DragOutcome, El, Transition, col, el, icon, row, text};
 
-use super::tool;
+use super::{Undo, tool, undo_button};
 use crate::icons;
 use crate::island::Island;
 
@@ -13,8 +13,13 @@ pub fn view(s: &Island) -> El {
         .child(text("Shelf").font(s.cfg.font(17.0, 700.0)).color(fg))
         .child(icon(&icons::INBOX, 16.0).color(muted).a11y_hidden())
         .child(el().grow(1.0));
+    if let Some(undo) = undo_button(s) { header = header.child(undo) }
     if !s.cfg.shelf.is_empty() {
-        header = header.child(tool(s, "clear-shelf", &icons::TRASH, "Clear shelf").on_press(|s: &mut Island| s.save(|c| c.shelf.clear())));
+        header = header.child(tool(s, "clear-shelf", &icons::TRASH, "Clear shelf").on_press(|s: &mut Island| {
+            let mut gone = Vec::new();
+            s.save(|c| gone = std::mem::take(&mut c.shelf));
+            s.undo = Some(Undo::Shelf(gone));
+        }));
     }
     let root = col().key("shelf").w_full().h_full().px(16.0).pt(14.0).pb(14.0).gap(10.0).child(header);
 

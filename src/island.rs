@@ -215,6 +215,10 @@ pub struct Island {
     pub track: Option<Track>,
     pub art: Option<Image>,
     pub art_hovered: bool,
+    /// The marquee under the pointer, by key: it holds still so it can be read.
+    pub marquee_hovered: Option<String>,
+    /// What the last delete took, until the tab changes.
+    pub undo: Option<tabs::Undo>,
     /// The select whose menu is open, by key. Its menu hangs outside the Island.
     pub open_select: Option<&'static str>,
     /// The pointer is over the open select's menu.
@@ -332,6 +336,8 @@ impl Island {
             track: None,
             art: None,
             art_hovered: false,
+            marquee_hovered: None,
+            undo: None,
             open_select: None,
             menu_hovered: false,
             background: None,
@@ -579,6 +585,7 @@ impl Island {
             else if self.mode != Mode::Large { self.set_mode(Mode::Quick) }
         } else if !self.hovered {
             self.art_hovered = false;
+            self.marquee_hovered = None;
             self.left = true;
             tx.wake_at(tx.clock());
         }
@@ -660,6 +667,7 @@ impl Island {
 
     fn entered_tab(&mut self) {
         self.open_select = None;
+        self.undo = None;
         if self.mode == Mode::Large { tabs::entered(self) }
     }
 
@@ -1286,7 +1294,7 @@ fn glance(s: &Island, fg: Color) -> El {
         None => text(&s.time).key("time").font(style.features("'tnum' 1")).color(color),
     };
     let battery_color = if alert.is_none() && s.low_battery() { status::low() } else { color };
-    let percent = || text(s.percent_label()).key("percent").font(style).color(battery_color);
+    let percent = || text(s.percent_label()).key("percent").font(style.features("'tnum' 1")).color(battery_color);
     let battery = || if s.charging {
         row().key("battery").gap(2.0).center_y().child(icon(&icons::ZAP, 14.0).color(color)).child(percent())
     } else { percent() };
@@ -1331,9 +1339,16 @@ fn capture_dot(s: &Island) -> Option<El> {
 
 /// A clipped line; one wider than the `width` the caller gives it scrolls sideways as one
 /// endless line: two copies, sliding left by one copy's width every `period` seconds.
-pub fn marquee(key: &str, line: El, text_width: f32, width: f32, period: f64) -> El {
-    let clip = el().key(key).clip_soft(0.0);
+/// It stops at its start under the pointer (WCAG 2.2.2).
+pub fn marquee(s: &Island, key: &str, line: El, text_width: f32, width: f32, period: f64) -> El {
+    let owned = key.to_string();
+    // Always listening, so a leave still lands after the line turns short.
+    let clip = el().key(key).clip_soft(0.0).on_hover_change(move |s: &mut Island, hovered, _| {
+        if hovered { s.marquee_hovered = Some(owned.clone()) }
+        else if s.marquee_hovered.as_deref() == Some(owned.as_str()) { s.marquee_hovered = None }
+    });
     if text_width <= width { return clip.child(line) }
+    if s.marquee_hovered.as_deref() == Some(key) { return clip.clip_fade(0.0, 0.0, 0.0, 15.0).child(line) }
     let strip = row().key("strip").absolute(0.0, 0.0)
         .child(el().pr(30.0).child(line.clone()))
         .child(el().pr(30.0).child(line.a11y_hidden()))
@@ -1353,7 +1368,7 @@ fn now_playing(s: &Island, fg: Color) -> El {
         .child(text(&name).font(s.cfg.font(13.0, 600.0)).color(fg).single_line())
         .child(text(&artist).font(s.cfg.font(13.0, 400.0)).color(fg.alpha(0.7 * fg.a)).single_line());
     let width = estimate_width(&name, 13.0) + estimate_width(&artist, 13.0);
-    let marquee = marquee("marquee", title, width, s.size().0 - PLAYING_CHROME, 12.0).grow(1.0).min_w(0.0).h(18.0);
+    let marquee = marquee(s, "marquee", title, width, s.size().0 - PLAYING_CHROME, 12.0).grow(1.0).min_w(0.0).h(18.0);
 
     let line = row().key(format!("playing-{}-{}", track.name, track.artist)).w_full().h_full().px(9.0).gap(6.0).center_y()
         .transition(Transition::blur_replace())
@@ -1405,7 +1420,7 @@ pub fn cover(s: &Island, size: f32, radius: f32, glyph: f32, hover_scale: f32) -
         std::thread::spawn(move || system::open_music_player(&source));
     };
     match s.art.as_ref().filter(|i| i.is_ready() && i.error().is_none()) {
-        Some(image) => el().key("cover").role("button").label("Open player")
+        Some(image) => el().key("cover").role("button").label("Open player").focusable(true)
             .size(size, size).radius(radius).pixels_fit(image.pixels(), SurfaceFit::Fill)
             .scale(if s.art_hovered { hover_scale } else { 1.0 })
             .shadow(if s.art_hovered { 8.0 } else { 3.0 }, if s.art_hovered { 24.0 } else { 10.0 }, Color::BLACK.alpha(if s.art_hovered { 0.35 } else { 0.2 }))

@@ -22,7 +22,7 @@ pub enum Kind {
 /// One kind's sync: whether one runs, whether another was asked for meanwhile, and the last error.
 #[derive(Default)]
 pub struct SyncState {
-    running: bool,
+    pub running: bool,
     again: bool,
     pub error: Option<String>,
 }

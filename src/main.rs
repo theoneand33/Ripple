@@ -159,6 +159,7 @@ fn island_spec() -> AppSpec<Island> {
             ("plugins-empty", |s| { s.mode = Mode::Large; s.set_tab(Tab::Plugins); s.plugins = Default::default() }),
             ("shelf-drop", |s| { s.mode = Mode::Large; s.set_tab(Tab::Shelf); s.dropping = true }),
             ("shelf", |s| { s.mode = Mode::Large; s.set_tab(Tab::Shelf); s.cfg.shelf = vec!["/home/me/Report final.pdf".into(), "/home/me/photo.png".into()] }),
+            ("shelf-undo", |s| { s.mode = Mode::Large; s.set_tab(Tab::Shelf); s.undo = Some(tabs::Undo::Shelf(vec!["/home/me/photo.png".into()])) }),
             ("t3-device", |s| {
                 s.mode = Mode::Large;
                 s.set_tab(Tab::T3);
