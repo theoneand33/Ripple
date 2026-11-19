@@ -22,6 +22,9 @@ pub struct Usage {
     pub windows: Result<Vec<Window>, String>,
 }
 
+/// Set once a look found no signed-in agent: the AI Limits tab then hides.
+pub static NONE_FOUND: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// Fetches the windows; the flag allows renewing an expired token.
 type Job = Box<dyn FnOnce(bool) -> Result<Vec<Window>, String> + Send>;
 

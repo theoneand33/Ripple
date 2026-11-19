@@ -55,28 +55,33 @@ impl Island {
         favorites.iter().find(|f| f.key() == self.cfg.t3_model).or(favorites.first())
     }
 
+    /// Looks for T3 Code on this computer and adds it as a device.
+    pub fn t3_detect(&mut self) {
+        if self.t3.detecting { return }
+        let Some(me) = self.me.clone() else { return };
+        self.t3.detecting = true;
+        self.t3.status = "Looking for T3 Code on this computer…".into();
+        std::thread::spawn(move || {
+            let found = client::detect_local();
+            me.update(move |s, _| {
+                s.t3.detecting = false;
+                s.t3.status.clear();
+                let Some(device) = found else { return };
+                // Kept even if a device was added meanwhile: a dropped token would stay live in T3.
+                s.save(|c| { c.t3_detected = true; c.t3_devices.push(device) });
+                s.t3_load();
+            });
+        });
+    }
+
     /// Asks the device for its models and linked environments, then for its folders.
     pub fn t3_load(&mut self) {
         self.t3.generation += 1;
         self.t3.data = None;
         self.t3.projects = None;
         // Retried on each open until found: T3 may not be installed or running yet.
-        if self.cfg.t3_devices.is_empty() && !self.cfg.t3_detected && !self.t3.detecting {
-            if let Some(me) = self.me.clone() {
-                self.t3.detecting = true;
-                self.t3.status = "Looking for T3 Code on this computer…".into();
-                std::thread::spawn(move || {
-                    let found = client::detect_local();
-                    me.update(move |s, _| {
-                        s.t3.detecting = false;
-                        s.t3.status.clear();
-                        let Some(device) = found else { return };
-                        // Kept even if a device was added meanwhile: a dropped token would stay live in T3.
-                        s.save(|c| { c.t3_detected = true; c.t3_devices.push(device) });
-                        s.t3_load();
-                    });
-                });
-            }
+        if self.cfg.t3_devices.is_empty() && !self.cfg.t3_detected {
+            self.t3_detect();
             return;
         }
         let (Some(device), Some(me)) = (self.t3_device().map(|d| d.1.clone()), self.me.clone()) else { return };

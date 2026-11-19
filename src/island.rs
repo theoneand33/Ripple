@@ -1059,6 +1059,9 @@ impl Island {
         // Starting in Large: the tab showing loads now, as it would on opening.
         self.entered_tab();
         self.load_background();
+        // Their tabs stay hidden until found.
+        if self.cfg.t3_devices.is_empty() && !self.cfg.t3_detected { self.t3_detect() }
+        if self.tab != Tab::Limits { self.limits_load() }
         if self.cfg.auto_launch { std::thread::spawn(|| system::set_auto_launch(true)); }
 
         fn every(seconds: u64, f: impl Fn() + Send + 'static) {
@@ -1600,7 +1603,8 @@ mod tests {
 
     #[test]
     fn the_dock_fits_the_canvas_with_every_tab_visible() {
-        let mut s = island(Config::default());
+        let t3 = crate::config::T3Device { name: "t".into(), url: "u".into(), token: "t".into() };
+        let mut s = island(Config { hidden_tabs: Vec::new(), t3_devices: vec![t3], ..Config::default() });
         s.mode = Mode::Large;
         assert_eq!(s.cfg.visible_tabs().len(), Tab::ALL.len());
         let [x, _, w, _] = s.dock_rect().unwrap();

@@ -16,6 +16,7 @@ impl Island {
         let generation = self.limits_generation;
         std::thread::spawn(move || {
             let usage = limits::all(&dirs, &proxy);
+            limits::NONE_FOUND.store(usage.is_empty(), std::sync::atomic::Ordering::Relaxed);
             me.update(move |s, _| if s.limits_generation == generation { s.limits = Some(usage) });
         });
     }

@@ -27,9 +27,9 @@ macro_rules! tabs {
 }
 
 tabs! {
+    Overview = 2,
     Search = 0,
     Workflows = 1,
-    Overview = 2,
     Assistant = 4,
     Clipboard = 5,
     Tasks = 6,
@@ -40,9 +40,9 @@ tabs! {
     System = 12,
     Calendar = 13,
     Limits = 14,
-    Plugins = 15,
     Pomodoro = 16,
     Calculator = 17,
+    Plugins = 15,
 }
 
 impl Tab {
@@ -304,7 +304,7 @@ impl Default for Config {
         let app = |n: &str| QuickApp { name: n.into(), launch: n.into() };
         Config {
             tab_order: Tab::ALL.into(),
-            hidden_tabs: Vec::new(),
+            hidden_tabs: vec![Tab::Stremflix],
             default_tab: Tab::Overview,
             open_default_tab: true,
             tab_linger: 1.0,
@@ -374,7 +374,13 @@ impl Config {
     }
 
     pub fn visible_tabs(&self) -> Vec<Tab> {
-        self.tab_order.iter().copied().filter(|t| !self.hidden_tabs.contains(t)).collect()
+        // T3 Code needs a device; AI Limits needs a signed-in agent (`limits::NONE_FOUND`, set once looked for).
+        let absent = |t: &Tab| match t {
+            Tab::T3 => self.t3_devices.is_empty(),
+            Tab::Limits => crate::limits::NONE_FOUND.load(std::sync::atomic::Ordering::Relaxed),
+            _ => false,
+        };
+        self.tab_order.iter().copied().filter(|t| !self.hidden_tabs.contains(t) && !absent(t)).collect()
     }
 
     pub fn first_tab(&self) -> Tab {
@@ -555,18 +561,19 @@ mod tests {
     fn saved_orders_drop_retired_tabs_and_gain_new_ones() {
         use Tab::*;
         let cfg = serde_json::from_str::<Config>(r#"{"tab_order": [7, 2, 3, 0], "hidden_tabs": [3, 0], "default_tab": 7}"#).unwrap().normalized();
-        assert_eq!(cfg.tab_order, [Overview, Search, Workflows, Assistant, Clipboard, Tasks, T3, Notes, Stremflix, Shelf, System, Calendar, Limits, Plugins, Pomodoro, Calculator]);
+        assert_eq!(cfg.tab_order, [Overview, Search, Workflows, Assistant, Clipboard, Tasks, T3, Notes, Stremflix, Shelf, System, Calendar, Limits, Pomodoro, Calculator, Plugins]);
         assert_eq!(cfg.hidden_tabs, [Search]);
         assert_eq!(cfg.first_tab(), Overview);
     }
 
     #[test]
     fn the_last_visible_tab_cannot_be_hidden() {
-        let mut cfg = Config::default();
+        let mut cfg = Config { t3_devices: vec![T3Device { name: "t".into(), url: "u".into(), token: "t".into() }], ..Config::default() };
+        cfg.hidden_tabs.clear();
         for t in Tab::ALL { cfg.toggle_tab(t) }
-        assert_eq!(cfg.visible_tabs(), [Tab::Calculator]);
+        assert_eq!(cfg.visible_tabs(), [Tab::Plugins]);
         cfg.toggle_tab(Tab::Search);
-        assert_eq!(cfg.visible_tabs(), [Tab::Search, Tab::Calculator]);
+        assert_eq!(cfg.visible_tabs(), [Tab::Search, Tab::Plugins]);
     }
 
     #[cfg(unix)]
