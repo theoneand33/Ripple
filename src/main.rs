@@ -11,6 +11,7 @@ mod migrate;
 mod net;
 mod nextcloud;
 mod platform;
+mod plugins;
 mod settings;
 mod stremflix;
 mod system;
@@ -146,6 +147,13 @@ fn island_spec() -> AppSpec<Island> {
                     limits::Usage { name: "Grok Build".into(), windows: Err("Token expired: run its CLI once to refresh".into()) },
                 ]);
             }),
+            ("plugins", |s| {
+                s.mode = Mode::Large;
+                s.set_tab(Tab::Plugins);
+                // RIPPLE_PLUGINS=FILE shows that plugin; otherwise the example.
+                if s.plugins.list.is_empty() { s.plugins.list.push(plugins::Plugin::load("example.lua".into(), None, include_str!("../plugins/example.lua"))) }
+            }),
+            ("plugins-empty", |s| { s.mode = Mode::Large; s.set_tab(Tab::Plugins); s.plugins = Default::default() }),
             ("shelf-drop", |s| { s.mode = Mode::Large; s.set_tab(Tab::Shelf); s.dropping = true }),
             ("shelf", |s| { s.mode = Mode::Large; s.set_tab(Tab::Shelf); s.cfg.shelf = vec!["/home/me/Report final.pdf".into(), "/home/me/photo.png".into()] }),
             ("t3-device", |s| {
@@ -264,6 +272,8 @@ fn overlay_island(screens: Vec<Screen>, store: Store) -> Vec<rune::AnyWindowSpec
 }
 
 fn main() {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().is_some_and(|a| a == "--test-plugin") { std::process::exit(plugins::test_cli(&args[1..])) }
     #[cfg(target_os = "linux")]
     let wayland = {
         let wayland = std::env::var_os("WAYLAND_DISPLAY").is_some();
