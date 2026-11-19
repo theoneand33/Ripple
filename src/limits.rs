@@ -170,9 +170,10 @@ fn renew(s: &Saved, expired: &str) -> Result<String, String> {
     let tmp = s.path.with_extension("json.ripple-tmp");
     std::fs::copy(&s.path, &tmp).map_err(|_| EXPIRED.to_string())?;
     let saved = renew_into(s, creds).and_then(|access| {
-        std::fs::write(&tmp, serde_json::to_string_pretty(&file).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
-        std::fs::rename(&tmp, &s.path).map_err(|e| e.to_string())?;
-        Ok(access)
+        let text = serde_json::to_string_pretty(&file).map_err(|e| e.to_string())?;
+        // The old refresh token is spent now, so a failed save falls back to writing the file in place.
+        let ok = std::fs::write(&tmp, &text).and_then(|_| std::fs::rename(&tmp, &s.path)).or_else(|_| std::fs::write(&s.path, &text));
+        ok.map(|_| access).map_err(|_| "Couldn't save the renewed sign-in: sign in to its CLI again".to_string())
     });
     let _ = std::fs::remove_file(&tmp);
     saved
