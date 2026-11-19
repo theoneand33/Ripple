@@ -157,10 +157,14 @@ pub fn fetch_image(url: &str) -> Option<Vec<u8>> {
         // file:///C:/a.png names C:/a.png on Windows.
         #[cfg(windows)]
         let path = match path.strip_prefix('/') { Some(p) if p.get(1..2) == Some(":") => p.to_string(), _ => path };
-        // A FIFO blocks on open and /dev/zero never ends: regular files only, checked before opening
-        // and again on the handle that is read.
+        // A FIFO blocks on open and /dev/zero never ends: regular files only, checked on the handle
+        // that is read. O_NONBLOCK (values from libc) keeps the open itself from waiting on a FIFO.
         if !std::fs::metadata(&path).ok()?.is_file() { return None }
-        let file = std::fs::File::open(&path).ok()?;
+        let mut open = std::fs::OpenOptions::new();
+        open.read(true);
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        std::os::unix::fs::OpenOptionsExt::custom_flags(&mut open, if cfg!(target_os = "linux") { 0o4000 } else { 0x4 });
+        let file = open.open(&path).ok()?;
         if !file.metadata().ok()?.is_file() { return None }
         let mut bytes = Vec::new();
         std::io::Read::read_to_end(&mut std::io::Read::take(file, LIMIT + 1), &mut bytes).ok()?;
