@@ -100,6 +100,10 @@ fn accounts(home: &Path, extra_dirs: &[String], cliproxy_dir: &str) -> Vec<Accou
         }
     }
     // The same account found twice (an extra folder that is the default one, a token copied into CLIProxyAPI).
+    // A token kept in two files shares one refresh token: renewing it would leave the other copy spent.
+    let mut count = std::collections::HashMap::new();
+    for a in &out { *count.entry(a.token.clone()).or_insert(0) += 1 }
+    for a in &mut out { if count[&a.token] > 1 { a.renews = None } }
     let mut seen = std::collections::HashSet::new();
     out.retain(|a| seen.insert(a.token.clone()));
     out
@@ -448,6 +452,7 @@ mod tests {
         put(".claude/.credentials.json", json!({"claudeAiOauth": {"accessToken": "c1"}}));
         put(".claude.json", json!({"oauthAccount": {"emailAddress": "a@x.com"}}));
         put("work/.credentials.json", json!({"claudeAiOauth": {"accessToken": "c2"}}));
+        put("work/.claude.json", json!({"oauthAccount": {"accountUuid": "u2"}}));
         put("work/auth.json", json!({"tokens": {"access_token": "x1", "account_id": "acc", "id_token": id_token}}));
         put("proxy/claude-a.json", json!({"type": "claude", "email": "a@x.com", "access_token": "c1"}));
         put("proxy/codex-d.json", json!({"type": "codex", "email": "d@x.com", "access_token": "x2"}));
@@ -455,9 +460,10 @@ mod tests {
         put(".config/github-copilot/apps.json", json!({"github.com:1": {"user": "octo", "oauth_token": "gh1"}, "github.com:2": {"user": "cat", "oauth_token": "gh2"}}));
         let found = accounts(&home, &["~/work".into(), " ".into()], &home.join("proxy").to_string_lossy());
         let _ = std::fs::remove_dir_all(&home);
-        // Only a CLI's own file with a known account renews: not the folder without a profile, not CLIProxyAPI or Copilot.
+        // Only a CLI's own file with a known account renews: not CLIProxyAPI or Copilot.
         let ids: Vec<Option<&str>> = found.iter().map(|a| a.renews.as_deref()).collect();
-        assert_eq!(ids, [Some("claude:a@x.com"), None, Some("codex:acc"), None, None, None]);
+        // ~/.claude's token is also in CLIProxyAPI's folder, so it doesn't renew either.
+        assert_eq!(ids, [None, Some("claude:u2"), Some("codex:acc"), None, None, None]);
         let names: Vec<String> = found.into_iter().map(|a| a.name).collect();
         assert_eq!(names, ["Claude Code · a@x.com", "Claude Code", "Codex · b@x.com", "Codex · d@x.com", "GitHub Copilot · octo", "GitHub Copilot · cat"]);
     }
