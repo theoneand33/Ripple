@@ -10,11 +10,11 @@ end
 return {
   name = "Focus Timer",
   state = { length = WORK },
-  -- Runs once a second while the panel shows; os.time() keeps the count right while it doesn't.
+  -- Runs once a second while the panel shows; it catches up on phases that ended while it didn't.
   tick = function(s)
-    if s.ends and os.time() >= s.ends then
+    while s.ends and os.time() >= s.ends do
       s.length = s.length == WORK and BREAK or WORK
-      s.ends = os.time() + s.length
+      s.ends = s.ends + s.length
     end
   end,
   view = function(s)

@@ -215,7 +215,7 @@ impl Plugins {
         plugins
     }
 
-    /// Loads new and changed files and drops deleted ones; the rest keep their state.
+    /// Loads new, changed and failed files and drops deleted ones; the rest keep their state.
     pub fn scan(&mut self) {
         let Some(dir) = &self.dir else { return };
         let mut files: Vec<PathBuf> = if dir.is_file() { vec![dir.clone()] } else {
@@ -226,7 +226,8 @@ impl Plugins {
         let mut old = std::mem::take(&mut self.list);
         self.list = files.into_iter().map(|path| {
             let modified = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
-            match old.iter().position(|p| p.path == path && p.modified == modified) {
+            // A plugin with an error loads again, so a one-off failure clears when the tab reopens.
+            match old.iter().position(|p| p.path == path && p.modified == modified && p.error.is_none()) {
                 Some(i) => old.swap_remove(i),
                 None => Plugin::read(path, modified),
             }

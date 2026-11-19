@@ -6,7 +6,7 @@ A plugin is one Lua 5.4 file that adds a panel to the Plugins tab. Put `.lua` fi
 - Windows: `%APPDATA%\Ripple\plugins`
 - macOS: `~/Library/Application Support/Ripple/plugins`
 
-Ripple creates the folder on launch. It loads new and changed files each time you open the Plugins tab, so you don't need to restart. With more than one plugin, chips at the top of the tab switch between them.
+Ripple creates the folder on launch. It loads new and changed files, and reloads plugins with an error, each time you open the Plugins tab, so you don't need to restart. With more than one plugin, chips at the top of the tab switch between them.
 
 [`plugins/example.lua`](plugins/example.lua) is a complete plugin: a focus timer.
 
@@ -42,7 +42,7 @@ Every plugin has its own Lua state, with the standard libraries except `debug`, 
 
 Plugins run on the UI thread. Each load, tick or button press must finish in 250 ms, its view included, or it is stopped with an error, and each plugin may use up to 64 MB. Time spent inside a C function such as `io.popen` isn't counted, so keep slow work out of plugins. Give every button a unique `key`; two buttons with the same label need one.
 
-Errors show at the top of the panel and on stderr. An error stays until you change the file.
+Errors show at the top of the panel and on stderr. An error stays until you change the file or open the Plugins tab again, which reloads the plugin.
 
 ## Testing a plugin
 
