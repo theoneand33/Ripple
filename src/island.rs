@@ -27,8 +27,10 @@ const DOCK: (f32, f32, f32, f32) = (44.0, 12.0, 32.0, 6.0);
 const LARGE_EDGE: f32 = 12.0;
 /// Framer's spring (stiffness 400, damping 40, mass 2.5) as duration and bounce.
 pub const SPRING: Spring = Spring::new(0.5, 0.3);
+/// Resting is the system's answer to the pointer leaving: it settles faster, with little overshoot.
+const COLLAPSE: Spring = Spring::new(0.35, 0.1);
 /// The Island grows this much under the pointer, past its layout rect.
-const HOVER_SCALE: f32 = 1.05;
+const HOVER_SCALE: f32 = 1.02;
 
 /// Status hues for the pill border and alerts.
 pub mod status {
@@ -1135,9 +1137,11 @@ pub fn view(s: &Island, _: &mut Cx<Island>) -> El {
     let mut island = el().key("island").role("group").label("Ripple").hit()
         .absolute(left, top).size(w, h)
         .fill(bg).corners(radii).clip_corners(radii)
-        .motion(SPRING)
+        .motion(if s.mode == Mode::Still { COLLAPSE } else { SPRING })
         // Large is always under the pointer, so the hover lift only tells the compact Island apart.
+        // Hover passes are frequent: no bounce.
         .scale(if s.hovered && !large { HOVER_SCALE } else { 1.0 })
+        .scale_motion(Spring::new(0.25, 0.0))
         .on_hover_change(Island::hover)
         .on_drag(Island::drag)
         .on_wheel(Island::wheel);
@@ -1159,7 +1163,10 @@ pub fn view(s: &Island, _: &mut Cx<Island>) -> El {
     if large {
         let inset = s.notch_inset();
         // Tabs slide the way the swipe went; the old one leaves with this build's direction.
-        let push = Transition::push(if s.tab_dir < 0 { Edge::Leading } else { Edge::Trailing });
+        // A short shift, not the full width: a swipe changes tab in one step and doesn't track the finger.
+        let shift = |e: Edge| { let d = e.direction(); Effect { offset_fraction: Vec2::new(0.2 * d.x, 0.2 * d.y), opacity: 0.0, blur: 1.5, ..Effect::IDENTITY } };
+        let edge = if s.tab_dir < 0 { Edge::Leading } else { Edge::Trailing };
+        let push = Transition { insertion: shift(edge), removal: shift(edge.opposite()), ..Transition::push(edge) };
         island = island.child(
             el().key("tabs").pin(Some(LARGE_EDGE), Some(inset.max(LARGE_EDGE)), Some(LARGE_EDGE), Some(LARGE_EDGE))
                 .transition(Transition::blur_replace())
@@ -1345,7 +1352,7 @@ fn now_playing(s: &Island, fg: Color) -> El {
     let line = row().key(format!("playing-{}-{}", track.name, track.artist)).w_full().h_full().px(9.0).gap(6.0).center_y()
         .transition(Transition::blur_replace())
         .opacity(if !track.playing { 0.5 } else if s.cfg.hide_inactive { 0.6 } else { 1.0 })
-        .child(cover(s, 24.0, 4.0, 14.0, 1.1))
+        .child(cover(s, 24.0, 4.0, 14.0, 1.05))
         .child(marquee);
     let line = line.child(if s.hovered {
         el().key("play-pause").role("button").label(if track.playing { "Pause" } else { "Play" })
@@ -1360,12 +1367,10 @@ fn now_playing(s: &Island, fg: Color) -> El {
     // A hairline along the bottom, inset past the capsule's curve; it glides between the 2 s polls.
     // Keyed by track, so a new track starts its own bar instead of sweeping back.
     let inset = s.size().1 / 2.0;
-    let width = s.size().0 - 2.0 * inset;
-    let done = width * position as f32 / length as f32;
     wrap.child(
         el().key(format!("progress-{}-{}", track.name, track.artist)).inert().a11y_hidden()
             .pin(Some(inset), None, Some(inset), Some(3.0)).h(2.0).radius(1.0).fill(fg.alpha(0.15 * fg.a))
-            .child(el().key("progress-done").h_full().w(done).radius(1.0).fill(fg.alpha(0.7 * fg.a)).motion(Spring::new(2.0, 0.0))),
+            .child(el().key("progress-done").h_full().w_frac(position as f32 / length as f32).radius(1.0).fill(fg.alpha(0.7 * fg.a))),
     )
 }
 
