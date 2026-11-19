@@ -89,11 +89,78 @@ fn ps_quote(text: &str) -> String {
     }).collect()
 }
 
-/// Runs a PowerShell script through -EncodedCommand (a multi-line -Command is cut at the first
-/// newline). Trimmed stdout, or "" on failure.
+/// Runs each script it reads (one base64 UTF-16LE line) and answers with its output as one
+/// base64 UTF-8 line. It quits when Ripple closes its stdin.
+#[cfg(windows)]
+const PS_SERVER: &str = r#"
+while ($true) {
+  $line = [Console]::In.ReadLine()
+  if ($null -eq $line) { exit }
+  $out = try {
+    $script = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($line))
+    (& ([scriptblock]::Create($script)) | ForEach-Object { "$_" }) -join "`n"
+  } catch { '' }
+  [Console]::Out.WriteLine([Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($out.Trim())))
+  [Console]::Out.Flush()
+}
+"#;
+
+#[cfg(windows)]
+struct PsServer {
+    child: std::process::Child,
+    stdin: std::process::ChildStdin,
+    lines: std::sync::mpsc::Receiver<String>,
+}
+
+#[cfg(windows)]
+fn start_ps_server() -> Option<PsServer> {
+    use std::io::BufRead;
+    let mut child = command("powershell").args(["-NoProfile", "-EncodedCommand", &ps_encode(PS_SERVER)])
+        .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().ok()?;
+    let (stdin, stdout) = (child.stdin.take()?, child.stdout.take()?);
+    let (send, lines) = std::sync::mpsc::channel();
+    std::thread::spawn(move || for line in std::io::BufReader::new(stdout).lines().map_while(Result::ok) { if send.send(line).is_err() { break } });
+    Some(PsServer { child, stdin, lines })
+}
+
+/// Runs a PowerShell script in one long-lived PowerShell: the pollers run several a second, and
+/// starting a PowerShell for each costs a few hundred ms of CPU. Calls run one at a time, so slow
+/// one-off scripts use their own process. Trimmed output, or "" on failure; a script that runs past
+/// `TIMEOUT` (or a dead process) takes the process down, and the next call starts another.
 #[cfg(windows)]
 fn powershell(script: &str) -> String {
-    output("powershell", &["-NoProfile", "-EncodedCommand", &ps_encode(script)]).unwrap_or_default()
+    static SERVER: PsSlot = std::sync::Mutex::new(None);
+    powershell_in(&SERVER, script)
+}
+
+#[cfg(windows)]
+type PsSlot = std::sync::Mutex<Option<PsServer>>;
+
+/// Now playing: WinRT calls that can hang get a process of their own, so a stuck
+/// one doesn't hold up the camera, mic and Bluetooth pollers.
+#[cfg(windows)]
+fn powershell_media(script: &str) -> String {
+    static SERVER: PsSlot = std::sync::Mutex::new(None);
+    powershell_in(&SERVER, script)
+}
+
+#[cfg(windows)]
+fn powershell_in(slot: &PsSlot, script: &str) -> String {
+    use base64::Engine;
+    use std::io::Write;
+    let mut server = slot.lock().unwrap_or_else(|e| e.into_inner());
+    if server.is_none() { *server = start_ps_server() }
+    let Some(ps) = server.as_mut() else { return String::new() };
+    let answer = writeln!(ps.stdin, "{}", ps_encode(script)).and_then(|_| ps.stdin.flush()).ok()
+        .and_then(|_| ps.lines.recv_timeout(TIMEOUT).ok())
+        .and_then(|line| base64::engine::general_purpose::STANDARD.decode(line.trim()).ok());
+    match answer {
+        Some(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+        None => {
+            if let Some(mut ps) = server.take() { let _ = ps.child.kill(); let _ = ps.child.wait(); }
+            String::new()
+        }
+    }
 }
 
 /// A script as `-EncodedCommand` takes it: base64 of its UTF-16LE.
@@ -268,7 +335,7 @@ end if"#;
 #[cfg(windows)]
 pub fn media() -> Option<Track> {
     const SCRIPT: &str = "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Add-Type -AssemblyName System.Runtime.WindowsRuntime; $manager = [Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager, Windows.Media.Control, ContentType = WindowsRuntime]::RequestAsync().GetAwaiter().GetResult(); $session = $manager.GetSessions() | Where-Object { $_.GetPlaybackInfo().PlaybackStatus -eq 'Playing' } | Select-Object -First 1; if (-not $session) { $session = $manager.GetCurrentSession() }; if ($session) { $props = $session.TryGetMediaPropertiesAsync().GetAwaiter().GetResult(); $playback = $session.GetPlaybackInfo(); $status = $playback.PlaybackStatus; $timeline = $session.GetTimelineProperties(); $position = $timeline.Position; if ($status.ToString() -eq 'Playing' -and $timeline.LastUpdatedTime.Year -gt 2000) { $position += [DateTimeOffset]::Now - $timeline.LastUpdatedTime }; $length = $timeline.EndTime - $timeline.StartTime; $thumbnail = $props.Thumbnail; $artwork = ''; if ($thumbnail) { try { $stream = $thumbnail.OpenReadAsync().GetAwaiter().GetResult(); $buffer = New-Object byte[] $stream.Size; $reader = New-Object Windows.Storage.Streams.DataReader $stream; $reader.LoadAsync($stream.Size).GetAwaiter().GetResult() | Out-Null; $reader.ReadBytes($buffer); $artwork = 'data:image/png;base64,' + [Convert]::ToBase64String($buffer); $reader.Close(); $stream.Close(); } catch { } } $info = @{ Title = $props.Title; Artist = $props.Artist; Album = $props.AlbumTitle; Status = $status.ToString().ToLower(); Source = $session.SourceAppUserModelId; Artwork = $artwork; Position = $position.TotalSeconds; Length = $length.TotalSeconds }; return $info | ConvertTo-Json -Compress; } return 'null';";
-    let out = powershell(SCRIPT);
+    let out = powershell_media(SCRIPT);
     if let Ok(data) = serde_json::from_str::<serde_json::Value>(&out)
         && data.is_object()
     {
@@ -286,7 +353,7 @@ pub fn media() -> Option<Track> {
         });
     }
     // No media session: fall back to Spotify's window title ("Artist - Song").
-    let out = powershell("[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Get-Process | Where-Object {$_.ProcessName -eq 'Spotify'} | Select-Object -ExpandProperty MainWindowTitle");
+    let out = powershell_media("[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Get-Process | Where-Object {$_.ProcessName -eq 'Spotify'} | Select-Object -ExpandProperty MainWindowTitle");
     let title = out.lines().map(str::trim).find(|l| l.contains(" - "))?;
     let (artist, song) = title.split_once(" - ")?;
     Some(Track { name: song.into(), artist: artist.into(), playing: true, source: "Spotify".into(), ..Track::default() })
@@ -319,7 +386,8 @@ end if"#);
     #[cfg(windows)]
     {
         let method = match cmd { MediaCommand::PlayPause => "TryTogglePlayPauseAsync", MediaCommand::Next => "TrySkipNextAsync", MediaCommand::Previous => "TrySkipPreviousAsync" };
-        powershell(&format!("Add-Type -AssemblyName System.Runtime.WindowsRuntime; $m = [Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager, Windows.Media.Control, ContentType = WindowsRuntime]::RequestAsync().GetAwaiter().GetResult(); $s = $m.GetSessions() | Where-Object {{ $_.GetPlaybackInfo().PlaybackStatus -eq 'Playing' }} | Select-Object -First 1; if (-not $s) {{ $s = $m.GetCurrentSession() }}; if ($s) {{ $s.{method}().GetAwaiter().GetResult() | Out-Null }}"));
+        // A one-off process: a click mustn't wait behind the media poll's shared one.
+        let _ = output("powershell", &["-NoProfile", "-EncodedCommand", &ps_encode(&format!("Add-Type -AssemblyName System.Runtime.WindowsRuntime; $m = [Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager, Windows.Media.Control, ContentType = WindowsRuntime]::RequestAsync().GetAwaiter().GetResult(); $s = $m.GetSessions() | Where-Object {{ $_.GetPlaybackInfo().PlaybackStatus -eq 'Playing' }} | Select-Object -First 1; if (-not $s) {{ $s = $m.GetCurrentSession() }}; if ($s) {{ $s.{method}().GetAwaiter().GetResult() | Out-Null }}"))]);
     }
 }
 
@@ -424,7 +492,9 @@ pub fn microphone_in_use() -> bool {
 /// Windows records a capability's use per app; a stop time of 0 means it is in use now.
 #[cfg(windows)]
 fn capability_in_use(name: &str) -> bool {
-    powershell(&format!("@(Get-ChildItem -Path \"HKCU:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\CapabilityAccessManager\\ConsentStore\\{name}\" -Recurse -ErrorAction SilentlyContinue | ForEach-Object {{ Get-ItemProperty -Path $_.PSPath -Name \"LastUsedTimeStop\" -ErrorAction SilentlyContinue }} | Where-Object {{ $_ -and $_.LastUsedTimeStop -eq 0 }}).Count -gt 0"))
+    // Their own process: the privacy dots shouldn't wait on a slow Bluetooth scan.
+    static SERVER: PsSlot = std::sync::Mutex::new(None);
+    powershell_in(&SERVER, &format!("@(Get-ChildItem -Path \"HKCU:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\CapabilityAccessManager\\ConsentStore\\{name}\" -Recurse -ErrorAction SilentlyContinue | ForEach-Object {{ Get-ItemProperty -Path $_.PSPath -Name \"LastUsedTimeStop\" -ErrorAction SilentlyContinue }} | Where-Object {{ $_ -and $_.LastUsedTimeStop -eq 0 }}).Count -gt 0"))
         .eq_ignore_ascii_case("true")
 }
 
@@ -919,7 +989,9 @@ Get-StartApps -EA SilentlyContinue | ForEach-Object {
 "#;
     let list = |script: &str| -> Vec<QuickApp> {
         // ConvertTo-Json writes a lone result as an object, not an array.
-        match serde_json::from_str::<serde_json::Value>(&powershell(script)) {
+        // Its own process: these scans take seconds and would hold up the pollers' shared one.
+        let out = output("powershell", &["-NoProfile", "-EncodedCommand", &ps_encode(script)]).unwrap_or_default();
+        match serde_json::from_str::<serde_json::Value>(&out) {
             Ok(serde_json::Value::Array(items)) => items.into_iter().filter_map(|v| serde_json::from_value(v).ok()).collect(),
             Ok(v) => serde_json::from_value(v).ok().into_iter().collect(),
             Err(_) => Vec::new(),
@@ -936,6 +1008,15 @@ Get-StartApps -EA SilentlyContinue | ForEach-Object {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn powershell_scripts_share_one_process_and_keep_their_lines() {
+        assert_eq!(powershell("1 + 1"), "2");
+        assert_eq!(powershell("$a = 'é'\nreturn @($a, 'b')"), "é\nb");
+        assert_eq!(powershell("throw 'x'"), "");
+        assert_eq!(powershell("@(1).Count -gt 0"), "True");
+    }
 
     #[test]
     fn volume_and_brightness_read_as_percents() {

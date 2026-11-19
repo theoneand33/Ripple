@@ -380,13 +380,11 @@ pub const LOCAL_NAME: &str = "This computer";
 fn t3_home() -> Option<PathBuf> {
     let raw = std::env::var("T3CODE_HOME").unwrap_or_default();
     let raw = raw.trim();
+    let home = rune::dirs::home();
     match raw {
-        "" => rune::dirs::home().map(|h| h.join(".t3")),
-        "~" => rune::dirs::home(),
-        _ => match raw.strip_prefix("~/").or(raw.strip_prefix("~\\")) {
-            Some(rest) => rune::dirs::home().map(|h| h.join(rest)),
-            None => Some(PathBuf::from(raw)),
-        },
+        "" => home.map(|h| h.join(".t3")),
+        _ if raw.starts_with('~') => home.map(|h| crate::limits::expand(&h, raw)),
+        _ => Some(PathBuf::from(raw)),
     }
 }
 

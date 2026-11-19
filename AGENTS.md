@@ -13,6 +13,7 @@ Ripple is a Dynamic Island-style bar for Windows, Linux, and macOS. It is one Ru
 | `src/config.rs` | Every user setting, stored as one JSON value in `prefs.json`; the `Tab` list, themes and AI providers |
 | `src/system.rs` | OS queries: now playing, battery, Bluetooth, camera, mic, launching apps |
 | `src/net.rs` | Weather, the AI assistant stream, and images by URL |
+| `src/stremflix.rs` | Stremflix-rs's local API: Continue Watching and playback |
 | `src/nextcloud.rs` | Nextcloud sync for Notes (Notes API) and Tasks (CalDAV), and the merge that keeps local edits |
 | `src/limits.rs` | AI Limits: finds each coding agent's saved sign-in and reads its plan usage |
 | `src/plugins.rs` | Lua plugins: loading the plugins folder, the `ui.*` nodes, and `--test-plugin`. API in `PLUGINS.md` |
@@ -20,7 +21,6 @@ Ripple is a Dynamic Island-style bar for Windows, Linux, and macOS. It is one Ru
 | `src/platform.rs` | Displays, click-through around the Island (X11 input shape), and focus hand-back |
 | `src/mac.rs` | macOS status-bar item and the notch window frame |
 | `src/command.rs` | Splits a launch string into argv without a shell |
-| `src/migrate.rs` | One-time import of the old Electron app's settings from LevelDB |
 | `src/icons.rs` | Lucide icons as Rune icon bodies |
 | `src/testserver.rs` | Local HTTP/WebSocket server for tests |
 
