@@ -38,7 +38,8 @@ impl Pomodoro {
     }
 
     pub fn toggle(&mut self, now: f64) {
-        self.ends = match self.ends { Some(_) => None, None => Some(now + self.left) };
+        // Pausing keeps the time since the last tick off the clock.
+        self.ends = match self.ends { Some(ends) => { self.left = (ends - now).max(0.0); None } None => Some(now + self.left) };
     }
 
     pub fn reset(&mut self) { *self = Pomodoro { rounds: self.rounds, ..Pomodoro::default() } }
@@ -111,6 +112,11 @@ mod tests {
         // Past focus and into the break.
         p.tick(FOCUS + 60.0);
         assert!(!p.focus && p.rounds == 1 && p.label() == "4:00");
+        // A pause between ticks keeps the part second already gone.
+        let mut q = Pomodoro::default();
+        q.toggle(0.0);
+        q.toggle(0.5);
+        assert_eq!(q.left, FOCUS - 0.5);
         // Paused, the time holds.
         p.toggle(FOCUS + 60.0);
         assert!(!p.tick(FOCUS + 600.0) && p.label() == "4:00");
