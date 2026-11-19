@@ -491,7 +491,9 @@ pub fn microphone_in_use() -> bool {
 /// Windows records a capability's use per app; a stop time of 0 means it is in use now.
 #[cfg(windows)]
 fn capability_in_use(name: &str) -> bool {
-    powershell(&format!("@(Get-ChildItem -Path \"HKCU:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\CapabilityAccessManager\\ConsentStore\\{name}\" -Recurse -ErrorAction SilentlyContinue | ForEach-Object {{ Get-ItemProperty -Path $_.PSPath -Name \"LastUsedTimeStop\" -ErrorAction SilentlyContinue }} | Where-Object {{ $_ -and $_.LastUsedTimeStop -eq 0 }}).Count -gt 0"))
+    // Their own process: the privacy dots shouldn't wait on a slow Bluetooth scan.
+    static SERVER: PsSlot = std::sync::Mutex::new(None);
+    powershell_in(&SERVER, &format!("@(Get-ChildItem -Path \"HKCU:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\CapabilityAccessManager\\ConsentStore\\{name}\" -Recurse -ErrorAction SilentlyContinue | ForEach-Object {{ Get-ItemProperty -Path $_.PSPath -Name \"LastUsedTimeStop\" -ErrorAction SilentlyContinue }} | Where-Object {{ $_ -and $_.LastUsedTimeStop -eq 0 }}).Count -gt 0"))
         .eq_ignore_ascii_case("true")
 }
 
