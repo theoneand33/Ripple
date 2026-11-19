@@ -1178,6 +1178,8 @@ pub fn view(s: &Island, _: &mut Cx<Island>) -> El {
                 .child(
                     el().key(format!("tab-{}", s.tab as u8)).pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
                         .transition(push)
+                        // A press on a disabled control or between controls would reach the Island and close Large.
+                        .on_press(|_: &mut Island| {})
                         .child(tabs::view(s, &mut layer)),
                 ),
         );

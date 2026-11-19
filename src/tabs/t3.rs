@@ -153,8 +153,7 @@ impl Island {
 
 pub fn view(s: &Island, layer: &mut Vec<El>) -> El {
     let fg = s.cfg.text();
-    // A press on a disabled control or between controls would reach the Island and close Large.
-    let root = col().key("t3").w_full().h_full().px(16.0).pt(18.0).pb(14.0).gap(8.0).on_press(|_: &mut Island| {});
+    let root = col().key("t3").w_full().h_full().px(16.0).pt(18.0).pb(14.0).gap(8.0);
     let Some((device_index, _)) = s.t3_device() else {
         return root.child(empty(s, if s.t3.detecting { "Looking for T3 Code on this computer..." } else { "Add a T3 Code device in Settings" }));
     };
