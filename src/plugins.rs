@@ -31,6 +31,8 @@ end
 const BUDGET: Duration = Duration::from_millis(250);
 /// Deeper views are refused: a table that contains itself would otherwise recurse forever.
 const MAX_DEPTH: usize = 32;
+/// More nodes are refused: a table shared by its parent many times would otherwise grow without bound.
+const MAX_NODES: usize = 2000;
 
 /// What a plugin's view returned, ready to draw.
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -109,7 +111,7 @@ impl Plugin {
         let mut handlers = Vec::new();
         let view = guarded(&self.lua, deadline, || {
             let view: Function = spec.get("view").map_err(|_| mlua::Error::runtime("the plugin's table has no view function"))?;
-            node(&view.call::<Value>(spec.get::<Value>("state")?)?, &mut handlers, 0)
+            node(&view.call::<Value>(spec.get::<Value>("state")?)?, &mut handlers, 0, &mut 0)
         });
         match view {
             Ok(view) => (self.view, self.handlers) = (Some(view), handlers),
@@ -166,14 +168,16 @@ fn num(t: &Table, field: &str, default: f32, lo: f32, hi: f32) -> mlua::Result<f
     Ok(t.get::<Option<f32>>(field)?.filter(|v| v.is_finite()).unwrap_or(default).clamp(lo, hi))
 }
 
-fn node(v: &Value, handlers: &mut Vec<Function>, depth: usize) -> mlua::Result<Node> {
+fn node(v: &Value, handlers: &mut Vec<Function>, depth: usize, count: &mut usize) -> mlua::Result<Node> {
     if depth > MAX_DEPTH { return Err(mlua::Error::runtime(format!("a view nests deeper than {MAX_DEPTH}"))) }
+    *count += 1;
+    if *count > MAX_NODES { return Err(mlua::Error::runtime(format!("a view has more than {MAX_NODES} nodes"))) }
     let t = match v {
         Value::Table(t) => t,
         Value::String(s) => return Ok(Node::Text { text: s.to_string_lossy(), size: 14.0, weight: 400.0, dim: false }),
         other => return Err(mlua::Error::runtime(format!("a view returns ui.* nodes, not a {}", other.type_name()))),
     };
-    let children = |handlers: &mut Vec<Function>| t.sequence_values::<Value>().map(|c| node(&c?, handlers, depth + 1)).collect::<mlua::Result<Vec<_>>>();
+    let children = |handlers: &mut Vec<Function>, count: &mut usize| t.sequence_values::<Value>().map(|c| node(&c?, handlers, depth + 1, count)).collect::<mlua::Result<Vec<_>>>();
     let kind: String = t.get("type").map_err(|_| mlua::Error::runtime("a view node has no type; build it with ui.*"))?;
     Ok(match kind.as_str() {
         "text" => Node::Text {
@@ -182,8 +186,8 @@ fn node(v: &Value, handlers: &mut Vec<Function>, depth: usize) -> mlua::Result<N
             weight: num(t, "weight", 400.0, 100.0, 900.0)?,
             dim: t.get::<Option<bool>>("dim")?.unwrap_or(false),
         },
-        "row" => Node::Row { gap: num(t, "gap", 8.0, 0.0, 64.0)?, children: children(handlers)? },
-        "col" => Node::Col { gap: num(t, "gap", 6.0, 0.0, 64.0)?, children: children(handlers)? },
+        "row" => Node::Row { gap: num(t, "gap", 8.0, 0.0, 64.0)?, children: children(handlers, count)? },
+        "col" => Node::Col { gap: num(t, "gap", 6.0, 0.0, 64.0)?, children: children(handlers, count)? },
         "button" => {
             let label: String = t.get("label")?;
             handlers.push(t.get("on_press").map_err(|_| mlua::Error::runtime(format!("button {label:?} has no on_press function")))?);
@@ -304,6 +308,7 @@ mod tests {
         assert!(p.error.unwrap().contains("stopped"), "pcall can't catch the stop");
         assert!(plugin(r#"return { view = function() local ok = pcall(error, "x"); return ui.text(tostring(ok)) end }"#).error.is_none(), "pcall still works in time");
         assert!(plugin("return { view = function() local t = ui.row {}; t[1] = t; return t end }").error.unwrap().contains("deeper"));
+        assert!(plugin(r#"return { view = function() local a = ui.text("x"); for _ = 1, 32 do a = ui.row { a, a } end; return a end }"#).error.unwrap().contains("more than"));
     }
 
     #[test]

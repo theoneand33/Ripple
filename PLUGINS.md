@@ -40,7 +40,7 @@ return {
 
 Every plugin has its own Lua state, with the standard libraries except `debug`, so it can read files and run commands as you. Install only plugins you trust, as you would a shell script.
 
-Plugins run on the UI thread. Each load, tick or button press must finish in 250 ms, its view included, or it is stopped with an error, and each plugin may use up to 64 MB. Time spent inside a C function such as `io.popen` isn't counted, so keep slow work out of plugins. Give every button a unique `key`; two buttons with the same label need one.
+Plugins run on the UI thread. Each load, tick or button press must finish in 250 ms, its view included, or it is stopped with an error, each plugin may use up to 64 MB, and a view may have up to 2,000 nodes, 32 deep. Time spent inside a C function such as `io.popen` isn't counted, so keep slow work out of plugins. Give every button a unique `key`; two buttons with the same label need one.
 
 Errors show at the top of the panel and on stderr. An error stays until you change the file or open the Plugins tab again, which reloads the plugin.
 
