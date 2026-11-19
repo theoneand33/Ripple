@@ -25,6 +25,12 @@ do
   xpcall = function(...) return check(xpcall0(...)) end
   coroutine.resume = function(...) return check(resume0(...)) end
   load = function(...) return check(load0(...)) end -- fails as nil, msg
+  -- Lua runs no hooks inside __gc, so a finalizer could never be stopped. Lua reads __gc only here.
+  local setmetatable0, rawget0 = setmetatable, rawget
+  setmetatable = function(t, mt)
+    if type(mt) == "table" and rawget0(mt, "__gc") ~= nil then error("plugins can't use __gc", 2) end
+    return setmetatable0(t, mt)
+  end
 end
 "#;
 
@@ -324,6 +330,14 @@ mod tests {
         let p = Plugin::read(path.clone(), None);
         let _ = std::fs::remove_file(&path);
         assert_eq!(p.error, None, "a byte-order mark is skipped");
+    }
+
+    #[test]
+    fn finalizers_are_refused() {
+        let p = plugin(r#"local keep = setmetatable({}, { __gc = function() while true do end end }); return { view = function() return "x" end }"#);
+        assert!(p.error.as_deref().unwrap_or("").contains("__gc"));
+        drop(p);
+        assert!(plugin(r#"return { view = function() return tostring(getmetatable(setmetatable({}, { __index = {} })) ~= nil) end }"#).error.is_none());
     }
 
     #[test]
