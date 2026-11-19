@@ -136,7 +136,7 @@ fn powershell(script: &str) -> String {
 #[cfg(windows)]
 type PsSlot = std::sync::Mutex<Option<PsServer>>;
 
-/// Now playing and its controls: WinRT calls that can hang get a process of their own, so a stuck
+/// Now playing: WinRT calls that can hang get a process of their own, so a stuck
 /// one doesn't hold up the camera, mic and Bluetooth pollers.
 #[cfg(windows)]
 fn powershell_media(script: &str) -> String {
@@ -386,7 +386,8 @@ end if"#);
     #[cfg(windows)]
     {
         let method = match cmd { MediaCommand::PlayPause => "TryTogglePlayPauseAsync", MediaCommand::Next => "TrySkipNextAsync", MediaCommand::Previous => "TrySkipPreviousAsync" };
-        powershell_media(&format!("Add-Type -AssemblyName System.Runtime.WindowsRuntime; $m = [Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager, Windows.Media.Control, ContentType = WindowsRuntime]::RequestAsync().GetAwaiter().GetResult(); $s = $m.GetSessions() | Where-Object {{ $_.GetPlaybackInfo().PlaybackStatus -eq 'Playing' }} | Select-Object -First 1; if (-not $s) {{ $s = $m.GetCurrentSession() }}; if ($s) {{ $s.{method}().GetAwaiter().GetResult() | Out-Null }}"));
+        // A one-off process: a click mustn't wait behind the media poll's shared one.
+        let _ = output("powershell", &["-NoProfile", "-EncodedCommand", &ps_encode(&format!("Add-Type -AssemblyName System.Runtime.WindowsRuntime; $m = [Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager, Windows.Media.Control, ContentType = WindowsRuntime]::RequestAsync().GetAwaiter().GetResult(); $s = $m.GetSessions() | Where-Object {{ $_.GetPlaybackInfo().PlaybackStatus -eq 'Playing' }} | Select-Object -First 1; if (-not $s) {{ $s = $m.GetCurrentSession() }}; if ($s) {{ $s.{method}().GetAwaiter().GetResult() | Out-Null }}"))]);
     }
 }
 
