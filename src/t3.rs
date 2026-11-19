@@ -155,7 +155,12 @@ fn request(method: &str, url: &str, headers: &[(&str, &str)], body: Option<&str>
 /// the program listening there is ours.
 fn verify_peer(device: &T3Device) -> Result<(), String> {
     let base = base(device);
-    let Some(port) = loopback_port(origin_of(&base)) else { return Ok(()) };
+    let port = match origin_of(&base).split_once("://") {
+        Some(("http", authority)) => loopback_port(authority, 80),
+        Some(("https", authority)) => loopback_port(authority, 443),
+        _ => None,
+    };
+    let Some(port) = port else { return Ok(()) };
     #[cfg(target_os = "linux")]
     {
         // The real uid from status: /proc/self itself belongs to root in non-dumpable processes.
@@ -439,13 +444,12 @@ fn local_origin(home: &std::path::Path) -> Option<String> {
     let runtime: Value = serde_json::from_str(&std::fs::read_to_string(home.join("userdata").join("server-runtime.json")).ok()?).ok()?;
     let origin = runtime["origin"].as_str()?.trim().trim_end_matches('/');
     // Loopback only: the token minted for it must never leave this machine.
-    loopback_port(origin).map(|_| origin.to_string())
+    loopback_port(origin.strip_prefix("http://")?, 80).map(|_| origin.to_string())
 }
 
-/// The port of an `http://` origin that is exactly a loopback host and an optional numeric port:
-/// no userinfo, path or query to smuggle another host in.
-fn loopback_port(origin: &str) -> Option<u16> {
-    let authority = origin.strip_prefix("http://")?;
+/// The port of an authority that is exactly a loopback host and an optional numeric port
+/// (`default` when absent): no userinfo, path or query to smuggle another host in.
+fn loopback_port(authority: &str, default: u16) -> Option<u16> {
     let (host, port) = match authority.rsplit_once(':') {
         Some((h, p)) if !h.ends_with(':') => (h, Some(p)),
         _ => (authority, None),
@@ -454,7 +458,7 @@ fn loopback_port(origin: &str) -> Option<u16> {
     let loopback = host.eq_ignore_ascii_case("localhost") || ip.parse::<std::net::IpAddr>().is_ok_and(|a| a.is_loopback());
     if !loopback { return None }
     match port {
-        None => Some(80),
+        None => Some(default),
         Some(p) => p.bytes().all(|b| b.is_ascii_digit()).then(|| p.parse().ok()).flatten(),
     }
 }
@@ -566,13 +570,15 @@ mod tests {
 
     #[test]
     fn loopback_ports_are_read_from_exact_origins() {
-        assert_eq!(loopback_port("http://127.0.0.1:3773"), Some(3773));
-        assert_eq!(loopback_port("http://localhost"), Some(80));
-        assert_eq!(loopback_port("http://[::1]:8080"), Some(8080));
-        assert_eq!(loopback_port("http://LOCALHOST:1"), Some(1));
-        assert_eq!(loopback_port("http://127.0.0.2:3773"), Some(3773));
-        for other in ["https://127.0.0.1:3773", "http://127.0.0.1.evil.example", "http://127.0.0.1:99999", "http://t3.example:3773", "http://127.0.0.1:3773@evil.example", "http://127.0.0.1:3773/x", "http://127.0.0.1:"] {
-            assert_eq!(loopback_port(other), None, "{other}");
+        assert_eq!(loopback_port("127.0.0.1:3773", 80), Some(3773));
+        assert_eq!(loopback_port("localhost", 80), Some(80));
+        assert_eq!(loopback_port("localhost", 443), Some(443));
+        assert_eq!(loopback_port("[::1]:8080", 80), Some(8080));
+        assert_eq!(loopback_port("[::1]", 443), Some(443));
+        assert_eq!(loopback_port("LOCALHOST:1", 80), Some(1));
+        assert_eq!(loopback_port("127.0.0.2:3773", 80), Some(3773));
+        for other in ["127.0.0.1.evil.example", "127.0.0.1:99999", "t3.example:3773", "127.0.0.1:3773@evil.example", "127.0.0.1:3773/x", "127.0.0.1:"] {
+            assert_eq!(loopback_port(other, 80), None, "{other}");
         }
     }
 

@@ -140,7 +140,7 @@ impl Island {
             // The account changed while it ran, or a new one never answered.
             _ => {}
         }
-        // A changed account waits for the next sync asked of it: never chase a half-typed URL with the password.
+        // A changed account waits for the next sync asked of it, so no resync chases a URL that is still being typed.
         if std::mem::take(&mut self.nextcloud[kind as usize].again) && current { self.nextcloud_sync(kind) }
     }
 }
