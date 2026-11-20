@@ -231,12 +231,32 @@ pub fn fullscreen() -> bool {
     { x11_fullscreen().unwrap_or(false) }
     #[cfg(windows)]
     {
+        #[repr(C)]
+        #[derive(Default, PartialEq)]
+        struct Rect { left: i32, top: i32, right: i32, bottom: i32 }
+        #[repr(C)]
+        #[derive(Default)]
+        struct MonitorInfo { size: u32, monitor: Rect, work: Rect, flags: u32 }
         #[link(name = "shell32")]
         unsafe extern "system" { fn SHQueryUserNotificationState(state: *mut i32) -> i32; }
-        let mut state = 0;
-        // SAFETY: `state` is a valid out pointer. 2 QUNS_BUSY (a full screen app), 3 a full screen
-        // Direct3D app, 4 presentation mode.
-        unsafe { SHQueryUserNotificationState(&mut state) == 0 && matches!(state, 2..=4) }
+        #[link(name = "user32")]
+        unsafe extern "system" {
+            fn GetForegroundWindow() -> isize;
+            fn GetWindowRect(window: isize, rect: *mut Rect) -> i32;
+            fn MonitorFromWindow(window: isize, flags: u32) -> isize;
+            fn GetMonitorInfoW(monitor: isize, info: *mut MonitorInfo) -> i32;
+        }
+        let (mut state, mut window, mut info) = (0, Rect::default(), MonitorInfo { size: size_of::<MonitorInfo>() as u32, ..Default::default() });
+        // SAFETY: valid out pointers; a 0 window or monitor only makes the calls fail. State 2 is
+        // QUNS_BUSY (a full screen app, on any monitor), 3 a full screen Direct3D app, 4 presentation
+        // mode; the foreground window covering its monitor narrows it to the focused app, as on Linux and macOS.
+        unsafe {
+            let hwnd = GetForegroundWindow();
+            SHQueryUserNotificationState(&mut state) == 0 && matches!(state, 2..=4) && hwnd != 0
+                && GetWindowRect(hwnd, &mut window) != 0
+                && GetMonitorInfoW(MonitorFromWindow(hwnd, 2), &mut info) != 0 // MONITOR_DEFAULTTONEAREST
+                && window == info.monitor
+        }
     }
     #[cfg(target_os = "macos")]
     { crate::mac::frontmost_fullscreen() }
