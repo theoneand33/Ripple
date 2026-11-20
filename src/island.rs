@@ -8,7 +8,7 @@ use std::sync::mpsc::Sender;
 use rune::time::LocalTime;
 use rune::{
     AppHandle, Color, Curve, Cx, DisplayTarget, Drag, Easing, Edge, Effect, GesturePhase, El, Image, ImageCache, Key, KeyEvent, LoopSpec, OverlayHandle, OverlayPlacement,
-    Phase, Shadow, Spring, SurfaceFit, TextEdit, Transition, Tx, Vec2, Waker, WheelEvent, WindowHandle, col, el, icon, row, text,
+    Phase, Shadow, Shortcut, ShortcutError, ShortcutId, Spring, SurfaceFit, TextEdit, Transition, Tx, Vec2, Waker, WheelEvent, WindowHandle, col, el, icon, row, text,
 };
 
 use crate::config::{Config, Store, Tab};
@@ -158,6 +158,30 @@ impl Host {
     /// Lets a click give the overlay keyboard focus; a window takes it on click already.
     fn allow_keys(&self) {
         if let Host::Overlay(h, ..) = self { h.request_keys() }
+    }
+
+    /// Shows the Island and gives it keyboard focus, with Wayland's token for a shortcut press.
+    fn take_focus(&self, token: Option<String>) {
+        match self { Host::Window(h) => h.activate(token.unwrap_or_default()), Host::Overlay(..) => { self.show(); self.allow_keys() } }
+    }
+
+    /// Registers the system-wide shortcut that opens Large Mode (`Island::hotkey`).
+    pub fn register_hotkey(&self, shortcut: Shortcut) -> Result<ShortcutId, ShortcutError> {
+        match self {
+            Host::Window(h) => h.register_shortcut(shortcut, Island::hotkey),
+            Host::Overlay(h, app, _) => {
+                let h = h.clone();
+                app.register_shortcut(shortcut, move |_, tx| {
+                    let token = tx.activation_token().map(str::to_string);
+                    h.update(move |s, tx| s.hotkey_with(token, tx));
+                })
+            }
+        }
+    }
+
+    pub fn unregister_hotkey(&self, id: ShortcutId) {
+        let done = match self { Host::Window(h) => h.unregister_shortcut(id), Host::Overlay(_, app, _) => app.unregister_shortcut(id) };
+        if let Err(e) = done { eprintln!("Ripple: {e}") }
     }
 }
 
@@ -310,6 +334,8 @@ pub struct Island {
     /// The window that had focus when the pointer reached the Island; it gets focus back on close.
     prior: Option<u64>,
     weather_kick: Option<Sender<()>>,
+    /// The registered shortcut that opens Large Mode.
+    pub hotkey: Option<ShortcutId>,
     wheel: f32,
     wheel_reset: f64,
     /// This wheel gesture already changed tab; the rest of it, momentum included, is ignored.
@@ -417,6 +443,7 @@ impl Island {
             focused: false,
             prior: None,
             weather_kick: None,
+            hotkey: None,
             wheel: 0.0,
             wheel_reset: 0.0,
             wheel_spent: false,
@@ -727,6 +754,24 @@ impl Island {
         let closing = self.mode == Mode::Large;
         self.set_mode(if closing { Mode::Quick } else { Mode::Large });
         if closing { self.give_focus_back() }
+    }
+
+    /// The system-wide shortcut: opens Large Mode with keyboard focus, or closes it again.
+    pub fn hotkey(&mut self, tx: &mut Tx) {
+        let token = tx.activation_token().map(str::to_string);
+        self.hotkey_with(token, tx)
+    }
+
+    fn hotkey_with(&mut self, token: Option<String>, tx: &mut Tx) {
+        tx.blur();
+        if self.mode == Mode::Large {
+            self.set_mode(if self.hovered { Mode::Quick } else { Mode::Still });
+            return self.give_focus_back();
+        }
+        if !self.focused && matches!(self.me, Some(Host::Window(_))) { self.prior = platform::focused_window() }
+        self.close_at = None;
+        self.set_mode(Mode::Large);
+        if let Some(me) = &self.me { me.take_focus(token) }
     }
 
     /// Hands keyboard focus back to the window that had it before the Island took it.
@@ -1183,6 +1228,13 @@ impl Island {
         if self.cfg.t3_devices.is_empty() && !self.cfg.t3_detected { self.t3_detect() }
         if self.tab != Tab::Limits { self.limits_load() }
         if self.cfg.auto_launch { std::thread::spawn(|| system::set_auto_launch(true)); }
+        let chord = self.cfg.hotkey.trim();
+        if !chord.is_empty() {
+            match chord.parse().and_then(|k| me.register_hotkey(k)) {
+                Ok(id) => self.hotkey = Some(id),
+                Err(e) => eprintln!("Ripple: the shortcut {chord} is off: {e}"),
+            }
+        }
 
         fn every(ms: u64, f: impl Fn() + Send + 'static) {
             std::thread::spawn(move || loop {
@@ -1590,6 +1642,17 @@ mod tests {
 
     fn island(cfg: Config) -> Island {
         Island::new(Store::memory(cfg), Vec::new())
+    }
+
+    #[test]
+    fn the_hotkey_opens_large_and_closes_it_again() {
+        assert!(Config::default().hotkey.parse::<Shortcut>().is_ok());
+        let mut s = island(Config::default());
+        let tx = &mut Tx::default();
+        s.hotkey(tx);
+        assert_eq!(s.mode, Mode::Large);
+        s.hotkey(tx);
+        assert_eq!(s.mode, s.rest());
     }
 
     #[test]

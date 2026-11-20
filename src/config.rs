@@ -354,6 +354,8 @@ pub struct Config {
     pub bg_image: String,
     pub search_engine: String,
     pub auto_launch: bool,
+    /// The system-wide shortcut that opens Large Mode, as Rune spells it (`ctrl+alt+space`); empty turns it off.
+    pub hotkey: String,
     pub position_mode: String,
     pub notch_mode: bool,
     /// Notch Mode: shrink the compact Island to fit its content instead of a fixed width.
@@ -438,6 +440,7 @@ impl Default for Config {
             bg_image: "none".into(),
             search_engine: "google".into(),
             auto_launch: false,
+            hotkey: "ctrl+alt+space".into(),
             position_mode: "free".into(),
             notch_mode: false,
             notch_auto_size: true,
