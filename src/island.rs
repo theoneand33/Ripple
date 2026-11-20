@@ -1039,7 +1039,7 @@ impl Island {
     }
 
     /// Large is open by hand or under the pointer, not merely resting there (large_standby).
-    fn large_open(&self) -> bool {
+    pub(crate) fn large_open(&self) -> bool {
         self.mode == Mode::Large && (self.large_by_hand || self.hovered)
     }
 
