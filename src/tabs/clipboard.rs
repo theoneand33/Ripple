@@ -152,10 +152,11 @@ impl Island {
         self.clipboard.push(Content::Image(image, pixels))
     }
 
-    /// Runs a text tool on the newest copied text, then copies its answer.
+    /// Runs a text tool on the top text in the list, then copies its answer.
     fn run_tool(&mut self, tool: usize, tx: &mut Tx) {
         let c = &mut self.clipboard;
-        let newest = c.items[c.pinned()..].iter().chain(&c.items).find_map(|i| match &i.content { Content::Text(t) => Some(t.clone()), Content::Image(..) => None });
+        // The first text listed, pinned or not: what the user sees on top.
+        let newest = c.items.iter().find_map(|i| match &i.content { Content::Text(t) => Some(t.clone()), Content::Image(..) => None });
         let Some(source) = newest else { c.tool_error = Some("Copy some text first".into()); return };
         match (TOOLS[tool].1)(&source) {
             Ok(out) => {
@@ -317,7 +318,7 @@ pub fn view(s: &Island) -> El {
             .child(field(s, "clipboard-search", &s.clipboard.search, "Search clipboard", |s: &mut Island| &mut s.clipboard.search, |_, _| {}))
             .child(if s.clipboard.tools { tools.fill(fg.alpha(0.26 * fg.a)) } else { tools }));
     if s.clipboard.tools {
-        let mut chips = row().key("text-tool-chips").role("group").label("Text tools: run on the newest copied text").w_full().gap(6.0).flex_wrap();
+        let mut chips = row().key("text-tool-chips").role("group").label("Text tools: run on the top text in the list").w_full().gap(6.0).flex_wrap();
         for (i, (label, _)) in TOOLS.iter().enumerate() {
             chips = chips.child(pill(s, &format!("tool-{i}"), label).on_press_tx(move |s: &mut Island, tx| s.run_tool(i, tx)));
         }
