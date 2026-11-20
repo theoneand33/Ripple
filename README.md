@@ -43,6 +43,7 @@ https://github.com/user-attachments/assets/a7b9ed8a-97b5-4603-bad7-6f4c4bef1f5d
 - T3 Code starts an agent thread on a project on one of your T3 devices. You choose the model, the worktree, and the linked environment.
 - Pomodoro runs 25-minute focus rounds with 5-minute breaks. While it runs, the compact Island shows the time left beside a ring.
 - Calculator shows the answer as you type a sum (+ - × ÷ ^, % as remainder, and brackets). Press Enter to keep it on the history tape.
+- Habits tracks things to do every day. Tick off today or any of the last six days; each habit shows its streak of days in a row.
 - Plugins shows panels you write in Lua: drop a `.lua` file in the `plugins` folder next to `prefs.json`. See [PLUGINS.md](PLUGINS.md) for the API and how to test a plugin without a display.
 
 You can reorder and hide tabs in Settings.
