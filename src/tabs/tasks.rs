@@ -388,7 +388,7 @@ mod tests {
         assert_eq!(s.cfg.tasks[1].text, "Call Bob due:2026-01-02", "a typed relative day is saved as its date");
         let bob = s.cfg.tasks[1].key;
         super::start_edit(&mut s, bob);
-        s.cfg.tasks.retain(|t| t.key != bob);
+        s.save(|c| c.tasks.retain(|t| t.key != bob));
         s.task.replace_text("Call Bob back");
         super::add_task(&mut s, &mut rune::Tx::default());
         assert_eq!(s.cfg.tasks[1].text, "Call Bob back due:2026-01-02", "an edit of a task gone meanwhile is kept as a new one");
