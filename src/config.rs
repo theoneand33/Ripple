@@ -499,7 +499,8 @@ impl Default for Config {
             weather_unit: "f".into(),
             location: String::new(),
             rain_alerts: true,
-            lyrics: true,
+            // Off until asked for: it sends each track's title and artist to lrclib.net.
+            lyrics: false,
             world_clocks: ["London", "New York", "Tokyo"].map(Into::into).into(),
             theme: "none".into(),
             auto_theme: false,

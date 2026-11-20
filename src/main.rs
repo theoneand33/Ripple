@@ -341,6 +341,7 @@ fn island_spec() -> AppSpec<Island> {
                 s.set_track(Some(system::Track { name: "Song".into(), artist: "Artist".into(), playing: true, progress: Some((89, 200)), ..Default::default() }), &mut tx);
             }),
             ("overview-lyrics", |s| {
+                s.cfg.lyrics = true;
                 s.mode = Mode::Large;
                 s.set_tab(Tab::Overview);
                 let mut tx = rune::Tx::default();
