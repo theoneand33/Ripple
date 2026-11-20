@@ -150,7 +150,9 @@ fn pages(url: &str, key: &str, path: &str, query: &[(&str, String)], field: &str
             401 => return Err("Sure refused the API key".into()),
             _ => return Err(body["message"].as_str().map_or_else(|| format!("Sure answered {status}"), str::to_string)),
         }
-        all.extend(body[field].as_array().cloned().unwrap_or_default());
+        // A login or proxy page answers 200 too.
+        let Some(items) = body[field].as_array() else { return Err(format!("{url} isn't Sure's API")) };
+        all.extend(items.iter().cloned());
         if i64::from(page) >= body["pagination"]["total_pages"].as_i64().unwrap_or(0) { return Ok(all) }
     }
     Err(format!("Sure has more {path} than Ripple reads"))
@@ -304,5 +306,7 @@ mod tests {
         assert_eq!((a.balance, a.cash, a.positions, a.cost, a.value), (1000.0, 100.0, 1, 700.0, 900.0));
         assert_eq!((p.history.clone(), p.changes(), p.open()), (vec![900.0, 1000.0], (40.0, 40.0), 200.0));
         assert_eq!(portfolio(&base, "bad", Range::Day), Err("Sure refused the API key".into()));
+        let html = serve(|_| crate::testserver::Response { status: 200, headers: Vec::new(), body: "<html>Sign in</html>".into() });
+        assert_eq!(portfolio(&html, "k", Range::Day), Err(format!("{html} isn't Sure's API")));
     }
 }
