@@ -258,6 +258,8 @@ pub struct Island {
     bluetooth_alert_until: Option<f64>,
     /// The task that fell due, and until when its reminder shows.
     pub reminder: Option<(String, f64)>,
+    /// The script alert showing: until when, and how many alerts it stands for.
+    notified: (f64, usize),
     /// The minute task reminders were last checked, as `YYYY-MM-DDTHH:MM`; empty until the first.
     pub task_mark: String,
     capture: Option<(Alert, f64)>,
@@ -380,6 +382,7 @@ impl Island {
             bluetooth_alert_until: None,
             reminder: None,
             task_mark: String::new(),
+            notified: (0.0, 0),
             capture: None,
             capture_queue: Vec::new(),
             paused_until: None,
@@ -939,8 +942,12 @@ impl Island {
     /// Once a second: alerts that `ripple notify` queued; several at once, or while one shows, share one.
     pub fn notifications(&mut self, now: f64) {
         let Some(dir) = self.store.dir() else { return };
-        let showing = self.reminder.as_ref().filter(|r| now < r.1).map(|r| r.0.as_str());
-        if let Some(text) = crate::notify::merge(showing, crate::notify::take(&dir)) { self.remind(text, now) }
+        // The alert showing counts as the alerts it merged when it is this one's, else as one.
+        let shown = match &self.reminder { Some(r) if now < r.1 => if r.1 == self.notified.0 { self.notified.1 } else { 1 }, _ => 0 };
+        if let Some((text, n)) = crate::notify::merge(shown, crate::notify::take(&dir)) {
+            self.remind(text, now);
+            self.notified = (self.reminder.as_ref().map_or(0.0, |r| r.1), n);
+        }
     }
 
     pub fn set_battery(&mut self, battery: Option<(u8, bool)>, tx: &mut Tx) -> bool {

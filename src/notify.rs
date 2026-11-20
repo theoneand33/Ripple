@@ -39,15 +39,13 @@ pub fn take(dir: &Path) -> Vec<String> {
     }).collect()
 }
 
-/// The one alert to show for `texts` while `showing` is on screen: a lone text as it is, else
-/// "N alerts" counting the one showing. None when nothing new arrived.
-pub fn merge(showing: Option<&str>, texts: Vec<String>) -> Option<String> {
-    // shortcut: reads the count back from the shown title, so a task titled "3 alerts" counts as 3; add a count field if that matters.
-    let shown = showing.map_or(0, |s| s.strip_suffix(" alerts").and_then(|n| n.parse().ok()).unwrap_or(1));
+/// The one alert to show for `texts` while `shown` alerts are on screen, and how many it now
+/// stands for: a lone text as it is, else "N alerts". None when nothing new arrived.
+pub fn merge(shown: usize, texts: Vec<String>) -> Option<(String, usize)> {
     match (shown + texts.len(), texts.len()) {
         (_, 0) => None,
-        (1, _) => texts.into_iter().next(),
-        (n, _) => Some(format!("{n} alerts")),
+        (1, _) => texts.into_iter().next().map(|t| (t, 1)),
+        (n, _) => Some((format!("{n} alerts"), n)),
     }
 }
 
@@ -87,11 +85,12 @@ mod tests {
     #[test]
     fn alerts_arriving_while_one_shows_merge() {
         let t = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        assert_eq!(super::merge(None, t(&[])), None);
-        assert_eq!(super::merge(Some("Build passed"), t(&[])), None);
-        assert_eq!(super::merge(None, t(&["Build passed"])).as_deref(), Some("Build passed"));
-        assert_eq!(super::merge(None, t(&["a", "b"])).as_deref(), Some("2 alerts"));
-        assert_eq!(super::merge(Some("Build passed"), t(&["Deploy done"])).as_deref(), Some("2 alerts"));
-        assert_eq!(super::merge(Some("2 alerts"), t(&["c", "d"])).as_deref(), Some("4 alerts"));
+        let m = |shown, v: &[&str]| super::merge(shown, t(v));
+        assert_eq!(m(0, &[]), None);
+        assert_eq!(m(1, &[]), None);
+        assert_eq!(m(0, &["3 alerts"]), Some(("3 alerts".into(), 1)), "a text is a text, whatever it says");
+        assert_eq!(m(0, &["a", "b"]), Some(("2 alerts".into(), 2)));
+        assert_eq!(m(1, &["Deploy done"]), Some(("2 alerts".into(), 2)));
+        assert_eq!(m(2, &["c", "d"]), Some(("4 alerts".into(), 4)));
     }
 }
