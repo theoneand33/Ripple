@@ -1,13 +1,14 @@
 //! Overview: a dashboard of tiles the user arranges. A tile is a widget made for it (clock,
 //! now playing, weather, battery, today) or another tab's panel. The pencil edits the layout.
 
-use rune::{Drag, El, Key, KeyEvent, Phase, Transition, Tx, col, el, icon, row, text};
+use rune::{Color, Drag, El, Key, KeyEvent, Phase, Transition, Tx, col, el, icon, row, text};
 
 use super::{Scrolls, accent, card, empty, pill, ring, tool};
 use crate::config::{Tab, Tile, Widget};
 use crate::icons;
 use crate::island::{Island, SPRING, control, cover, estimate_width, marquee, visualizer};
 use crate::nextcloud::{event_day, leading_time};
+use crate::net::Graph;
 use super::Task;
 use crate::system::MediaCommand;
 
@@ -54,7 +55,11 @@ fn all() -> impl Iterator<Item = Widget> {
 
 fn add(s: &mut Island, widget: Widget) {
     s.save(|c| if !c.dashboard.iter().any(|t| t.widget == widget) { c.dashboard.push(Tile::new(widget)) });
-    if let Widget::Panel(tab) = widget { super::load(s, tab) }
+    match widget {
+        Widget::Panel(tab) => super::load(s, tab),
+        Widget::Contributions => s.contributions_load(),
+        _ => {}
+    }
 }
 
 fn move_tile(s: &mut Island, from: usize, to: usize) {
@@ -153,6 +158,8 @@ fn tile(s: &Island, i: usize, t: Tile, [x, y, w, h]: [f32; 4], layer: &mut Vec<E
         Widget::Weather => weather(s, h),
         Widget::Battery => battery(s, h),
         Widget::Today => today(s),
+        Widget::Water => water(s, h),
+        Widget::Contributions => contributions(s, w),
         Widget::Quote => quote(s),
         Widget::Day => day(s, w),
         Widget::Panel(tab) => super::panel(s, tab, layer),
@@ -250,6 +257,101 @@ fn today(s: &Island) -> El {
     c.child(el().grow(1.0))
         .child(text(match tasks { 0 => "No tasks left".to_string(), 1 => "1 task left".to_string(), n => format!("{n} tasks left") })
             .font(s.cfg.font(12.0, 500.0)).color(muted))
+}
+
+/// Adds or takes away a glass of today's water.
+fn drink(s: &mut Island, by: i32) {
+    let today = crate::date::days_from_civil(s.today.0, s.today.1, s.today.2);
+    s.save(|c| { c.water_count = c.water(today).saturating_add_signed(by); c.water_day = today });
+}
+
+fn water(s: &Island, h: f32) -> El {
+    let fg = s.cfg.text();
+    let tint = accent::blue();
+    let n = s.cfg.water(crate::date::days_from_civil(s.today.0, s.today.1, s.today.2));
+    let goal = s.cfg.water_goal.max(1);
+    let gauge = ring(if h < CELL.1 * 2.0 { 32.0 } else { 52.0 }, n as f32 * 100.0 / goal as f32, tint, icon(&icons::DROPLET, 16.0).color(tint));
+    stack("water", h)
+        .child(row().gap(8.0).center_y()
+            .child(tool(s, "water-less", &icons::MINUS, "One glass less").on_press(|s: &mut Island| drink(s, -1)))
+            .child(gauge)
+            .child(tool(s, "water-more", &icons::PLUS, "One more glass").on_press(|s: &mut Island| drink(s, 1))))
+        .child(text(format!("{n} of {goal} glasses")).font(s.cfg.font(13.0, 600.0).features("'tnum' 1")).color(fg))
+}
+
+/// The GitHub and LeetCode graphs: for whom, and the graph or why it failed; None while loading.
+#[derive(Default)]
+pub struct Contributions {
+    pub github: Option<(String, Result<Graph, String>)>,
+    pub leetcode: Option<(String, Result<Graph, String>)>,
+    /// When they were last asked for (Unix seconds).
+    loaded_at: i64,
+    /// Seconds left before a changed user name loads, so typing in Settings doesn't fetch each keystroke.
+    pub(super) reload_in: Option<u8>,
+}
+
+impl Island {
+    /// Asks again once an hour, or at once for a changed user name.
+    pub fn contributions_load(&mut self) {
+        let now = crate::date::now_secs();
+        let c = &self.contributions;
+        let same = |had: &Option<(String, Result<Graph, String>)>, user: &str| user.trim().is_empty() || had.as_ref().is_some_and(|h| h.0 == user.trim());
+        if same(&c.github, &self.cfg.github_user) && same(&c.leetcode, &self.cfg.leetcode_user) && now - c.loaded_at < 3600 { return }
+        let Some(me) = self.me.clone() else { return };
+        self.contributions.loaded_at = now;
+        let (gh, lc) = (self.cfg.github_user.trim().to_string(), self.cfg.leetcode_user.trim().to_string());
+        // A late answer for a name since changed would replace the newer one's graph.
+        if !gh.is_empty() { me.spawn({ let u = gh.clone(); move || crate::net::github_graph(&u) }, move |s, g| if s.cfg.github_user.trim() == gh { s.contributions.github = Some((gh, g)) }) }
+        if !lc.is_empty() { me.spawn({ let u = lc.clone(); move || crate::net::leetcode_graph(&u) }, move |s, g| if s.cfg.leetcode_user.trim() == lc { s.contributions.leetcode = Some((lc, g)) }) }
+    }
+}
+
+/// One graph: its name and streak, then a column per week up to this one, Sunday on top.
+fn graph(s: &Island, key: &str, name: &str, user: &str, data: Option<&Result<Graph, String>>, weeks: i64) -> El {
+    let fg = s.cfg.text();
+    let muted = fg.alpha(0.6 * fg.a);
+    let today = crate::date::days_from_civil(s.today.0, s.today.1, s.today.2);
+    let head = row().w_full().gap(6.0).center_y().child(text(format!("{name} · {user}")).font(s.cfg.font(13.0, 700.0)).color(fg).grow(1.0).min_w(0.0).truncate());
+    let days = match data {
+        None => return col().key(key.to_string()).w_full().gap(6.0).child(head).child(text("Loading…").font(s.cfg.font(12.0, 500.0)).color(muted)),
+        Some(Err(e)) => return col().key(key.to_string()).w_full().gap(6.0).child(head).child(text(e).font(s.cfg.font(12.0, 500.0)).color(muted).truncate()),
+        Some(Ok(days)) => days,
+    };
+    let active: Vec<i64> = days.iter().map(|d| d.0).collect();
+    let streak = super::habits::streak(&active, today);
+    let flame = if streak > 0 { accent::orange() } else { fg.alpha(0.35 * fg.a) };
+    let head = head.child(row().key("streak").role("img").label(format!("{streak} day streak")).gap(3.0).center_y()
+        .child(icon(&icons::FLAME, 13.0).color(flame).a11y_hidden())
+        .child(text(format!("{streak}")).font(s.cfg.font(12.0, 700.0).features("'tnum' 1")).color(flame).a11y_hidden()));
+    // 1970-01-01 was a Thursday: day 0 sits in row 4.
+    let sunday = today - (today + 4).rem_euclid(7);
+    let mut grid = row().key("cells").gap(2.0).a11y_hidden();
+    for week in (0..weeks).rev() {
+        let mut column = col().gap(2.0);
+        for wd in 0..7 {
+            let day = sunday - week * 7 + wd;
+            let level = days.iter().find(|d| d.0 == day).map_or(0, |d| d.1);
+            let fill = if day > today { Color::TRANSPARENT } else if level == 0 { fg.alpha(0.08 * fg.a) } else { accent::green().alpha([0.3, 0.5, 0.75, 1.0][usize::from(level - 1)]) };
+            column = column.child(el().size(8.0, 8.0).radius(2.0).fill(fill));
+        }
+        grid = grid.child(column);
+    }
+    col().key(key.to_string()).role("group").label(format!("{name} contributions of {user}: {} active days, {streak} day streak", active.len())).w_full().gap(6.0).child(head).child(grid)
+}
+
+fn contributions(s: &Island, w: f32) -> El {
+    let fg = s.cfg.text();
+    let c = &s.contributions;
+    // 8pt cells 2pt apart, inside the tile's padding.
+    let weeks = (((w - 24.0 + 2.0) / 10.0).floor() as i64).clamp(1, 53);
+    let mut body = col().key("contributions").w_full().h_full().padding(12.0).gap(12.0);
+    let (gh, lc) = (s.cfg.github_user.trim(), s.cfg.leetcode_user.trim());
+    if gh.is_empty() && lc.is_empty() {
+        return body.center().child(text("Set a GitHub or LeetCode user in Settings → Overview").font(s.cfg.font(12.0, 500.0)).color(fg.alpha(0.6 * fg.a)));
+    }
+    if !gh.is_empty() { body = body.child(graph(s, "github", "GitHub", gh, c.github.as_ref().filter(|g| g.0 == gh).map(|g| &g.1), weeks)) }
+    if !lc.is_empty() { body = body.child(graph(s, "leetcode", "LeetCode", lc, c.leetcode.as_ref().filter(|g| g.0 == lc).map(|g| &g.1), weeks)) }
+    body
 }
 
 /// (quote, author); all from authors long in the public domain.

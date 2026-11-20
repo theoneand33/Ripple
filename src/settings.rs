@@ -70,10 +70,13 @@ pub struct Settings {
     nc_password: TextEdit,
     nc_list: TextEdit,
     nc_calendar: TextEdit,
+    calendar_feeds: TextEdit,
     nc_shelf: TextEdit,
     sure_url: TextEdit,
     sure_key: TextEdit,
     pub hotkey: ShortcutRecorderState,
+    github_user: TextEdit,
+    leetcode_user: TextEdit,
 }
 
 impl Settings {
@@ -104,10 +107,13 @@ impl Settings {
             nc_password: TextEdit::new("").secure(),
             nc_list: edit(&cfg.nextcloud.list),
             nc_calendar: edit(&cfg.nextcloud.calendar),
+            calendar_feeds: edit(&cfg.calendar_feeds.join("\n")),
             nc_shelf: edit(&cfg.nextcloud.shelf_folder),
             sure_url: edit(&cfg.sure_url),
             sure_key: TextEdit::new("").secure(),
             hotkey: ShortcutRecorderState::new(cfg.hotkey.parse().ok()),
+            github_user: edit(&cfg.github_user),
+            leetcode_user: edit(&cfg.leetcode_user),
             screens: screens.iter().map(|s| s.name.clone()).collect(),
             open: None,
             dragging: None,
@@ -327,7 +333,22 @@ fn panel(s: &Settings, k: &Kit, layer: &mut Vec<El>, tab: Tab) -> Vec<El> {
                 setting(s, "Location", TextInput::new(&s.location).label("Location").placeholder("City, ST, Country").width(Some(200.0))
                     .binds(|s| &mut s.location, |c, v| c.location = v.into()).build(k)),
                 setting(s, "Unit", choice(s, k, layer, "unit", "Unit", &[("f", "Fahrenheit (°F)"), ("c", "Celsius (°C)")], &cfg.weather_unit, |c, v| c.weather_unit = v.into())),
+                toggle(s, k, "Alert before rain or snow", cfg.rain_alerts, |c| c.rain_alerts = !c.rain_alerts),
             ]));
+            if tab == Tab::Overview {
+                sections.push(section(s, "water", "Water", vec![
+                    setting(s, &format!("Daily goal ({} glasses)", cfg.water_goal), slider(s, "water-goal", "Daily goal", (1.0, 20.0, 1.0), |c| c.water_goal as f32, |c, v| c.water_goal = v as u32)).key("water-goal-row"),
+                    toggle(s, k, "Hourly reminders", cfg.water_reminders, |c| c.water_reminders = !c.water_reminders),
+                    setting(s, &format!("From {}:00", cfg.water_from), slider(s, "water-from", "Reminders from", (0.0, 24.0, 1.0), |c| c.water_from as f32, |c, v| c.water_from = v as u32)).key("water-from-row"),
+                    setting(s, &format!("Until {}:00", cfg.water_to), slider(s, "water-to", "Reminders until", (0.0, 24.0, 1.0), |c| c.water_to as f32, |c, v| c.water_to = v as u32)).key("water-to-row"),
+                ]));
+                sections.push(section(s, "contributions", "Contribution graphs", vec![
+                    setting(s, "GitHub user", TextInput::new(&s.github_user).label("GitHub user").placeholder("octocat").width(Some(200.0))
+                        .binds(|s| &mut s.github_user, |c, v| c.github_user = v.trim().into()).build(k)),
+                    setting(s, "LeetCode user", TextInput::new(&s.leetcode_user).label("LeetCode user").placeholder("User name").width(Some(200.0))
+                        .binds(|s| &mut s.leetcode_user, |c, v| c.leetcode_user = v.trim().into()).build(k)),
+                ]));
+            }
         }
         Tab::Workflows => {
             let mut apps = vec![
@@ -470,6 +491,14 @@ fn panel(s: &Settings, k: &Kit, layer: &mut Vec<El>, tab: Tab) -> Vec<El> {
                     .binds(|s| &mut s.nc_shelf, |c, v| c.nextcloud.shelf_folder = v.trim().into()).build(k));
             }
             sections.push(section(s, "nextcloud", "Nextcloud", rows));
+            if tab == Tab::Calendar {
+                sections.push(section(s, "calendar-feeds", "Calendar links", vec![
+                    text("ICS links from Google Calendar (Secret address in iCal format), Outlook (Publish a calendar) or iCloud (Public Calendar), one per line. Their events show read-only.").font(cfg.font(12.0, 400.0)).color(fg.alpha(0.6)).wrap(),
+                    TextArea::new(&s.calendar_feeds).width(None).label("Calendar links").placeholder("https://calendar.google.com/calendar/ical/…/basic.ics").rows(3)
+                        .on_edit(|s: &mut Settings| &mut s.calendar_feeds)
+                        .on_change(|s: &mut Settings, _| { let v = s.calendar_feeds.text.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_string).collect(); s.save(|c| c.calendar_feeds = v) }).build(k),
+                ]));
+            }
         }
         Tab::Stocks => {
             let label = |t: &str| text(t.to_string()).font(cfg.font(14.0, 500.0)).color(fg.alpha(0.8)).mt(10.0);

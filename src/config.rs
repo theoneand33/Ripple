@@ -107,6 +107,10 @@ pub enum Widget {
     Battery,
     /// Today's events and the tasks left.
     Today,
+    /// Glasses of water drunk today, against a goal.
+    Water,
+    /// GitHub and LeetCode contribution graphs, with streaks.
+    Contributions,
     /// A quote, a new one each day.
     Quote,
     /// Today as one timeline: the share gone, and its timed events and due tasks.
@@ -115,7 +119,7 @@ pub enum Widget {
 }
 
 impl Widget {
-    pub const OWN: [Widget; 7] = [Widget::Clock, Widget::Media, Widget::Weather, Widget::Battery, Widget::Today, Widget::Day, Widget::Quote];
+    pub const OWN: [Widget; 9] = [Widget::Clock, Widget::Media, Widget::Weather, Widget::Battery, Widget::Today, Widget::Day, Widget::Quote, Widget::Water, Widget::Contributions];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -124,6 +128,8 @@ impl Widget {
             Widget::Weather => "Weather",
             Widget::Battery => "Battery",
             Widget::Today => "Today",
+            Widget::Water => "Water",
+            Widget::Contributions => "Contributions",
             Widget::Quote => "Quote of the Day",
             Widget::Day => "Day Progress",
             Widget::Panel(tab) => tab.name(),
@@ -147,7 +153,7 @@ impl Tile {
 
     /// Panels open full width and tall: they were drawn for the whole Island.
     pub fn new(widget: Widget) -> Tile {
-        let (w, h) = match widget { Widget::Media => (4, 3), Widget::Panel(_) => (4, 4), Widget::Quote => (4, 2), Widget::Day => (4, 2), _ => (2, 2) };
+        let (w, h) = match widget { Widget::Media => (4, 3), Widget::Panel(_) | Widget::Contributions => (4, 4), Widget::Quote => (4, 2), Widget::Day => (4, 2), _ => (2, 2) };
         Tile { widget, w, h }
     }
 
@@ -368,6 +374,8 @@ pub struct Config {
     pub hour12: bool,
     pub weather_unit: String,
     pub location: String,
+    /// An alert about an hour before rain or snow starts at the location.
+    pub rain_alerts: bool,
     /// World Clocks: the cities shown, as typed (Open-Meteo looks each one up).
     pub world_clocks: Vec<String>,
     pub theme: String,
@@ -394,10 +402,24 @@ pub struct Config {
     pub workflows: Vec<Workflow>,
     pub tasks: Vec<Item>,
     pub habits: Vec<Habit>,
+    /// Water: glasses a day.
+    pub water_goal: u32,
+    /// Water: the day counted (days since 1970) and its glasses; another day starts at 0.
+    pub water_day: i64,
+    pub water_count: u32,
+    /// Water: a reminder each hour from `water_from` until `water_to` (hours, 0-24) while short of the goal.
+    pub water_reminders: bool,
+    pub water_from: u32,
+    pub water_to: u32,
+    /// Contributions: the GitHub and LeetCode user names whose graphs show; empty leaves one out.
+    pub github_user: String,
+    pub leetcode_user: String,
     /// Each note's first line is its title.
     pub notes: Vec<Item>,
     /// Calendar events; each one's text is `YYYY-MM-DD title` (`nextcloud::event_day`).
     pub events: Vec<Item>,
+    /// Calendar: ICS links (Google, Outlook, iCloud) shown read-only beside the events.
+    pub calendar_feeds: Vec<String>,
     pub nextcloud: Nextcloud,
     /// Notes pinned to the top of the list, by key.
     pub pinned_notes: Vec<u64>,
@@ -463,6 +485,7 @@ impl Default for Config {
             hour12: true,
             weather_unit: "f".into(),
             location: String::new(),
+            rain_alerts: true,
             world_clocks: ["London", "New York", "Tokyo"].map(Into::into).into(),
             theme: "none".into(),
             bg_color: "#000000".into(),
@@ -482,8 +505,17 @@ impl Default for Config {
             workflows: Vec::new(),
             tasks: Vec::new(),
             habits: Vec::new(),
+            water_goal: 8,
+            water_day: 0,
+            water_count: 0,
+            water_reminders: true,
+            water_from: 9,
+            water_to: 21,
+            github_user: String::new(),
+            leetcode_user: String::new(),
             notes: Vec::new(),
             events: Vec::new(),
+            calendar_feeds: Vec::new(),
             nextcloud: Nextcloud::default(),
             pinned_notes: Vec::new(),
             clipboard_pins: Vec::new(),
@@ -580,6 +612,9 @@ impl Config {
         kit.c.knob_on = bg;
         kit
     }
+
+    /// Glasses of water drunk on `day`.
+    pub fn water(&self, day: i64) -> u32 { if self.water_day == day { self.water_count } else { 0 } }
 
     pub fn provider(&self) -> &'static Provider {
         PROVIDERS.iter().find(|p| p.id == self.ai_provider).unwrap_or(&PROVIDERS[0])
