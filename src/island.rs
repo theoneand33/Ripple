@@ -264,6 +264,10 @@ pub struct Island {
     pub desktop_drag: bool,
     pub t3: tabs::T3,
     pub plugins: crate::plugins::Plugins,
+    /// The Overview's layout is being edited.
+    pub dashboard_edit: bool,
+    /// The Overview tile being dragged: its index, the pointer's travel, and whether its corner (a resize).
+    pub dashboard_drag: Option<(usize, f32, f32, bool)>,
 
     pub me: Option<Host>,
     pub settings: Option<WindowHandle>,
@@ -363,6 +367,8 @@ impl Island {
             desktop_drag: false,
             t3: tabs::T3::new(store.dir().as_deref()),
             plugins: crate::plugins::Plugins::new(store.dir().as_deref()),
+            dashboard_edit: false,
+            dashboard_drag: None,
             me: None,
             settings: None,
             images: None,
@@ -1078,7 +1084,7 @@ impl Island {
                 std::thread::sleep(std::time::Duration::from_secs(2));
                 let stats = Some(monitor.sample());
                 // Redraw only while the System tab shows; otherwise just keep the latest figures.
-                h.update_if(move |s, _| { let changed = s.stats != stats; s.stats = stats; changed && s.mode == Mode::Large && s.tab == Tab::System });
+                h.update_if(move |s, _| { let changed = s.stats != stats; s.stats = stats; changed && tabs::shows(s, Tab::System) });
             }
         });
 

@@ -31,16 +31,19 @@ pub use t3::T3;
 
 use rune::{Color, El, Key, KeyEvent, ScrollSpec, TextEdit, Tx, el, icon, row, text, text_input};
 
-use crate::config::{Config, Item, Tab};
+use crate::config::{Config, Item, Tab, Widget};
 use crate::nextcloud::{self, Kind};
 use crate::icons;
 use crate::island::{Island, Mode};
 
-pub fn view(s: &Island, layer: &mut Vec<El>) -> El {
-    match s.tab {
+pub fn view(s: &Island, layer: &mut Vec<El>) -> El { panel(s, s.tab, layer) }
+
+/// A tab's view, on its own or as a tile on the Overview.
+fn panel(s: &Island, tab: Tab, layer: &mut Vec<El>) -> El {
+    match tab {
         Tab::Search => search::view(s),
         Tab::Workflows => workflows::view(s),
-        Tab::Overview => overview::view(s),
+        Tab::Overview => overview::view(s, layer),
         Tab::Assistant => assistant::view(s),
         Tab::Clipboard => clipboard::view(s),
         Tab::Tasks => tasks::view(s),
@@ -58,7 +61,7 @@ pub fn view(s: &Island, layer: &mut Vec<El>) -> El {
 }
 
 /// The Large Island's size on each tab, before any notch inset.
-pub fn size(tab: Tab) -> (f32, f32) {
+pub const fn size(tab: Tab) -> (f32, f32) {
     match tab {
         Tab::Search => (445.0, 160.0),
         Tab::Workflows => (520.0, 250.0),
@@ -67,13 +70,27 @@ pub fn size(tab: Tab) -> (f32, f32) {
         Tab::Tasks | Tab::T3 | Tab::Plugins | Tab::Calculator => (420.0, 290.0),
         Tab::Pomodoro => (440.0, 190.0),
         Tab::Calendar => (560.0, 280.0),
-        Tab::Overview | Tab::Assistant | Tab::Clipboard => (420.0, 230.0),
+        Tab::Overview => (560.0, 320.0),
+        Tab::Assistant | Tab::Clipboard => (420.0, 230.0),
     }
 }
 
-/// Loads what a tab shows, as it opens.
+/// Loads what a tab shows, as it opens: the Overview's panels with it.
 pub fn entered(s: &mut Island) {
-    match s.tab {
+    s.dashboard_drag = None;
+    load(s, s.tab);
+    if s.tab == Tab::Overview {
+        for tile in s.cfg.dashboard.clone() { if let Widget::Panel(tab) = tile.widget { load(s, tab) } }
+    }
+}
+
+/// Whether Large mode shows a tab: open, or as a panel on the Overview.
+pub fn shows(s: &Island, tab: Tab) -> bool {
+    s.mode == Mode::Large && (s.tab == tab || s.tab == Tab::Overview && s.cfg.dashboard.iter().any(|t| t.widget == Widget::Panel(tab)))
+}
+
+fn load(s: &mut Island, tab: Tab) {
+    match tab {
         Tab::T3 => s.t3_load(),
         Tab::Stremflix => s.stremflix_load(),
         Tab::Limits => s.limits_load(),
@@ -90,7 +107,7 @@ pub fn entered(s: &mut Island) {
 
 /// Once a second, from `Island::poll`.
 pub fn each_second(s: &mut Island, now: f64) -> bool {
-    let plugins = s.mode == Mode::Large && s.tab == Tab::Plugins && s.plugins.tick();
+    let plugins = shows(s, Tab::Plugins) && s.plugins.tick();
     s.notes_tick();
     s.pomodoro.tick(now) | plugins
 }
@@ -103,7 +120,7 @@ pub fn deadline(s: &Island) -> Option<f64> { s.clipboard.copied.map(|c| c.1) }
 
 /// Picks up a settings change another window made, for the tab showing.
 pub fn reloaded(s: &mut Island, old: &Config) {
-    if s.mode == Mode::Large && s.tab == Tab::T3 && old.t3_devices != s.cfg.t3_devices { s.t3_load() }
+    if shows(s, Tab::T3) && old.t3_devices != s.cfg.t3_devices { s.t3_load() }
 }
 
 /// What a delete took: a note or an event and where it sat, or the cleared Shelf.
