@@ -143,6 +143,7 @@ pub fn each_second(s: &mut Island, now: f64) -> bool {
     let plugins = shows(s, Tab::Plugins) && s.plugins.tick();
     s.notes_tick();
     s.task_reminders(now);
+    s.rain_alert(now);
     s.break_reminders(now);
     crate::system::WANT_PROCESSES.store(s.mode == Mode::Large && s.tab == Tab::System, std::sync::atomic::Ordering::Relaxed);
     match s.stocks.reload_in.take() {

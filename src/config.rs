@@ -371,6 +371,8 @@ pub struct Config {
     pub hour12: bool,
     pub weather_unit: String,
     pub location: String,
+    /// An alert about an hour before rain or snow starts at the location.
+    pub rain_alerts: bool,
     /// World Clocks: the cities shown, as typed (Open-Meteo looks each one up).
     pub world_clocks: Vec<String>,
     pub theme: String,
@@ -469,6 +471,7 @@ impl Default for Config {
             hour12: true,
             weather_unit: "f".into(),
             location: String::new(),
+            rain_alerts: true,
             world_clocks: ["London", "New York", "Tokyo"].map(Into::into).into(),
             theme: "none".into(),
             bg_color: "#000000".into(),

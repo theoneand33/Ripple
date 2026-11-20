@@ -274,6 +274,8 @@ pub struct Island {
     bluetooth_alert_until: Option<f64>,
     /// The task that fell due, and until when its reminder shows.
     pub reminder: Option<(String, f64)>,
+    /// The hour of rain or snow already alerted (Unix seconds).
+    rain_alerted: Option<i64>,
     /// Seconds until each break reminder (eye, hourly), counted only while no app is full screen.
     break_left: [Option<f64>; 2],
     /// The clock at the last count.
@@ -404,6 +406,7 @@ impl Island {
             bluetooth_alert_until: None,
             reminder: None,
             task_mark: String::new(),
+            rain_alerted: None,
             break_left: [None; 2],
             break_tick: 0.0,
             capture: None,
@@ -993,6 +996,24 @@ impl Island {
         }
     }
 
+    /// "Rain at 2:00": when the coming rain or snow starts, on the user's clock.
+    pub fn precip_label(&self) -> String {
+        let Some((at, snow)) = self.weather.precip else { return String::new() };
+        let t = LocalTime::at(at * 1000);
+        let hour = if self.cfg.hour12 { (t.hour + 11) % 12 + 1 } else { t.hour };
+        format!("{} at {hour}:{:02}", if snow { "Snow" } else { "Rain" }, t.minute)
+    }
+
+    /// Once a second: an alert once rain or snow is due within the hour; Large waits for compact.
+    pub fn rain_alert(&mut self, now: f64) {
+        // `rain_alerted` stays through a pause in the rain: `rain_due` lets only rain 3 hours away from it alert again.
+        let Some((at, _)) = self.weather.precip else { return };
+        if rune::is_headless() || !self.cfg.rain_alerts || self.large_open() || self.reminder.is_some() { return }
+        if !rain_due(at, crate::date::now_secs(), self.rain_alerted) { return }
+        self.rain_alerted = Some(at);
+        self.remind(self.precip_label(), now);
+    }
+
     pub fn set_battery(&mut self, battery: Option<(u8, bool)>, tx: &mut Tx) -> bool {
         let (percent, charging) = battery.map_or((None, false), |(p, c)| (Some(p), c));
         if (percent, charging) == (self.percent, self.charging) { return false }
@@ -1301,6 +1322,13 @@ impl Island {
     pub fn set_window(&mut self, window: WindowHandle) {
         self.passthrough.set_window(window);
     }
+}
+
+/// Rain starting at `at` is due an alert at `now` (Unix seconds): within the hour before, or up to
+/// 15 minutes after when Large held it back, and not the rain already alerted. A forecast often
+/// moves a rain by an hour or two: a start within 3 hours of the alerted one is the same rain.
+fn rain_due(at: i64, now: i64, alerted: Option<i64>) -> bool {
+    (-900..=3600).contains(&(at - now)) && alerted.is_none_or(|a| (at - a).abs() > 3 * 3600)
 }
 
 /// Each break's period in seconds: 20 minutes for the eyes, an hour to get up.
@@ -1673,6 +1701,24 @@ mod tests {
 
     fn island(cfg: Config) -> Island {
         Island::new(Store::memory(cfg), Vec::new())
+    }
+
+    #[test]
+    fn rain_alerts_come_once_within_the_hour_before() {
+        assert!(!rain_due(10_000, 10_000 - 3601, None), "too early");
+        assert!(rain_due(10_000, 10_000 - 3600, None));
+        assert!(!rain_due(10_000, 10_000 - 1800, Some(10_000)), "once");
+        assert!(!rain_due(10_000 + 3600, 10_000 + 1800, Some(10_000)), "the same rain, moved an hour");
+        assert!(rain_due(10_000 + 4 * 3600, 10_000 + 3 * 3600, Some(10_000)), "a later rain");
+        assert!(rain_due(10_000, 10_900, None), "held back by Large, still shown up to 15 minutes after it starts");
+        assert!(!rain_due(10_000, 10_901, None), "too late");
+        assert!(!rain_due(10_000 + 5400, 10_000 + 1800, Some(10_000)), "a pause in the same storm");
+        let mut s = island(Config { hour12: false, ..Config::default() });
+        s.rain_alerted = Some(10_000);
+        s.rain_alert(0.0);
+        assert_eq!(s.rain_alerted, Some(10_000), "raining now keeps the storm alerted");
+        s.weather.precip = Some((0, true));
+        assert!(s.precip_label().starts_with("Snow at "));
     }
 
     #[test]
