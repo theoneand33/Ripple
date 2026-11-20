@@ -1009,6 +1009,7 @@ impl Island {
         }
         if old.bg_image != self.cfg.bg_image { self.load_background() }
         if old.hour12 != self.cfg.hour12 { self.set_clock() }
+        if old.hide_from_capture != self.cfg.hide_from_capture && let Some(w) = self.passthrough.window() { platform::hide_from_capture(w, self.cfg.hide_from_capture) }
         if old.overlap_panels != self.cfg.overlap_panels && let Some(Host::Overlay(h, ..)) = &self.me { h.set_overlap_panels(self.cfg.overlap_panels) }
         tabs::reloaded(self, &old);
     }
@@ -1447,6 +1448,7 @@ impl Island {
     }
 
     pub fn set_window(&mut self, window: WindowHandle) {
+        platform::hide_from_capture(&window, self.cfg.hide_from_capture);
         self.passthrough.set_window(window);
     }
 }

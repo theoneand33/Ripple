@@ -634,6 +634,10 @@ fn page(s: &Settings, k: &Kit, layer: &mut Vec<El>, page: Page) -> Vec<El> {
                 style.push(toggle(s, k, "Overlap panels", cfg.overlap_panels, |c| c.overlap_panels = !c.overlap_panels));
             }
             style.push(toggle(s, k, "Hide when inactive", cfg.hide_inactive, |c| c.hide_inactive = !c.hide_inactive));
+            // Linux has no way to keep a window out of a capture.
+            if cfg!(any(windows, target_os = "macos")) {
+                style.push(toggle(s, k, "Hide from screen capture", cfg.hide_from_capture, |c| c.hide_from_capture = !c.hide_from_capture));
+            }
             sections.push(section(s, "style", "Island style", style));
 
             sections.push(section(s, "colors", "Colors and background", vec![

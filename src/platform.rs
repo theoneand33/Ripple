@@ -69,6 +69,8 @@ impl Passthrough {
         if let Some(w) = &self.window { w.resize_instant(size) }
     }
 
+    pub fn window(&self) -> Option<&WindowHandle> { self.window.as_ref() }
+
     pub fn set_window(&mut self, window: WindowHandle) {
         self.window = Some(window);
         self.applied = None;
@@ -445,6 +447,28 @@ pub fn adopt(window: &WindowHandle) {
     let _ = window.with_raw_handle(|h| if let rune::raw_window_handle::RawWindowHandle::AppKit(h) = h.as_raw() {
         crate::mac::unconstrain(h.ns_view.as_ptr());
     });
+}
+
+/// Keeps the window out of screenshots, recordings and screen sharing, or lets it back in.
+/// Linux (X11 and Wayland) has no such control; the window stays capturable there.
+pub fn hide_from_capture(window: &WindowHandle, hide: bool) {
+    #[cfg(windows)]
+    {
+        #[link(name = "user32")]
+        unsafe extern "system" { fn SetWindowDisplayAffinity(hwnd: isize, affinity: u32) -> i32; }
+        // WDA_EXCLUDEFROMCAPTURE (Windows 10 2004+) or WDA_NONE.
+        let affinity = if hide { 0x11 } else { 0 };
+        let _ = window.with_raw_handle(|h| if let rune::raw_window_handle::RawWindowHandle::Win32(h) = h.as_raw() {
+            // SAFETY: a live window handle, on the UI thread that owns it.
+            if unsafe { SetWindowDisplayAffinity(h.hwnd.get(), affinity) } == 0 { eprintln!("Ripple: could not change the Island's screen capture setting") }
+        });
+    }
+    #[cfg(target_os = "macos")]
+    let _ = window.with_raw_handle(|h| if let rune::raw_window_handle::RawWindowHandle::AppKit(h) = h.as_raw() {
+        crate::mac::set_sharing(h.ns_view.as_ptr(), !hide);
+    });
+    #[cfg(target_os = "linux")]
+    let _ = (window, hide);
 }
 
 /// _NET_WM_STATE: sticky, above, and off the taskbar and pager; set on the window before
