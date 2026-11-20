@@ -23,7 +23,7 @@ mod workflows;
 
 pub use assistant::Assistant;
 pub use calculator::Calculator;
-pub use calendar::Calendar;
+pub use calendar::{link_host, Calendar};
 pub use clipboard::{Clipboard, Content};
 pub use limits::Limits;
 pub use notes::Notes;

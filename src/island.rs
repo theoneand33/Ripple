@@ -260,8 +260,6 @@ pub struct Island {
     pub reminder: Option<(String, f64)>,
     /// The reminder's meeting link, for its Join button.
     pub reminder_link: Option<String>,
-    /// Events already alerted, as `minute title` (`tabs::calendar::due_events`).
-    pub alerted_events: Vec<String>,
     /// The minute task reminders were last checked, as `YYYY-MM-DDTHH:MM`; empty until the first.
     pub task_mark: String,
     capture: Option<(Alert, f64)>,
@@ -384,7 +382,6 @@ impl Island {
             bluetooth_alert_until: None,
             reminder: None,
             reminder_link: None,
-            alerted_events: Vec::new(),
             task_mark: String::new(),
             capture: None,
             capture_queue: Vec::new(),
@@ -1465,7 +1462,7 @@ fn glance(s: &Island, fg: Color) -> El {
     let right = match alert {
         Some(alert) if s.joinable() => row().key("label").gap(8.0).center_y()
             .child(text(s.alert_label(alert)).font(style).color(color))
-            .child(el().key("join").role("button").label("Join the meeting").focusable(true).h(26.0).px(12.0).center()
+            .child(el().key("join").role("button").label(format!("Join {}", tabs::link_host(s.reminder_link.as_deref().unwrap_or("")))).focusable(true).h(26.0).px(12.0).center()
                 .radius(cfg.radius(13.0)).fill(accent::green()).hover(accent::green().alpha(0.8)).press_scale(0.96)
                 .child(text("Join").font(cfg.font(13.0, 700.0)).color(Color::BLACK).a11y_hidden())
                 .on_press(Island::join)),

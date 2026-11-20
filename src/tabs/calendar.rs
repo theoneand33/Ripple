@@ -25,11 +25,18 @@ pub struct Calendar {
 
 const MONTHS: [&str; 12] = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 
-/// The first `http(s)://` link in an event's title, and the title without it.
+/// The first `https://` link in an event's title, and the title without it. An `http://` link
+/// stays in the title and gets no Join button.
 pub fn meeting_link(title: &str) -> (Option<String>, String) {
-    let link = title.split_whitespace().find(|w| w.starts_with("https://") || w.starts_with("http://"));
+    let link = title.split_whitespace().find(|w| w.starts_with("https://"));
     let rest = title.split_whitespace().filter(|w| Some(*w) != link).collect::<Vec<_>>().join(" ");
     (link.map(str::to_string), rest)
+}
+
+/// A link's host, for the Join button's label: `https://user@host:443/path` gives `host:443`.
+pub fn link_host(link: &str) -> &str {
+    let authority = link.split_once("://").map_or(link, |l| l.1).split(['/', '?', '#']).next().unwrap_or("");
+    authority.rsplit('@').next().unwrap_or(authority)
 }
 
 /// Minutes after its start that an event can still alert, for one held while Large was open.
@@ -46,7 +53,7 @@ pub fn due_events(events: &[Item], now: i64, lead: i64, alerted: &[String]) -> V
         let id = format!("{start} {rest}");
         if !(start - lead..=start + EVENT_GRACE).contains(&now) || alerted.contains(&id) { return None }
         let (link, title) = meeting_link(rest);
-        Some((id, title, link))
+        Some((id, if title.is_empty() { "Meeting".into() } else { title }, link))
     }).collect()
 }
 
@@ -58,12 +65,16 @@ impl Island {
         if rune::is_headless() || lead == 0 || self.mode == crate::island::Mode::Large || self.reminder.is_some() { return }
         let t = rune::time::LocalTime::at(crate::date::now_ms());
         let minute = crate::date::days_from_civil(t.year, t.month, t.day) * 1440 + i64::from(t.hour * 60 + t.minute);
-        let due = due_events(&self.cfg.events, minute, lead, &self.alerted_events);
+        let due = due_events(&self.cfg.events, minute, lead, &self.cfg.alerted_events);
         if due.is_empty() { return }
         // Several at once share one alert, with the first meeting link.
         let title = if due.len() == 1 { due[0].1.clone() } else { format!("{} events", due.len()) };
         let link = due.iter().find_map(|d| d.2.clone());
-        self.alerted_events.extend(due.into_iter().map(|d| d.0));
+        self.save(|c| {
+            // Ids start with the event's start minute; those over a day old can't alert again.
+            c.alerted_events.retain(|id| id.split(' ').next().and_then(|m| m.parse::<i64>().ok()).is_some_and(|m| m >= minute - 1440));
+            c.alerted_events.extend(due.into_iter().map(|d| d.0));
+        });
         self.remind_event(title, link, now);
     }
 }
@@ -229,7 +240,7 @@ mod tests {
 
     #[test]
     fn an_event_alerts_once_within_its_lead_with_its_meeting_link() {
-        let events = ["2026-01-01 All day", "2026-01-01 09:30 Standup https://meet.example.com/abc daily", "2026-01-01 09:30 Review"].map(Item::new);
+        let events = ["2026-01-01 All day", "2026-01-01 09:30 Standup https://meet.example.com/abc daily", "2026-01-01 09:30 Review", "2026-01-02 09:30 https://meet.example.com/x", "2026-01-02 10:00 Sync http://meet.example.com/y"].map(Item::new);
         let start = crate::date::days_from_civil(2026, 1, 1) * 1440 + 9 * 60 + 30;
         assert!(super::due_events(&events, start - 11, 10, &[]).is_empty(), "too early");
         let due = super::due_events(&events, start - 10, 10, &[]);
@@ -243,6 +254,12 @@ mod tests {
         assert_eq!(&held[0].0, id);
         assert!(super::due_events(&events, start + 16, 10, &[]).is_empty(), "past");
         assert_eq!(super::meeting_link("Lunch"), (None, "Lunch".into()));
+        let next = super::due_events(&events, start + 1440, 0, &[]);
+        assert_eq!((next[0].1.as_str(), next[0].2.as_deref()), ("Meeting", Some("https://meet.example.com/x")), "a link-only title");
+        let http = super::due_events(&events, start + 1440 + 30, 0, &[]);
+        assert_eq!((http[0].1.as_str(), http[0].2.as_deref()), ("Sync http://meet.example.com/y", None), "no Join for http");
+        assert_eq!(super::link_host("https://meet.example.com/abc?x=1"), "meet.example.com");
+        assert_eq!(super::link_host("https://meet.example.com@evil.example"), "evil.example");
     }
 
     #[test]
