@@ -107,11 +107,13 @@ pub enum Widget {
     Battery,
     /// Today's events and the tasks left.
     Today,
+    /// Today as one timeline: the share gone, and its timed events and due tasks.
+    Day,
     Panel(Tab),
 }
 
 impl Widget {
-    pub const OWN: [Widget; 5] = [Widget::Clock, Widget::Media, Widget::Weather, Widget::Battery, Widget::Today];
+    pub const OWN: [Widget; 6] = [Widget::Clock, Widget::Media, Widget::Weather, Widget::Battery, Widget::Today, Widget::Day];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -120,6 +122,7 @@ impl Widget {
             Widget::Weather => "Weather",
             Widget::Battery => "Battery",
             Widget::Today => "Today",
+            Widget::Day => "Day Progress",
             Widget::Panel(tab) => tab.name(),
         }
     }
@@ -141,7 +144,7 @@ impl Tile {
 
     /// Panels open full width and tall: they were drawn for the whole Island.
     pub fn new(widget: Widget) -> Tile {
-        let (w, h) = match widget { Widget::Media => (4, 3), Widget::Panel(_) => (4, 4), _ => (2, 2) };
+        let (w, h) = match widget { Widget::Media => (4, 3), Widget::Panel(_) => (4, 4), Widget::Day => (4, 2), _ => (2, 2) };
         Tile { widget, w, h }
     }
 

@@ -330,6 +330,13 @@ fn island_spec() -> AppSpec<Island> {
                 s.cfg.dashboard = [config::Widget::Clock, config::Widget::Battery, config::Widget::Panel(Tab::Tasks), config::Widget::Panel(Tab::System)].map(config::Tile::new).into();
                 s.cfg.tasks = vec![config::Item::new("Ship the dashboard"), config::Item::new("Water the plants")];
             }),
+            ("overview-day", |s| {
+                s.mode = Mode::Large;
+                s.set_tab(Tab::Overview);
+                s.cfg.dashboard = [config::Widget::Day].map(config::Tile::new).into();
+                s.cfg.events = ["2026-01-01 09:30 Standup", "2026-01-01 13:00 Lunch with Sam"].map(config::Item::new).into();
+                s.cfg.tasks = ["Ship v0.5 due:2026-01-01T17:00"].map(config::Item::new).into();
+            }),
             ("overview-edit", |s| { s.mode = Mode::Large; s.set_tab(Tab::Overview); s.dashboard_edit = true }),
             ("overview-resize", |s| { s.mode = Mode::Large; s.set_tab(Tab::Overview); s.dashboard_edit = true; s.dashboard_drag = Some((0, -130.0, -60.0, true)) }),
             ("camera", |s| { let mut tx = rune::Tx::default(); s.set_capture(Some(true), None, &mut tx); }),
