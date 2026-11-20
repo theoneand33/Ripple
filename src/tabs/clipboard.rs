@@ -105,7 +105,9 @@ fn jwt(t: &str) -> Result<String, String> {
 /// Unix seconds (or milliseconds, past the year 5138) as the date and time on this clock.
 fn unix_time(t: &str) -> Result<String, String> {
     let n: i64 = t.trim().parse().map_err(|_| "Not a Unix time")?;
-    let ms = if n.abs() >= 100_000_000_000 { n } else { n.saturating_mul(1000) };
+    let ms = if n.unsigned_abs() >= 100_000_000_000 { n } else { n.saturating_mul(1000) };
+    // 0001-01-01 to 9999-12-31 UTC, so the local offset never leaves four-digit years.
+    if !(-62_135_596_800_000..=253_402_214_400_000).contains(&ms) { return Err("Not a Unix time".into()) }
     let l = rune::time::LocalTime::at(ms);
     let off = l.offset / 60;
     Ok(format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02} {}{:02}:{:02}", l.year, l.month, l.day, l.hour, l.minute, l.second, if off < 0 { '-' } else { '+' }, off.abs() / 60, off.abs() % 60))
@@ -356,6 +358,9 @@ mod tests {
         assert!(t.starts_with("1970-01-01") || t.starts_with("1969-12-31"), "{t}");
         assert_eq!(run("Unix time", "1767225600000").unwrap()[..7], run("Unix time", "1767225600").unwrap()[..7], "milliseconds too");
         assert!(run("Unix time", "soon").is_err());
+        assert!(run("Unix time", "-9223372036854775808").is_err());
+        assert!(run("Unix time", "9223372036854775807").is_err());
+        assert!(run("Unix time", "-62135596801").is_err());
     }
 
     #[test]
