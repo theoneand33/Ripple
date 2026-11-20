@@ -1,7 +1,7 @@
 //! The Settings window. Every change saves at once and the Island picks it up.
 
-use rune::{Color, Cursor, Cx, Drag, El, Phase, ScrollSpec, TextEdit, Tx, col, el, icon, row, text};
-use rune_kit::{Button, ButtonVariant, IconButton, Kit, RadioGroup, RadioItem, Select, Switch, TextArea, TextInput};
+use rune::{Color, Cursor, Cx, Drag, El, Phase, ScrollSpec, Shortcut, ShortcutError, TextEdit, Tx, col, el, icon, row, text};
+use rune_kit::{Button, ButtonVariant, IconButton, Kit, RadioGroup, RadioItem, Select, ShortcutRecorder, ShortcutRecorderState, Switch, TextArea, TextInput};
 
 use crate::config::{Config, POSITIONS, PROVIDERS, QuickApp, SEARCH_ENGINES, Store, T3Device, THEMES, Tab, Workflow};
 use crate::icons;
@@ -50,6 +50,7 @@ pub struct Settings {
     bg_image: TextEdit,
     location: TextEdit,
     ai_model: TextEdit,
+    ai_url: TextEdit,
     api_key: TextEdit,
     new_app: TextEdit,
     /// The suggestion picked for `new_app`, with its own launch target.
@@ -69,9 +70,13 @@ pub struct Settings {
     nc_password: TextEdit,
     nc_list: TextEdit,
     nc_calendar: TextEdit,
+    calendar_feeds: TextEdit,
     nc_shelf: TextEdit,
     sure_url: TextEdit,
     sure_key: TextEdit,
+    pub hotkey: ShortcutRecorderState,
+    github_user: TextEdit,
+    leetcode_user: TextEdit,
 }
 
 impl Settings {
@@ -84,6 +89,7 @@ impl Settings {
             bg_image: edit(&cfg.bg_image),
             location: edit(&cfg.location),
             ai_model: edit(&cfg.ai_model),
+            ai_url: edit(&cfg.ai_url),
             api_key: TextEdit::new("").secure(),
             new_app: edit(""),
             picked_app: None,
@@ -101,9 +107,13 @@ impl Settings {
             nc_password: TextEdit::new("").secure(),
             nc_list: edit(&cfg.nextcloud.list),
             nc_calendar: edit(&cfg.nextcloud.calendar),
+            calendar_feeds: edit(&cfg.calendar_feeds.join("\n")),
             nc_shelf: edit(&cfg.nextcloud.shelf_folder),
             sure_url: edit(&cfg.sure_url),
             sure_key: TextEdit::new("").secure(),
+            hotkey: ShortcutRecorderState::new(cfg.hotkey.parse().ok()),
+            github_user: edit(&cfg.github_user),
+            leetcode_user: edit(&cfg.leetcode_user),
             screens: screens.iter().map(|s| s.name.clone()).collect(),
             open: None,
             dragging: None,
@@ -150,6 +160,16 @@ impl Settings {
         self.save(|c| c.workflows.push(Workflow { name, urls }));
         self.workflow_name.clear();
         self.workflow_urls.clear();
+    }
+
+    /// Registers the new shortcut before letting the old one go, so a refused chord keeps the old.
+    fn set_hotkey(&mut self, next: Option<&Shortcut>, _: &mut Tx) -> Result<(), ShortcutError> {
+        let island = self.island.clone().ok_or(ShortcutError::NotRunning)?;
+        let id = next.map(|k| island.register_hotkey(k.clone())).transpose()?;
+        island.update(move |s, _| if let Some(old) = std::mem::replace(&mut s.hotkey, id) && let Some(me) = &s.me { me.unregister_hotkey(old) });
+        let chord = next.map_or(String::new(), Shortcut::to_string);
+        self.save(|c| c.hotkey = chord);
+        Ok(())
     }
 
     fn t3_addable(&self) -> bool {
@@ -291,7 +311,7 @@ fn drag_tab(s: &mut Settings, from: usize, d: &mut Drag, tx: &mut Tx) {
 fn has_panel(tab: Tab) -> bool {
     match tab {
         Tab::Search | Tab::Workflows | Tab::Overview | Tab::Weather | Tab::Assistant | Tab::T3 | Tab::Limits | Tab::Tasks | Tab::Notes | Tab::Calendar | Tab::Shelf | Tab::Stocks => true,
-        Tab::Clipboard | Tab::Stremflix | Tab::System | Tab::Plugins | Tab::Pomodoro | Tab::Calculator | Tab::Habits => false,
+        Tab::Clipboard | Tab::Stremflix | Tab::System | Tab::Plugins | Tab::Pomodoro | Tab::Calculator | Tab::Habits | Tab::Clocks => false,
     }
 }
 
@@ -313,7 +333,22 @@ fn panel(s: &Settings, k: &Kit, layer: &mut Vec<El>, tab: Tab) -> Vec<El> {
                 setting(s, "Location", TextInput::new(&s.location).label("Location").placeholder("City, ST, Country").width(Some(200.0))
                     .binds(|s| &mut s.location, |c, v| c.location = v.into()).build(k)),
                 setting(s, "Unit", choice(s, k, layer, "unit", "Unit", &[("f", "Fahrenheit (°F)"), ("c", "Celsius (°C)")], &cfg.weather_unit, |c, v| c.weather_unit = v.into())),
+                toggle(s, k, "Alert before rain or snow", cfg.rain_alerts, |c| c.rain_alerts = !c.rain_alerts),
             ]));
+            if tab == Tab::Overview {
+                sections.push(section(s, "water", "Water", vec![
+                    setting(s, &format!("Daily goal ({} glasses)", cfg.water_goal), slider(s, "water-goal", "Daily goal", (1.0, 20.0, 1.0), |c| c.water_goal as f32, |c, v| c.water_goal = v as u32)).key("water-goal-row"),
+                    toggle(s, k, "Hourly reminders", cfg.water_reminders, |c| c.water_reminders = !c.water_reminders),
+                    setting(s, &format!("From {}:00", cfg.water_from), slider(s, "water-from", "Reminders from", (0.0, 24.0, 1.0), |c| c.water_from as f32, |c, v| c.water_from = v as u32)).key("water-from-row"),
+                    setting(s, &format!("Until {}:00", cfg.water_to), slider(s, "water-to", "Reminders until", (0.0, 24.0, 1.0), |c| c.water_to as f32, |c, v| c.water_to = v as u32)).key("water-to-row"),
+                ]));
+                sections.push(section(s, "contributions", "Contribution graphs", vec![
+                    setting(s, "GitHub user", TextInput::new(&s.github_user).label("GitHub user").placeholder("octocat").width(Some(200.0))
+                        .binds(|s| &mut s.github_user, |c, v| c.github_user = v.trim().into()).build(k)),
+                    setting(s, "LeetCode user", TextInput::new(&s.leetcode_user).label("LeetCode user").placeholder("User name").width(Some(200.0))
+                        .binds(|s| &mut s.leetcode_user, |c, v| c.leetcode_user = v.trim().into()).build(k)),
+                ]));
+            }
         }
         Tab::Workflows => {
             let mut apps = vec![
@@ -382,8 +417,9 @@ fn panel(s: &Settings, k: &Kit, layer: &mut Vec<El>, tab: Tab) -> Vec<El> {
                         .on_choose(move |s: &mut Settings, label: &str, _: &mut Tx| {
                             s.open = None;
                             let Some(provider) = PROVIDERS.iter().find(|p| p.label == label) else { return };
-                            s.save(|c| { c.ai_provider = provider.id.into(); c.ai_model = provider.model.into() });
+                            s.save(|c| { c.ai_provider = provider.id.into(); c.ai_model = provider.model.into(); c.ai_url.clear() });
                             s.ai_model.replace_text(provider.model);
+                            s.ai_url.clear();
                         })
                         .build(k, layer)
                 }),
@@ -392,8 +428,12 @@ fn panel(s: &Settings, k: &Kit, layer: &mut Vec<El>, tab: Tab) -> Vec<El> {
                     .child(TextInput::new(&s.ai_model).width(None).label("AI model").placeholder(cfg.provider().model)
                         .binds(|s| &mut s.ai_model, |c, v| c.ai_model = v.into()).build(k)),
                 col().w_full().gap(6.0)
+                    .child(text("Base URL").font(cfg.font(14.0, 500.0)).color(fg.alpha(0.85)))
+                    .child(TextInput::new(&s.ai_url).width(None).label("Base URL").placeholder(cfg.provider().url)
+                        .binds(|s| &mut s.ai_url, |c, v| c.ai_url = v.trim().into()).build(k)),
+                col().w_full().gap(6.0)
                     .child(text("API key").font(cfg.font(14.0, 500.0)).color(fg.alpha(0.85)))
-                    .child(TextInput::new(&s.api_key).width(None).label("API key").secure().placeholder(cfg.provider().key_hint)
+                    .child(TextInput::new(&s.api_key).width(None).label("API key").secure().placeholder(match cfg.provider().key_hint { "" => "Not needed", hint => hint })
                         .binds(|s| &mut s.api_key, |c, v| c.api_key = v.into()).build(k)),
             ]));
         }
@@ -458,6 +498,15 @@ fn panel(s: &Settings, k: &Kit, layer: &mut Vec<El>, tab: Tab) -> Vec<El> {
                     text("A meeting link in an event's title adds a Join button to its alert.").font(cfg.font(12.0, 400.0)).color(fg.alpha(0.6)),
                 ]));
             }
+
+            if tab == Tab::Calendar {
+                sections.push(section(s, "calendar-feeds", "Calendar links", vec![
+                    text("ICS links from Google Calendar (Secret address in iCal format), Outlook (Publish a calendar) or iCloud (Public Calendar), one per line. Their events show read-only.").font(cfg.font(12.0, 400.0)).color(fg.alpha(0.6)).wrap(),
+                    TextArea::new(&s.calendar_feeds).width(None).label("Calendar links").placeholder("https://calendar.google.com/calendar/ical/…/basic.ics").rows(3)
+                        .on_edit(|s: &mut Settings| &mut s.calendar_feeds)
+                        .on_change(|s: &mut Settings, _| { let v = s.calendar_feeds.text.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_string).collect(); s.save(|c| c.calendar_feeds = v) }).build(k),
+                ]));
+            }
         }
         Tab::Stocks => {
             let label = |t: &str| text(t.to_string()).font(cfg.font(14.0, 500.0)).color(fg.alpha(0.8)).mt(10.0);
@@ -471,7 +520,7 @@ fn panel(s: &Settings, k: &Kit, layer: &mut Vec<El>, tab: Tab) -> Vec<El> {
                     .binds(|s| &mut s.sure_key, |c, v| c.sure_key = v.trim().into()).build(k),
             ]));
         }
-        Tab::Clipboard | Tab::Stremflix | Tab::System | Tab::Plugins | Tab::Pomodoro | Tab::Calculator | Tab::Habits => {}
+        Tab::Clipboard | Tab::Stremflix | Tab::System | Tab::Plugins | Tab::Pomodoro | Tab::Calculator | Tab::Habits | Tab::Clocks => {}
     }
     sections
 }
@@ -497,6 +546,8 @@ fn page(s: &Settings, k: &Kit, layer: &mut Vec<El>, page: Page) -> Vec<El> {
                     .on_choose(|s: &mut Settings, name: &str, _: &mut Tx| { s.open = None; let name = name.to_string(); s.save(|c| c.display = name) })
                     .build(k, layer)));
             }
+            general.push(setting(s, "Open Large Mode", ShortcutRecorder::new("hotkey", &s.hotkey, |s: &mut Settings| &mut s.hotkey)
+                .label("Open Large Mode").width(190.0).on_change(Settings::set_hotkey).build(k)));
             sections.push(section(s, "general", "System", general));
         }
         Page::Tabs => {
@@ -546,8 +597,20 @@ fn page(s: &Settings, k: &Kit, layer: &mut Vec<El>, page: Page) -> Vec<El> {
         Page::Appearance => {
             let mut style = vec![
                 toggle(s, k, "Notch mode", cfg.notch_mode, |c| c.notch_mode = !c.notch_mode),
-                setting(s, "Theme", choice(s, k, layer, "theme", "Theme", &THEMES.map(|t| (t.0, t.1)), &cfg.theme, |c, v| c.set_theme(v))),
             ];
+            // The Day and Night pickers replace it: a manual pick would be reverted within a second.
+            if !cfg.auto_theme {
+                style.push(setting(s, "Theme", choice(s, k, layer, "theme", "Theme", &THEMES.map(|t| (t.0, t.1)), &cfg.theme, |c, v| c.set_theme(v))));
+            }
+            style.push(toggle(s, k, "Switch theme at sunrise and sunset", cfg.auto_theme, |c| c.auto_theme = !c.auto_theme));
+            if cfg.auto_theme {
+                let themes = THEMES.map(|t| (t.0, t.1));
+                style.push(setting(s, "Day theme", choice(s, k, layer, "day-theme", "Day theme", &themes, &cfg.day_theme, |c, v| c.day_theme = v.into())));
+                style.push(setting(s, "Night theme", choice(s, k, layer, "night-theme", "Night theme", &themes, &cfg.night_theme, |c, v| c.night_theme = v.into())));
+                if cfg.location.trim().is_empty() {
+                    style.push(text("Set a location in Settings → Weather: the sun's times come from there.").font(cfg.font(12.0, 400.0)).color(fg.alpha(0.6)).wrap());
+                }
+            }
             if cfg.notch_mode {
                 style.insert(1, toggle(s, k, "Mini notch", cfg.notch_mini, |c| c.notch_mini = !c.notch_mini));
                 // Auto size only sizes around a physical notch.
@@ -562,6 +625,9 @@ fn page(s: &Settings, k: &Kit, layer: &mut Vec<El>, page: Page) -> Vec<El> {
                 style.push(setting(s, &format!("Position X ({:.1}%)", cfg.island_x), slider(s, "island-x", "Position X", (0.0, 100.0, 0.1), |c| c.island_x, |c, v| c.island_x = v)).key("island-x-row"));
                 style.push(setting(s, &format!("Position Y ({}px)", cfg.island_y.round()), slider(s, "island-y", "Position Y", (0.0, 500.0, 1.0), |c| c.island_y, |c, v| c.island_y = v)).key("island-y-row"));
             }
+            style.push(setting(s, &format!("Size ({}%)", cfg.island_scale.round()), slider(s, "island-scale", "Island size", (80.0, 200.0, 10.0), |c| c.island_scale, |c, v| c.island_scale = v)).key("island-scale-row"));
+            style.push(setting(s, &format!("Opacity, compact ({}%)", cfg.compact_opacity.round()), slider(s, "compact-opacity", "Opacity when compact", (10.0, 100.0, 5.0), |c| c.compact_opacity, |c, v| c.compact_opacity = v)).key("compact-opacity-row"));
+            style.push(setting(s, &format!("Opacity, open ({}%)", cfg.large_opacity.round()), slider(s, "large-opacity", "Opacity when open", (10.0, 100.0, 5.0), |c| c.large_opacity, |c, v| c.large_opacity = v)).key("large-opacity-row"));
             style.push(toggle(s, k, "Island border", cfg.island_border, |c| c.island_border = !c.island_border));
             // Only the Wayland layer-shell overlay can be pushed below a panel.
             if matches!(s.island, Some(Host::Overlay(..))) {
@@ -590,6 +656,10 @@ fn page(s: &Settings, k: &Kit, layer: &mut Vec<El>, page: Page) -> Vec<El> {
                     &[("none", "No change"), ("standby", "Standby mode"), ("hidden", "Hidden mode"), ("still", "Standby mode off")],
                     &cfg.fullscreen, |c, v| c.fullscreen = v.into())),
                 toggle(s, k, "Show info when idle", cfg.show_info_idle, |c| c.show_info_idle = !c.show_info_idle),
+            ]));
+            sections.push(section(s, "breaks", "Break reminders (paused while an app is full screen)", vec![
+                toggle(s, k, "20-20-20 eye break", cfg.eye_breaks, |c| c.eye_breaks = !c.eye_breaks),
+                toggle(s, k, "Hourly break", cfg.hourly_breaks, |c| c.hourly_breaks = !c.hourly_breaks),
             ]));
         }
     }
@@ -685,7 +755,7 @@ mod tests {
         rt.pointer_up(x, y + 100.0);
         rt.frame(1.0 / 60.0);
         use Tab::*;
-        assert_eq!(store.get().tab_order, [Overview, Workflows, Assistant, Search, Clipboard, Tasks, T3, Notes, Stremflix, Shelf, System, Calendar, Limits, Pomodoro, Calculator, Habits, Stocks, Plugins, Weather]);
+        assert_eq!(store.get().tab_order, [Overview, Workflows, Assistant, Search, Clipboard, Tasks, T3, Notes, Stremflix, Shelf, System, Calendar, Limits, Pomodoro, Calculator, Habits, Stocks, Clocks, Plugins, Weather]);
     }
 
     #[test]

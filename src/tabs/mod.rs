@@ -5,6 +5,7 @@ mod assistant;
 mod calculator;
 mod calendar;
 mod clipboard;
+mod clocks;
 mod habits;
 mod limits;
 mod monitor;
@@ -25,6 +26,8 @@ pub use assistant::Assistant;
 pub use calculator::Calculator;
 pub use calendar::{link_host, Calendar};
 pub use clipboard::{Clipboard, Content};
+pub use overview::Contributions;
+pub use clocks::Clocks;
 pub use limits::Limits;
 pub use notes::Notes;
 pub use shelf::Shelf;
@@ -66,6 +69,7 @@ fn panel(s: &Island, tab: Tab, layer: &mut Vec<El>) -> El {
         Tab::Calculator => calculator::view(s),
         Tab::Habits => habits::view(s),
         Tab::Stocks => stocks::view(s),
+        Tab::Clocks => clocks::view(s),
     }
 }
 
@@ -87,6 +91,7 @@ pub const fn size(tab: Tab) -> (f32, f32) {
         Tab::Assistant => (420.0, 230.0),
         Tab::Clipboard => (420.0, 290.0),
         Tab::Weather => (420.0, 190.0),
+        Tab::Clocks => (480.0, 300.0),
     }
 }
 
@@ -96,6 +101,7 @@ pub fn entered(s: &mut Island) {
     load(s, s.tab);
     if s.tab == Tab::Overview {
         for tile in s.cfg.dashboard.clone() { if let Widget::Panel(tab) = tile.widget { load(s, tab) } }
+        if s.cfg.dashboard.iter().any(|t| t.widget == Widget::Contributions) { s.contributions_load() }
     }
 }
 
@@ -112,6 +118,7 @@ fn load(s: &mut Island, tab: Tab) {
         Tab::Limits => s.limits_load(),
         Tab::Calculator => s.calc_load(),
         Tab::Stocks => s.stocks_load(),
+        Tab::Clocks => s.clocks_load(),
         Tab::Notes => s.nextcloud_sync(Kind::Notes),
         Tab::Tasks => {
             if s.task_draft.editing.is_some() { tasks::reset_draft(s) }
@@ -121,6 +128,7 @@ fn load(s: &mut Island, tab: Tab) {
             (s.calendar.offset, s.calendar.day) = (0, None);
             if s.calendar.editing.take().is_some() { s.calendar.event.clear() }
             s.nextcloud_sync(Kind::Events);
+            s.calendar_feeds_load();
         }
         Tab::Shelf => s.nextcloud_shelf_sync(),
         Tab::Plugins => s.plugins.scan(),
@@ -136,10 +144,20 @@ pub fn each_second(s: &mut Island, now: f64) -> bool {
     s.notes_tick();
     s.task_reminders(now);
     s.event_alerts(now);
+    let theme = s.cfg.sun_theme(s.weather.sun, crate::date::now_secs()).filter(|t| *t != s.cfg.theme).map(str::to_string);
+    if let Some(theme) = theme { s.save(|c| c.set_theme(&theme)) }
+    s.water_reminders(now);
+    s.rain_alert(now);
+    s.break_reminders(now);
     crate::system::WANT_PROCESSES.store(s.mode == Mode::Large && s.tab == Tab::System, std::sync::atomic::Ordering::Relaxed);
     match s.stocks.reload_in.take() {
         Some(n) if n > 1 => s.stocks.reload_in = Some(n - 1),
         Some(_) if shows(s, Tab::Stocks) => s.stocks_load(),
+        _ => {}
+    }
+    match s.contributions.reload_in.take() {
+        Some(n) if n > 1 => s.contributions.reload_in = Some(n - 1),
+        Some(_) if s.mode == Mode::Large && s.tab == Tab::Overview && s.cfg.dashboard.iter().any(|t| t.widget == Widget::Contributions) => s.contributions_load(),
         _ => {}
     }
     s.pomodoro.tick_all(now) | plugins
@@ -161,6 +179,7 @@ pub fn reloaded(s: &mut Island, old: &Config) {
     if (old.sure_url != s.cfg.sure_url || old.sure_key != s.cfg.sure_key) && !s.cfg.sure_key.is_empty() {
         (s.stocks.portfolio, s.stocks.generation, s.stocks.reload_in) = (None, s.stocks.generation + 1, Some(2));
     }
+    if old.github_user != s.cfg.github_user || old.leetcode_user != s.cfg.leetcode_user { s.contributions.reload_in = Some(2) }
 }
 
 /// What a delete took: a note or an event and where it sat, or the cleared Shelf.

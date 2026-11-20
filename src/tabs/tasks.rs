@@ -2,7 +2,8 @@
 //! and repeat; press a task to edit it. Ticking a task off removes it, or moves a recurring one
 //! to its next due date; a due task raises a reminder. A task is saved as one line of text
 //! (`!! Title due:2026-11-25T17:00 every:week`). With a Nextcloud account the list syncs with
-//! Nextcloud Tasks, where these are PRIORITY, DUE and RRULE.
+//! Nextcloud Tasks, where these are PRIORITY, DUE and RRULE. A new task's title may say when it
+//! is due in words ("call Bob tomorrow 9am", "pay rent friday", "standup at 9:30").
 
 use rune::time::LocalTime;
 use rune::{El, Transition, Tx, col, el, row, text};
@@ -152,6 +153,88 @@ fn parse_due(v: &str, today: Date) -> Option<(Date, Option<(u32, u32)>)> {
     Some((day, time))
 }
 
+/// A time of day as typed: `9am`, `9:30pm`, `17:00`, `noon`. A bare number is no time.
+fn clock_time(w: &str) -> Option<(u32, u32)> {
+    if w == "noon" { return Some((12, 0)) }
+    let (w, half) = match w.strip_suffix("am") { Some(r) => (r, Some(0)), None => match w.strip_suffix("pm") { Some(r) => (r, Some(12)), None => (w, None) } };
+    let (h, m) = match w.split_once(':') { Some((h, m)) if m.len() == 2 => (h.parse::<u32>().ok()?, m.parse::<u32>().ok()?), None if half.is_some() => (w.parse::<u32>().ok()?, 0), _ => return None };
+    match half {
+        Some(add) if (1..=12).contains(&h) && m < 60 => Some((h % 12 + add, m)),
+        None if h < 24 && m < 60 => Some((h, m)),
+        _ => None,
+    }
+}
+
+/// Sunday is 0, as `date::weekday` counts. "Sun", "wed" and "sat" are words too: only spelled out.
+fn weekday_named(w: &str) -> Option<i64> {
+    const NAMES: [&[&str]; 7] = [&["sunday"], &["monday", "mon"], &["tuesday", "tue", "tues"], &["wednesday"], &["thursday", "thu", "thurs"], &["friday", "fri"], &["saturday"]];
+    NAMES.iter().position(|n| n.contains(&w)).map(|i| i as i64)
+}
+
+/// A new task's title with the words that say when it is due taken out, and that due day and
+/// time: `today`, `tonight`, `tomorrow`, a weekday (the next one, `next`/`on`/`this` before it
+/// allowed), `in 3 days` or `in 2 weeks`, and a time (`9am`, `9:30pm`, `17:00`, `noon`, `at 5`).
+/// A time with no day is today, or tomorrow once that time has passed (`now`, minutes since
+/// midnight). Nothing found, or nothing left of the title, leaves it as it is.
+pub fn natural_due(title: &str, today: Date, now: u32) -> (String, Option<(Date, Option<(u32, u32)>)>) {
+    let words: Vec<&str> = title.split_whitespace().collect();
+    let lower: Vec<String> = words.iter().map(|w| w.to_lowercase().trim_end_matches([',', '.', ';']).to_string()).collect();
+    let at = |i: usize| lower.get(i).map(String::as_str);
+    let (mut day, mut time, mut tonight) = (None, None, false);
+    let mut keep = vec![true; words.len()];
+    let mut i = 0;
+    while i < words.len() {
+        let w = lower[i].as_str();
+        // "every monday 9am" is a repeat, which the Repeat control sets: the rest stays in the title.
+        if w == "every" { break }
+        let mut used = 0;
+        if day.is_none() {
+            let ahead = |target: i64| { let wd = i64::from(crate::date::weekday(today.0, today.1, today.2)); let n = (target - wd).rem_euclid(7); shift_days(today, if n == 0 { 7 } else { n }) };
+            (day, used) = match w {
+                "today" => (Some(today), 1),
+                "tonight" => { tonight = true; (Some(today), 1) }
+                "tomorrow" | "tmrw" => (Some(shift_days(today, 1)), 1),
+                "next" | "on" | "this" if at(i + 1).and_then(weekday_named).is_some() => (at(i + 1).and_then(weekday_named).map(ahead), 2),
+                "in" => match (at(i + 1).and_then(|n| n.parse::<i64>().ok()), at(i + 2)) {
+                    (Some(n @ 0..=3650), Some("day" | "days")) => (Some(shift_days(today, n)), 3),
+                    (Some(n @ 0..=520), Some("week" | "weeks")) => (Some(shift_days(today, n * 7)), 3),
+                    _ => (None, 0),
+                },
+                _ => match weekday_named(w) { Some(t) => (Some(ahead(t)), 1), None => (None, 0) },
+            };
+        }
+        if used == 0 && time.is_none() {
+            // `9 pm` and `9:30 pm`: the word after it says which half of the day.
+            let spaced = at(i + 1).filter(|h| matches!(*h, "am" | "pm")).and_then(|half| clock_time(&format!("{w}{half}")));
+            (time, used) = match (spaced, clock_time(w), w, at(i + 1)) {
+                (Some(t), ..) => (Some(t), 2),
+                (None, Some(t), ..) => (Some(t), 1),
+                (None, None, "at" | "@", Some(next)) => match at(i + 2).filter(|h| ["am", "pm"].contains(h)).and_then(|half| clock_time(&format!("{next}{half}"))) {
+                    Some(t) => (Some(t), 3),
+                    None => match clock_time(next) {
+                        Some(t) => (Some(t), 2),
+                        // `at 5` means 5pm: the working day, not before dawn. Only as the title's last
+                        // words, so "look at 3 options" stays as it is.
+                        None if i + 2 < words.len() => (None, 0),
+                        None => match next.parse::<u32>() { Ok(h @ 1..=7) => (Some((h + 12, 0)), 2), Ok(h @ 8..=23) => (Some((h, 0)), 2), _ => (None, 0) },
+                    },
+                },
+                _ => (None, 0),
+            };
+        }
+        for k in &mut keep[i..i + used] { *k = false }
+        // The word that brought it in goes with it: "by friday", "due tomorrow", "on 9am".
+        if used > 0 && i > 0 && keep[i - 1] && matches!(lower[i - 1].as_str(), "by" | "due" | "on") { keep[i - 1] = false }
+        i += used.max(1);
+    }
+    // Tonight is 20:00, or no time at all once that has passed.
+    if tonight && time.is_none() && now < 20 * 60 { time = Some((20, 0)) }
+    let rest: Vec<&str> = words.iter().zip(&keep).filter(|(_, k)| **k).map(|(w, _)| *w).collect();
+    if (day.is_none() && time.is_none()) || rest.is_empty() { return (title.to_string(), None) }
+    let day = day.unwrap_or_else(|| if time.is_some_and(|(h, m)| h * 60 + m <= now) { shift_days(today, 1) } else { today });
+    (rest.join(" "), Some((day, time)))
+}
+
 /// "Today 17:00", "Tomorrow", "Wed, Nov 25".
 fn due_label(task: &Task, today: Date) -> String {
     let Some((day, time)) = task.due else { return String::new() };
@@ -180,6 +263,11 @@ fn add_task(s: &mut Island, _: &mut Tx) {
     let typed = if typed.split_whitespace().next().is_some_and(is_bangs) { format!("\\{typed}") } else { typed.to_string() };
     // An edit's field holds the title as it is, which may itself contain such words.
     let mut task = if d.editing.is_some() { Task { title: s.task.text.split_whitespace().collect::<Vec<_>>().join(" "), ..Task::default() } } else { Task::parse(&typed, s.today) };
+    if d.editing.is_none() && d.due.is_none() && task.due.is_none() {
+        let t = LocalTime::at(crate::date::now_ms());
+        let (title, due) = natural_due(&task.title, s.today, t.hour * 60 + t.minute);
+        if due.is_some() { (task.title, task.due) = (title, due) }
+    }
     if d.priority > 0 { task.priority = d.priority }
     if let Some(day) = d.due { task.due = Some((day, d.time)) }
     if d.every.is_some() { task.every = d.every }
@@ -313,7 +401,7 @@ pub fn view(s: &Island) -> El {
     }
     let editing = s.task_draft.editing.is_some();
     let mut input = row().key("task-input").w_full().gap(8.0).center_y()
-        .child(field(s, "new-task", &s.task, if editing { "Task title" } else { "New task…" }, |s: &mut Island| &mut s.task, add_task));
+        .child(field(s, "new-task", &s.task, if editing { "Task title" } else { "New task, like call Bob tomorrow 9am" }, |s: &mut Island| &mut s.task, add_task));
     if editing { input = input.child(tool(s, "cancel-edit", &icons::X, "Cancel edit").on_press(reset_draft)) }
     col().key("tasks").w_full().h_full().px(16.0).pt(18.0).pb(14.0).gap(10.0)
         .child(col().key("task-scroll").w_full().grow(1.0).min_h(0.0).scrolls().child(list))
@@ -382,6 +470,34 @@ mod tests {
     }
 
     #[test]
+    fn a_title_says_when_a_task_is_due_in_words() {
+        // 2026-11-20 is a Friday; it is 10:00.
+        let due = |t: &str| super::natural_due(t, (2026, 11, 20), 600);
+        assert_eq!(due("call Bob tomorrow 9am"), ("call Bob".into(), Some(((2026, 11, 21), Some((9, 0))))));
+        assert_eq!(due("Pay rent on monday"), ("Pay rent".into(), Some(((2026, 11, 23), None))));
+        assert_eq!(due("Review friday"), ("Review".into(), Some(((2026, 11, 27), None))), "today's weekday is next week's");
+        assert_eq!(due("standup at 9:30"), ("standup".into(), Some(((2026, 11, 21), Some((9, 30))))), "passed today, so tomorrow");
+        assert_eq!(due("Call mom at 5"), ("Call mom".into(), Some(((2026, 11, 20), Some((17, 0))))));
+        assert_eq!(due("Call Bob at 9 am"), ("Call Bob".into(), Some(((2026, 11, 21), Some((9, 0))))));
+        assert_eq!(due("Call mom at 9 pm"), ("Call mom".into(), Some(((2026, 11, 20), Some((21, 0))))));
+        assert_eq!(due("Dinner tonight"), ("Dinner".into(), Some(((2026, 11, 20), Some((20, 0))))));
+        assert_eq!(due("Gym 6:30 pm"), ("Gym".into(), Some(((2026, 11, 20), Some((18, 30))))));
+        assert_eq!(due("Lunch 12 pm today"), ("Lunch".into(), Some(((2026, 11, 20), Some((12, 0))))));
+        assert_eq!(due("Renew passport in 2 weeks"), ("Renew passport".into(), Some(((2026, 12, 4), None))));
+        assert_eq!(due("Midnight snack 12am tomorrow").1, Some(((2026, 11, 21), Some((0, 0)))));
+        assert_eq!(super::natural_due("Dinner tonight", (2026, 11, 20), 21 * 60), ("Dinner".into(), Some(((2026, 11, 20), None))), "no time already passed");
+        assert_eq!(due("Call Bob in -200000000000 days"), ("Call Bob in -200000000000 days".into(), None));
+        assert_eq!(due("Water plants every monday"), ("Water plants every monday".into(), None));
+        assert_eq!(due("Water plants every monday 9am"), ("Water plants every monday 9am".into(), None));
+        assert_eq!(due("Submit report by friday"), ("Submit report".into(), Some(((2026, 11, 27), None))));
+        assert_eq!(due("Pay rent due tomorrow"), ("Pay rent".into(), Some(((2026, 11, 21), None))));
+        assert_eq!(due("Look at 3 options"), ("Look at 3 options".into(), None));
+        for plain in ["Read Monday's paper", "Buy 3 apples", "Tomorrow", "Fix bug 1:5", "Buy sun cream", "Sat exam prep"] {
+            assert_eq!(due(plain), (plain.into(), None), "{plain}");
+        }
+    }
+
+    #[test]
     fn a_recurring_task_moves_to_its_next_due_day_not_before_today() {
         let today = (2026, 11, 20);
         let next = |text: &str| Task::parse(text, today).next(today).map(|t| t.to_string());
@@ -412,6 +528,10 @@ mod tests {
         s.task.replace_text("Call Bob due:tomorrow");
         super::add_task(&mut s, &mut rune::Tx::default());
         assert_eq!(s.cfg.tasks[1].text, "Call Bob due:2026-01-02", "a typed relative day is saved as its date");
+        s.task.replace_text("Call Ann tomorrow 9am");
+        super::add_task(&mut s, &mut rune::Tx::default());
+        assert_eq!(s.cfg.tasks[2].text, "Call Ann due:2026-01-02T09:00", "a day said in words too");
+        s.save(|c| { c.tasks.pop(); });
         let bob = s.cfg.tasks[1].key;
         super::start_edit(&mut s, bob);
         s.save(|c| c.tasks.retain(|t| t.key != bob));

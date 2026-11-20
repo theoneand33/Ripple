@@ -1,7 +1,8 @@
 //! Calendar: a month at a glance, today marked; the arrows page through months. Beside it, the
 //! picked day's events; press one to edit it. With a Nextcloud account, events sync with a
-//! Nextcloud calendar. A timed event raises an alert shortly before it starts, with a Join
-//! button when its title holds a meeting link.
+//! Nextcloud calendar. Events from ICS links (Google, Outlook, iCloud) show beside them, read-only.
+//! A timed Nextcloud event raises an alert shortly before it starts, with a Join button when its
+//! title holds a meeting link.
 
 use rune::{El, TextEdit, Transition, Tx, col, el, row, text};
 
@@ -21,6 +22,34 @@ pub struct Calendar {
     pub event: TextEdit,
     /// The event the field edits, by key; None adds a new one.
     pub editing: Option<u64>,
+    /// The ICS links' events, as events' texts, and why a link failed.
+    pub feed_events: Vec<String>,
+    pub feed_error: Option<String>,
+    /// The links last fetched, and when (Unix seconds).
+    feeds_loaded: (Vec<String>, i64),
+}
+
+impl Island {
+    /// Fetches the ICS links once every 30 minutes, or at once when they changed.
+    pub fn calendar_feeds_load(&mut self) {
+        let now = crate::date::now_secs();
+        let feeds = self.cfg.calendar_feeds.clone();
+        if feeds == self.calendar.feeds_loaded.0 && now - self.calendar.feeds_loaded.1 < 1800 { return }
+        let Some(me) = self.me.clone() else { return };
+        self.calendar.feeds_loaded = (feeds.clone(), now);
+        let (y, m, d) = self.today;
+        // A year back, as Nextcloud sync keeps.
+        let since = crate::date::shift_month(y, m, -12);
+        let since = format!("{:04}-{:02}-{d:02}", since.0, since.1);
+        // Apply only a fetch for the current links, so a slow one for old links can't land last.
+        me.spawn(move || {
+            let (mut events, mut errors) = (Vec::new(), Vec::new());
+            for url in &feeds {
+                match crate::net::calendar_feed(url) { Ok(ics) => events.extend(nextcloud::feed_events(&ics, &since)), Err(e) => errors.push(e) }
+            }
+            (feeds, events, errors.into_iter().next())
+        }, move |s, (feeds, events, error)| if s.cfg.calendar_feeds == feeds { (s.calendar.feed_events, s.calendar.feed_error) = (events, error) });
+    }
 }
 
 const MONTHS: [&str; 12] = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
@@ -63,7 +92,7 @@ impl Island {
     /// Large draws no alerts, and a showing reminder isn't replaced, so one waits for both.
     pub fn event_alerts(&mut self, now: f64) {
         let lead = i64::from(self.cfg.event_alert_minutes);
-        if rune::is_headless() || lead == 0 || self.mode == crate::island::Mode::Large || self.reminder.is_some() { return }
+        if rune::is_headless() || lead == 0 || self.large_open() || self.reminder.is_some() { return }
         let t = rune::time::LocalTime::at(crate::date::now_ms());
         let minute = crate::date::days_from_civil(t.year, t.month, t.day) * 1440 + i64::from(t.hour * 60 + t.minute);
         let due = due_events(&self.cfg.events, minute, lead, &self.cfg.alerted_events);
@@ -120,9 +149,12 @@ fn delete_event(s: &mut Island, key: u64) {
     s.nextcloud_sync(Kind::Events);
 }
 
-/// The picked day's events, by title, so timed ones (`HH:MM title`) run in order.
-fn day_events(s: &Island, day: (i32, u32, u32)) -> Vec<(u64, &str)> {
-    let mut events: Vec<_> = s.cfg.events.iter().filter_map(|e| event_day(&e.text).filter(|(d, _)| *d == day).map(|(_, title)| (e.key, title))).collect();
+/// The picked day's events, by title, so timed ones (`HH:MM title`) run in order; a link's
+/// events have no key, as they can't be edited.
+fn day_events(s: &Island, day: (i32, u32, u32)) -> Vec<(Option<u64>, &str)> {
+    let own = s.cfg.events.iter().map(|e| (Some(e.key), e.text.as_str()));
+    let feeds = s.calendar.feed_events.iter().map(|t| (None, t.as_str()));
+    let mut events: Vec<_> = own.chain(feeds).filter_map(|(key, text)| event_day(text).filter(|(d, _)| *d == day).map(|(_, title)| (key, title))).collect();
     events.sort_by_key(|e| e.1);
     events
 }
@@ -156,7 +188,7 @@ pub fn view(s: &Island) -> El {
     // Six weeks always, so the Island keeps one height; days of the months around are dimmed.
     let first = weekday(year, month, 1) as i32;
     let picked = s.calendar.day.unwrap_or(s.today);
-    let busy_days: Vec<_> = s.cfg.events.iter().filter_map(|e| Some(event_day(&e.text)?.0)).collect();
+    let busy_days: Vec<_> = s.cfg.events.iter().map(|e| e.text.as_str()).chain(s.calendar.feed_events.iter().map(String::as_str)).filter_map(|t| Some(event_day(t)?.0)).collect();
     let (py, pm) = shift_month(year, month, -1);
     let (len, prev_len) = (days_in(year, month) as i32, days_in(py, pm) as i32);
     let mut grid = col().key(format!("calendar-grid-{year}-{month}")).role("group").label(format!("{} {year}", MONTHS[month as usize - 1]))
@@ -186,7 +218,7 @@ pub fn view(s: &Island) -> El {
     }
 
     let mut list = col().key("event-list").w_full().gap(6.0);
-    if let Some(e) = &s.nextcloud[Kind::Events as usize].error {
+    for e in [&s.nextcloud[Kind::Events as usize].error, &s.calendar.feed_error].into_iter().flatten() {
         list = list.child(text(e).font(s.cfg.font(12.0, 400.0)).color(fg.alpha(0.55 * fg.a)).wrap_anywhere());
     }
     let events = day_events(s, picked);
@@ -195,9 +227,15 @@ pub fn view(s: &Island) -> El {
     let tints = [accent::indigo(), accent::orange(), accent::green(), accent::teal()];
     for (i, (key, title)) in events.into_iter().enumerate() {
         let tint = tints[i % tints.len()];
-        let mut line = row().key(format!("event-{key}")).w_full().pl(8.0).pr(4.0).py(4.0).gap(8.0).center_y()
+        let line = row().key(key.map_or(format!("feed-event-{i}"), |k| format!("event-{k}"))).w_full().pl(8.0).pr(4.0).py(4.0).gap(8.0).center_y()
             .radius(s.cfg.radius(10.0)).fill(tint.alpha(0.16))
             .transition(Transition::opacity());
+        let Some(key) = key else {
+            list = list.child(line.min_h(30.0).child(el().w(3.0).h(22.0).radius(1.5).fill(tint).a11y_hidden())
+                .child(text(title).font(s.cfg.font(14.0, 600.0)).color(tint).grow(1.0).min_w(0.0).wrap_anywhere()));
+            continue;
+        };
+        let mut line = line;
         if s.calendar.editing == Some(key) { line = line.border(1.5, tint) }
         list = list.child(
             line

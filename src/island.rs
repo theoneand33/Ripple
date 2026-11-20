@@ -8,7 +8,7 @@ use std::sync::mpsc::Sender;
 use rune::time::LocalTime;
 use rune::{
     AppHandle, Color, Curve, Cx, DisplayTarget, Drag, Easing, Edge, Effect, GesturePhase, El, Image, ImageCache, Key, KeyEvent, LoopSpec, OverlayHandle, OverlayPlacement,
-    Phase, Shadow, Spring, SurfaceFit, TextEdit, Transition, Tx, Vec2, Waker, WheelEvent, WindowHandle, col, el, icon, row, text,
+    Phase, Shadow, Shortcut, ShortcutError, ShortcutId, Spring, SurfaceFit, TextEdit, Transition, Tx, Vec2, Waker, WheelEvent, WindowHandle, col, el, icon, row, text,
 };
 
 use crate::config::{Config, Store, Tab};
@@ -23,8 +23,8 @@ pub const CANVAS: (f32, f32) = (680.0, 460.0);
 /// Room kept around the Island inside the window for its shadow and hover scale.
 const PAD: f32 = 30.0;
 /// The tab dock under the Large Island: its height, the gap above it, one button and the space between.
-// 3pt between buttons leaves room past all 18 tabs in the canvas.
-const DOCK: (f32, f32, f32, f32) = (44.0, 12.0, 32.0, 3.0);
+// 30pt buttons 3pt apart leave room past all 20 tabs in the canvas.
+const DOCK: (f32, f32, f32, f32) = (44.0, 12.0, 30.0, 3.0);
 /// Room between the Large Island's edge and its tab's content.
 const LARGE_EDGE: f32 = 12.0;
 /// Framer's spring (stiffness 400, damping 40, mass 2.5) as duration and bounce.
@@ -159,9 +159,34 @@ impl Host {
     fn allow_keys(&self) {
         if let Host::Overlay(h, ..) = self { h.request_keys() }
     }
+
+    /// Shows the Island and gives it keyboard focus, with Wayland's token for a shortcut press.
+    fn take_focus(&self, token: Option<String>) {
+        match self { Host::Window(h) => h.activate(token.unwrap_or_default()), Host::Overlay(..) => { self.show(); self.allow_keys() } }
+    }
+
+    /// Registers the system-wide shortcut that opens Large Mode (`Island::hotkey`).
+    pub fn register_hotkey(&self, shortcut: Shortcut) -> Result<ShortcutId, ShortcutError> {
+        match self {
+            Host::Window(h) => h.register_shortcut(shortcut, Island::hotkey),
+            Host::Overlay(h, app, _) => {
+                let h = h.clone();
+                app.register_shortcut(shortcut, move |_, tx| {
+                    let token = tx.activation_token().map(str::to_string);
+                    h.update(move |s, tx| s.hotkey_with(token, tx));
+                })
+            }
+        }
+    }
+
+    pub fn unregister_hotkey(&self, id: ShortcutId) {
+        let done = match self { Host::Window(h) => h.unregister_shortcut(id), Host::Overlay(_, app, _) => app.unregister_shortcut(id) };
+        if let Err(e) = done { eprintln!("Ripple: {e}") }
+    }
 }
 
 /// Where the Island's window sits on its display and where the Island is anchored inside it.
+/// All in the Island's own points: at a scale (`Config::zoom`) the display is that much smaller.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Placement {
     /// The window's top-left on the display, in points.
@@ -172,11 +197,15 @@ pub struct Placement {
     /// True when the Island hangs from `y`; false when it stands on it.
     pub top: bool,
     pub y: f32,
+    /// The zoom these points are drawn at.
+    pub zoom: f32,
 }
 
 impl Placement {
     pub fn of(cfg: &Config, display: (f32, f32)) -> Placement {
-        let (dw, dh) = display;
+        // Only as large as fits the display, though never below 100%.
+        let zoom = cfg.zoom().min((display.0 / CANVAS.0).min(display.1 / CANVAS.1).max(1.0));
+        let (dw, dh) = (display.0 / zoom, display.1 / zoom);
         // (align, x on the display, top?, y on the display)
         let (align, x, top, y) = if cfg.notch_mode {
             (0, dw * 0.5, true, 0.0)
@@ -188,13 +217,20 @@ impl Placement {
                 "bottom-right" => (1, dw - 15.0, false, dh - 45.0),
                 "top-center" => (0, dw * 0.498, true, 20.0),
                 "bottom-center" => (0, dw * 0.498, false, dh - 45.0),
-                _ => (0, dw * cfg.island_x / 100.0, true, cfg.island_y),
+                _ => (0, dw * cfg.island_x / 100.0, true, cfg.island_y / zoom),
             }
         };
         // The window stays on the display; the Island moves inside it instead.
-        let wx = match align { -1 => x - PAD, 0 => x - CANVAS.0 / 2.0, _ => x + PAD - CANVAS.0 }.min(dw - CANVAS.0).max(0.0);
-        let wy = if top { y - PAD } else { y + PAD - CANVAS.1 }.min(dh - CANVAS.1).max(0.0);
-        Placement { window: (wx.round(), wy.round()), align, x: x - wx.round(), top, y: y - wy.round() }
+        // Round before the clamp, and floor the limit, so a fractional zoom never pushes the window past the edge.
+        let wx = match align { -1 => x - PAD, 0 => x - CANVAS.0 / 2.0, _ => x + PAD - CANVAS.0 }.round().min((dw - CANVAS.0).floor()).max(0.0);
+        let wy = if top { y - PAD } else { y + PAD - CANVAS.1 }.round().min((dh - CANVAS.1).floor()).max(0.0);
+        Placement { window: (wx, wy), align, x: x - wx, top, y: y - wy, zoom }
+    }
+
+    /// The window's rect on the display, in the display's points.
+    pub fn frame(&self) -> [f32; 4] {
+        let k = self.zoom;
+        [self.window.0 * k, self.window.1 * k, CANVAS.0 * k, CANVAS.1 * k]
     }
 
     /// The Island's rect inside the window for a size.
@@ -211,6 +247,8 @@ pub struct Island {
     pub tab: Tab,
     /// The pointer is over the Island or its dock.
     pub hovered: bool,
+    /// Large was opened on purpose (a click, Cmd+number, the Shelf), not resting there.
+    large_by_hand: bool,
     /// Over the Island, over the dock, over a bubble.
     over: [bool; 3],
     /// The pointer left both; the next poll lets the Island rest.
@@ -220,6 +258,8 @@ pub struct Island {
     pub date: String,
     /// (year, month, day), for the Calendar tab.
     pub today: (i32, u32, u32),
+    /// Minutes since midnight now, for Day Progress.
+    pub minutes: u32,
     /// None on a machine without a battery.
     pub percent: Option<u8>,
     pub charging: bool,
@@ -260,8 +300,16 @@ pub struct Island {
     pub reminder: Option<(String, f64)>,
     /// The reminder's meeting link, for its Join button.
     pub reminder_link: Option<String>,
+    /// The hour of rain or snow already alerted (Unix seconds).
+    rain_alerted: Option<i64>,
+    /// Seconds until each break reminder (eye, hourly), counted only while no app is full screen.
+    break_left: [Option<f64>; 2],
+    /// The clock at the last count.
+    break_tick: f64,
     /// The minute task reminders were last checked, as `YYYY-MM-DDTHH:MM`; empty until the first.
     pub task_mark: String,
+    /// The hour a water reminder last came, as (day, hour).
+    water_mark: Option<(i64, u32)>,
     capture: Option<(Alert, f64)>,
     capture_queue: Vec<Alert>,
     paused_until: Option<f64>,
@@ -290,6 +338,8 @@ pub struct Island {
     pub stats: Option<system::Stats>,
     pub limits: tabs::Limits,
     pub stocks: tabs::Stocks,
+    pub contributions: tabs::Contributions,
+    pub clocks: tabs::Clocks,
     /// A file drag is over the Island.
     pub dropping: bool,
     /// A drag started elsewhere on the desktop opened the Shelf; it rests when the drag ends.
@@ -303,6 +353,8 @@ pub struct Island {
 
     pub me: Option<Host>,
     pub settings: Option<WindowHandle>,
+    /// The Settings window's state, told when the saved hotkey could not be registered.
+    pub settings_app: Option<AppHandle<crate::settings::Settings>>,
     pub images: Option<ImageCache>,
     pub screens: Vec<Screen>,
     pub placement: Placement,
@@ -312,6 +364,8 @@ pub struct Island {
     /// The window that had focus when the pointer reached the Island; it gets focus back on close.
     prior: Option<u64>,
     weather_kick: Option<Sender<()>>,
+    /// The registered shortcut that opens Large Mode.
+    pub hotkey: Option<ShortcutId>,
     wheel: f32,
     wheel_reset: f64,
     /// This wheel gesture already changed tab; the rest of it, momentum included, is ignored.
@@ -351,10 +405,12 @@ impl Island {
             mode: Mode::Still,
             tab: cfg.default_tab,
             hovered: false,
+            large_by_hand: false,
             over: [false; 3],
             left: false,
             time: String::new(),
             today: (1970, 1, 1),
+            minutes: 0,
             date: String::new(),
             percent: None,
             charging: false,
@@ -383,6 +439,10 @@ impl Island {
             reminder: None,
             reminder_link: None,
             task_mark: String::new(),
+            water_mark: None,
+            rain_alerted: None,
+            break_left: [None; 2],
+            break_tick: 0.0,
             capture: None,
             capture_queue: Vec::new(),
             paused_until: None,
@@ -405,6 +465,8 @@ impl Island {
             stats: None,
             limits: tabs::Limits::default(),
             stocks: tabs::Stocks::default(),
+            contributions: tabs::Contributions::default(),
+            clocks: tabs::Clocks::default(),
             dropping: false,
             desktop_drag: false,
             t3: tabs::T3::new(store.dir().as_deref()),
@@ -413,6 +475,7 @@ impl Island {
             dashboard_drag: None,
             me: None,
             settings: None,
+            settings_app: None,
             images: None,
             placement: Placement::of(&cfg, (1920.0, 1080.0)),
             screens,
@@ -420,6 +483,7 @@ impl Island {
             focused: false,
             prior: None,
             weather_kick: None,
+            hotkey: None,
             wheel: 0.0,
             wheel_reset: 0.0,
             wheel_spent: false,
@@ -457,8 +521,9 @@ impl Island {
         let screen = self.screen();
         self.placement = Placement::of(&self.cfg, screen.size);
         if let Some(me) = &self.me {
-            let (x, y) = self.placement.window;
-            me.place(screen.target, OverlayPlacement::Rect { x, y, width: CANVAS.0, height: CANVAS.1 });
+            let [x, y, width, height] = self.placement.frame();
+            me.place(screen.target, OverlayPlacement::Rect { x, y, width, height });
+            match me { Host::Window(_) => self.passthrough.resize((width, height)), Host::Overlay(h, ..) => h.resize((width, height)) }
         }
     }
 
@@ -519,6 +584,12 @@ impl Island {
 
     /// The alert showing is an event's, with a meeting to join.
     fn joinable(&self) -> bool { self.alert() == Some(Alert::Reminder) && self.reminder_link.is_some() }
+
+    /// The Island colour at the opacity set for the mode it is in.
+    pub fn island_bg(&self) -> Color {
+        let bg = self.cfg.bg();
+        bg.alpha(bg.a * if self.mode == Mode::Large { self.cfg.large_opacity } else { self.cfg.compact_opacity } / 100.0)
+    }
 
     pub fn low_battery(&self) -> bool { !self.charging && self.percent.is_some_and(|p| p < 20) }
 
@@ -648,6 +719,7 @@ impl Island {
     pub fn set_mode(&mut self, mode: Mode) {
         let was = self.mode;
         self.mode = if mode == Mode::Still { self.rest() } else { mode };
+        self.large_by_hand = mode == Mode::Large;
         if self.mode == Mode::Large && was != Mode::Large {
             if self.cfg.open_default_tab { self.tab = self.first_tab() }
             self.entered_tab();
@@ -735,6 +807,33 @@ impl Island {
         if closing { self.give_focus_back() }
     }
 
+    /// The system-wide shortcut: opens Large Mode with keyboard focus, or closes it again.
+    pub fn hotkey(&mut self, tx: &mut Tx) {
+        let token = tx.activation_token().map(str::to_string);
+        self.hotkey_with(token, tx)
+    }
+
+    fn hotkey_with(&mut self, token: Option<String>, tx: &mut Tx) {
+        tx.blur();
+        // Resting in Large (Large standby) is not open: the hotkey opens it by hand and takes focus.
+        if self.large_open() {
+            self.set_mode(if self.hovered { Mode::Quick } else { Mode::Still });
+            return self.give_focus_back();
+        }
+        if !self.focused && matches!(self.me, Some(Host::Window(_))) { self.prior = platform::focused_window() }
+        self.close_at = None;
+        self.set_mode(Mode::Large);
+        // GNOME Wayland: ask Window Calls for the focused window first, or it would name the Island.
+        #[cfg(target_os = "linux")]
+        if !self.focused && self.prior.is_none() && let Some(me @ Host::Window(_)) = self.me.clone() {
+            return me.spawn(platform::gnome_focused_window, move |s, w| {
+                if w.is_some() { s.prior = w }
+                if s.mode == Mode::Large && let Some(me) = &s.me { me.take_focus(token) }
+            });
+        }
+        if let Some(me) = &self.me { me.take_focus(token) }
+    }
+
     /// Hands keyboard focus back to the window that had it before the Island took it.
     fn give_focus_back(&mut self) {
         if !self.focused { return }
@@ -791,6 +890,7 @@ impl Island {
     fn open_shelf(&mut self) {
         self.close_at = None;
         self.mode = Mode::Large;
+        self.large_by_hand = true;
         self.set_tab(Tab::Shelf);
         self.entered_tab();
     }
@@ -838,6 +938,7 @@ impl Island {
                 let Some(&tab) = self.visible_tabs().get(c as usize - '1' as usize) else { return false };
                 // Straight on that tab; the starred tab doesn't apply.
                 self.mode = Mode::Large;
+                self.large_by_hand = true;
                 self.open_tab(tab);
             }
             _ => return false,
@@ -932,6 +1033,7 @@ impl Island {
         self.time = format!("{hour}:{:02}", now.minute);
         self.date = crate::date::format_date(now.year, now.month, now.day);
         self.today = (now.year, now.month, now.day);
+        self.minutes = now.hour * 60 + now.minute;
     }
 
     // --- What the pollers report ---
@@ -940,7 +1042,55 @@ impl Island {
     pub fn remind(&mut self, title: String, now: f64) {
         self.reminder = Some((title, now + 6.0));
         self.reminder_link = None;
-        if self.mode != Mode::Large { self.set_mode(Mode::Quick) }
+        if !self.large_open() { self.set_mode(Mode::Quick) }
+    }
+
+    /// Large is open by hand or under the pointer, not merely resting there (large_standby).
+    pub fn large_open(&self) -> bool {
+        self.mode == Mode::Large && (self.large_by_hand || self.hovered)
+    }
+
+    /// Once a second: the 20-20-20 eye break and the hourly break, paused while an app is full
+    /// screen. One due while Large is open waits until it closes.
+    pub fn break_reminders(&mut self, now: f64) {
+        let elapsed = now - std::mem::replace(&mut self.break_tick, now);
+        if rune::is_headless() { return }
+        let on = [self.cfg.eye_breaks, self.cfg.hourly_breaks];
+        // While another reminder shows, the break waits rather than replace it.
+        let paused = self.fullscreen || self.large_open() || self.reminder.is_some();
+        if let Some(i) = count_breaks(&mut self.break_left, on, elapsed, paused) {
+            self.remind(["Look away 20s", "Take a break"][i].into(), now);
+        }
+    }
+
+    /// On the hour within the set hours, while the Water widget is on the Overview and today's
+    /// glasses are short of the goal.
+    pub fn water_reminders(&mut self, now: f64) {
+        // An alert doesn't show over an open Large or replace another: the hour stays due until then.
+        if rune::is_headless() || self.large_open() || self.reminder.is_some() { return }
+        let t = LocalTime::at(crate::date::now_ms());
+        let mark = (crate::date::days_from_civil(t.year, t.month, t.day), t.hour);
+        // Track the hour even while reminders are off, so turning them on or adding the widget mid-hour stays quiet.
+        if !hour_turned(&mut self.water_mark, mark) || !self.cfg.water_reminders || !self.cfg.dashboard.iter().any(|t| t.widget == crate::config::Widget::Water) { return }
+        if water_due(&self.cfg, mark) { self.remind("Drink water".into(), now) }
+    }
+
+    /// "Rain at 2:00": when the coming rain or snow starts, on the user's clock.
+    pub fn precip_label(&self) -> String {
+        let Some((at, snow)) = self.weather.precip else { return String::new() };
+        let t = LocalTime::at(at * 1000);
+        let hour = if self.cfg.hour12 { (t.hour + 11) % 12 + 1 } else { t.hour };
+        format!("{} at {hour}:{:02}", if snow { "Snow" } else { "Rain" }, t.minute)
+    }
+
+    /// Once a second: an alert once rain or snow is due within the hour; Large waits for compact.
+    pub fn rain_alert(&mut self, now: f64) {
+        // `rain_alerted` stays through a pause in the rain: `rain_due` lets only rain 3 hours away from it alert again.
+        let Some((at, _)) = self.weather.precip else { return };
+        if rune::is_headless() || !self.cfg.rain_alerts || self.large_open() || self.reminder.is_some() { return }
+        if !rain_due(at, crate::date::now_secs(), self.rain_alerted) { return }
+        self.rain_alerted = Some(at);
+        self.remind(self.precip_label(), now);
     }
 
     /// An event's alert: 30 seconds, so its Join button can be reached.
@@ -1008,9 +1158,11 @@ impl Island {
     pub fn set_fullscreen(&mut self, on: bool) -> bool {
         // Hovered or focused, the focused-window check may read Ripple itself; keep the last reading.
         if on == self.fullscreen || self.hovered || self.focused { return false }
-        let resting = self.mode == self.rest();
+        let before = self.rest();
+        let resting = self.mode == before && !self.large_by_hand;
         self.fullscreen = on;
-        if resting { self.set_mode(Mode::Still) }
+        // Only a rule that moves the rest moves the Island: a Large opened by hand stays so.
+        if resting && self.rest() != before { self.set_mode(Mode::Still) }
         true
     }
 
@@ -1127,7 +1279,8 @@ impl Island {
             alert_ended |= self.mode != Mode::Large;
             changed = true;
         }
-        if alert_ended {
+        // An alert ending leaves a Large the user opened meanwhile, by hand or under the pointer.
+        if alert_ended && !self.large_open() {
             self.set_mode(Mode::Still);
             changed = true;
         }
@@ -1178,7 +1331,10 @@ impl Island {
             }
         };
         let screen = self.screen();
-        self.passthrough.sync(region, self.placement.window, &screen, tx);
+        // The window's points are the Island's times its zoom.
+        let k = self.placement.zoom;
+        let (wx, wy) = self.placement.window;
+        self.passthrough.sync(region.map(|v| v * k), (wx * k, wy * k), &screen, tx);
         changed
     }
 
@@ -1204,6 +1360,17 @@ impl Island {
         if self.cfg.t3_devices.is_empty() && !self.cfg.t3_detected { self.t3_detect() }
         if self.tab != Tab::Limits { self.limits_load() }
         if self.cfg.auto_launch { std::thread::spawn(|| system::set_auto_launch(true)); }
+        let chord = self.cfg.hotkey.trim();
+        if !chord.is_empty() {
+            match chord.parse().and_then(|k| me.register_hotkey(k)) {
+                Ok(id) => self.hotkey = Some(id),
+                Err(e) => {
+                    eprintln!("Ripple: the shortcut {chord} is off: {e}");
+                    // Settings shows it unset, so recording it again retries; the saved chord stays for the next launch.
+                    if let Some(settings) = &self.settings_app { settings.update(|s, _| s.hotkey = rune_kit::ShortcutRecorderState::new(None)) }
+                }
+            }
+        }
 
         fn every(ms: u64, f: impl Fn() + Send + 'static) {
             std::thread::spawn(move || loop {
@@ -1223,8 +1390,8 @@ impl Island {
         std::thread::spawn(move || system::watch_drags(|active| h.update(move |s, _| s.desktop_drag(active))));
         let h = me.clone();
         let store = self.store.clone();
-        // No rule, no query: the default pays nothing.
-        every(1000, move || { let f = store.get().fullscreen != "none" && platform::fullscreen(); h.update_if(move |s, _| s.set_fullscreen(f)); });
+        // No rule and no break reminders, no query: the default pays nothing.
+        every(1000, move || { let f = { let c = store.get(); (c.fullscreen != "none" || c.eye_breaks || c.hourly_breaks) && platform::fullscreen() }; h.update_if(move |s, _| s.set_fullscreen(f)); });
         let h = me.clone();
         every(250, move || { let on = system::caps_lock().unwrap_or(false); h.update_if(move |s, _| s.set_caps_lock(on)); });
         let h = me.clone();
@@ -1245,12 +1412,18 @@ impl Island {
         let (kick, kicked) = std::sync::mpsc::channel();
         self.weather_kick = Some(kick);
         let store = self.store.clone();
+        // The location the weather last came for.
+        let mut found = String::new();
         std::thread::spawn(move || loop {
             let cfg = store.get();
             // No location: clear the weather so no icon shows and no request is sent.
             let w = if cfg.location.trim().is_empty() { Some(Weather::default()) } else { crate::net::weather(&cfg.location, &cfg.weather_unit) };
-            if let Some(w) = w {
-                me.update_if(move |s, _| s.weather != w && { s.weather = w; true });
+            match w {
+                Some(w) => { found = cfg.location.clone(); me.update_if(move |s, _| s.weather != w && { s.weather = w; true }) }
+                // A new place not found: the sun times are the old place's, so the themes stop following them.
+                // A failed refresh for the same place keeps them.
+                None if cfg.location != found => me.update(|s, _| s.weather.sun = None),
+                None => {}
             }
             if kicked.recv_timeout(std::time::Duration::from_secs(600)) == Err(std::sync::mpsc::RecvTimeoutError::Disconnected) { break }
         });
@@ -1259,6 +1432,42 @@ impl Island {
     pub fn set_window(&mut self, window: WindowHandle) {
         self.passthrough.set_window(window);
     }
+}
+
+/// Moves `last` to `mark`; true only when the hour changed since an earlier mark, so the first mark after launch just seeds it.
+fn hour_turned(last: &mut Option<(i64, u32)>, mark: (i64, u32)) -> bool {
+    last.replace(mark).is_some_and(|prev| prev != mark)
+}
+
+/// A water reminder is due at `(day, hour)`: within the set hours and short of the goal.
+fn water_due(cfg: &Config, (day, hour): (i64, u32)) -> bool {
+    (cfg.water_from..cfg.water_to).contains(&hour) && cfg.water(day) < cfg.water_goal
+}
+
+/// Rain starting at `at` is due an alert at `now` (Unix seconds): within the hour before, or up to
+/// 15 minutes after when Large held it back, and not the rain already alerted. A forecast often
+/// moves a rain by an hour or two: a start within 3 hours of the alerted one is the same rain.
+fn rain_due(at: i64, now: i64, alerted: Option<i64>) -> bool {
+    (-900..=3600).contains(&(at - now)) && alerted.is_none_or(|a| (at - a).abs() > 3 * 3600)
+}
+
+/// Each break's period in seconds: 20 minutes for the eyes, an hour to get up.
+const BREAKS: [f64; 2] = [20.0 * 60.0, 3600.0];
+
+/// Counts `elapsed` off the breaks that are on, unless `paused`; returns the one that fell due,
+/// which starts its period again.
+fn count_breaks(left: &mut [Option<f64>; 2], on: [bool; 2], elapsed: f64, paused: bool) -> Option<usize> {
+    let mut due = None;
+    for i in 0..2 {
+        if !on[i] { left[i] = None; continue }
+        let l = left[i].get_or_insert(BREAKS[i]);
+        if paused { continue }
+        // A gap of over a minute (sleep, a suspended app) was a break itself: start again.
+        if elapsed > 60.0 { *l = BREAKS[i]; continue }
+        *l -= elapsed;
+        if *l <= 0.0 && due.is_none() { *l = BREAKS[i]; due = Some(i) }
+    }
+    due
 }
 
 /// Fetches an image (blocking) and hands it, loaded, to `put` on the UI thread.
@@ -1272,13 +1481,14 @@ pub fn fetch_image(me: &Host, url: String, foreign: bool, put: impl FnOnce(&mut 
 
 // --- Views ---
 
-pub fn view(s: &Island, _: &mut Cx<Island>) -> El {
+pub fn view(s: &Island, cx: &mut Cx<Island>) -> El {
     let cfg = &s.cfg;
+    cx.zoom(s.placement.zoom);
     let mut layer = Vec::new();
     let [left, top, w, h] = s.rect();
     let hidden = s.hidden();
-    let (bg, fg) = if hidden { (Color::TRANSPARENT, Color::TRANSPARENT) } else { (cfg.bg(), cfg.text()) };
     let large = s.mode == Mode::Large;
+    let (bg, fg) = if hidden { (Color::TRANSPARENT, Color::TRANSPARENT) } else { (s.island_bg(), cfg.text()) };
     let radii = if cfg.win95() { [0.0; 4] }
         else if cfg.notch_mode { let r = if large { 44.0 } else { h / 2.0 }; [0.0, 0.0, r, r] }
         else { [if large { 44.0 } else { h / 2.0 }; 4] };
@@ -1358,7 +1568,7 @@ pub fn view(s: &Island, _: &mut Cx<Island>) -> El {
 /// The Large Island's tabs as a row of icons in a pill of their own.
 fn dock(s: &Island, [x, y, w, h]: [f32; 4]) -> El {
     let cfg = &s.cfg;
-    let (bg, fg) = (cfg.bg(), cfg.text());
+    let (bg, fg) = (s.island_bg(), cfg.text());
     let (height, gap, button, space) = DOCK;
     let round = |r: f32| cfg.radius(r);
     let mut pill = row().key("dock").role("group").label("Tabs").w_full().h(height).px(space).gap(space).center_y()
@@ -1617,6 +1827,135 @@ mod tests {
 
     fn island(cfg: Config) -> Island {
         Island::new(Store::memory(cfg), Vec::new())
+    }
+
+    #[test]
+    fn the_hotkey_opens_large_and_closes_it_again() {
+        assert!(Config::default().hotkey.parse::<Shortcut>().is_ok());
+        let mut s = island(Config::default());
+        let tx = &mut Tx::default();
+        s.hotkey(tx);
+        assert_eq!(s.mode, Mode::Large);
+        s.hotkey(tx);
+        assert_eq!(s.mode, s.rest());
+        let mut s = island(Config { large_standby: true, ..Config::default() });
+        s.hotkey(tx);
+        assert!(s.large_open(), "resting in Large, the hotkey opens it by hand");
+        s.hotkey(tx);
+        assert!(s.mode == Mode::Large && !s.large_open(), "and lets it rest again");
+    }
+
+    #[test]
+    fn water_reminders_come_within_the_set_hours_until_the_goal() {
+        let cfg = Config { water_goal: 2, water_day: 100, water_count: 1, ..Config::default() };
+        assert!(water_due(&cfg, (100, 9)) && water_due(&cfg, (100, 20)));
+        assert!(!water_due(&cfg, (100, 8)) && !water_due(&cfg, (100, 21)), "outside 9 to 21");
+        assert!(water_due(&cfg, (101, 12)), "a new day starts at 0");
+        assert!(!water_due(&Config { water_count: 2, ..cfg }, (100, 12)), "the goal is met");
+    }
+
+    #[test]
+    fn water_reminders_wait_for_the_hour_to_change() {
+        let mut last = None;
+        assert!(!hour_turned(&mut last, (100, 15)), "launching mid-hour only seeds the mark");
+        assert!(!hour_turned(&mut last, (100, 15)), "the same hour stays quiet");
+        assert!(hour_turned(&mut last, (100, 16)), "the next hour reminds");
+        assert!(hour_turned(&mut last, (101, 16)), "a new day reminds");
+        assert_eq!(last, Some((101, 16)));
+    }
+
+    #[test]
+    fn rain_alerts_come_once_within_the_hour_before() {
+        assert!(!rain_due(10_000, 10_000 - 3601, None), "too early");
+        assert!(rain_due(10_000, 10_000 - 3600, None));
+        assert!(!rain_due(10_000, 10_000 - 1800, Some(10_000)), "once");
+        assert!(!rain_due(10_000 + 3600, 10_000 + 1800, Some(10_000)), "the same rain, moved an hour");
+        assert!(rain_due(10_000 + 4 * 3600, 10_000 + 3 * 3600, Some(10_000)), "a later rain");
+        assert!(rain_due(10_000, 10_900, None), "held back by Large, still shown up to 15 minutes after it starts");
+        assert!(!rain_due(10_000, 10_901, None), "too late");
+        assert!(!rain_due(10_000 + 5400, 10_000 + 1800, Some(10_000)), "a pause in the same storm");
+        let mut s = island(Config { hour12: false, ..Config::default() });
+        s.rain_alerted = Some(10_000);
+        s.rain_alert(0.0);
+        assert_eq!(s.rain_alerted, Some(10_000), "raining now keeps the storm alerted");
+        s.weather.precip = Some((0, true));
+        assert!(s.precip_label().starts_with("Snow at "));
+    }
+
+    #[test]
+    fn a_scaled_island_keeps_its_window_on_the_display() {
+        for scale in [80.0, 110.0, 130.0, 150.0, 170.0, 200.0] {
+            for mode in ["top-right", "bottom-right", "bottom-left", "free"] {
+                let p = Placement::of(&Config { island_scale: scale, position_mode: mode.into(), ..Config::default() }, (1920.0, 1080.0));
+                let [x, y, w, h] = p.frame();
+                assert!(x >= 0.0 && y >= 0.0 && x + w <= 1920.01 && y + h <= 1080.01, "{scale}% {mode}: {:?}", p.frame());
+                assert!((w - CANVAS.0 * scale / 100.0).abs() < 0.01, "{scale}%: {w}");
+            }
+        }
+        let small = Placement::of(&Config { island_scale: 200.0, ..Config::default() }, (1366.0, 768.0));
+        let [x, y, w, h] = small.frame();
+        assert!(x >= 0.0 && y >= 0.0 && x + w <= 1366.01 && y + h <= 768.01, "a small display caps the zoom: {:?}", small.frame());
+        let free = |scale| { let p = Placement::of(&Config { island_scale: scale, ..Config::default() }, (1920.0, 1080.0)); (p.window.1 + p.y) * p.zoom };
+        assert_eq!(free(100.0), free(200.0), "free placement keeps the Island's top on the display");
+        let s = island(Config { compact_opacity: 50.0, large_opacity: 25.0, ..Config::default() });
+        assert_eq!(s.island_bg().a, 0.5);
+    }
+
+    #[test]
+    fn breaks_fall_due_on_their_period_and_pause_while_full_screen() {
+        let mut left = [None; 2];
+        // `secs` one-second ticks, as the Island counts; the first break that falls due.
+        let run = |left: &mut [Option<f64>; 2], secs: u32, paused: bool| (0..secs).find_map(|_| count_breaks(left, [true, true], 1.0, paused));
+        assert_eq!(count_breaks(&mut left, [true, true], 0.0, false), None);
+        assert_eq!(run(&mut left, 1199, false), None);
+        assert_eq!(run(&mut left, 600, true), None, "paused");
+        assert_eq!(run(&mut left, 1, false), Some(0));
+        assert_eq!(left[0], Some(BREAKS[0]), "starts again");
+        assert_eq!(run(&mut left, 2400, false), Some(0));
+        assert_eq!(run(&mut left, 1200, false), Some(0), "both fall due at the hour: the eye break first");
+        assert_eq!(count_breaks(&mut left, [true, true], 0.0, false), Some(1), "the hourly one comes next");
+        assert_eq!(count_breaks(&mut left, [true, true], 3600.0, false), None, "waking from sleep starts both again");
+        assert_eq!(left, [Some(BREAKS[0]), Some(BREAKS[1])]);
+        assert_eq!(count_breaks(&mut left, [false, false], 5000.0, false), None);
+        assert_eq!(left, [None, None]);
+    }
+
+    #[test]
+    fn breaks_count_while_the_island_rests_in_large() {
+        let mut s = island(Config { large_standby: true, ..Config::default() });
+        assert!(!s.large_open(), "resting in Large is not open by hand");
+        s.remind("Look away 20s".into(), 0.0);
+        assert_eq!(s.mode, Mode::Quick, "the reminder shows compact");
+        s.set_mode(Mode::Still);
+        assert_eq!(s.mode, Mode::Large);
+        assert!(!s.large_open(), "back at rest");
+        s.hovered = true;
+        assert!(s.large_open(), "under the pointer");
+        s.hovered = false;
+        let cmd1 = KeyEvent { key: Key::Command('1'), mods: rune::Mods::default() };
+        assert!(s.key(&cmd1, &mut Tx::default()));
+        assert!(s.large_open(), "Cmd+1 opens it by hand with the pointer away");
+        let tab = s.tab;
+        s.remind("Look away 20s".into(), 0.0);
+        assert_eq!((s.mode, s.tab), (Mode::Large, tab), "the reminder waits");
+        s.set_mode(Mode::Still);
+        assert!(!s.large_open(), "resting clears it");
+        let mut s = island(Config::default());
+        s.set_mode(Mode::Large);
+        assert!(s.large_open());
+        s.set_mode(Mode::Quick);
+        assert!(!s.large_open());
+        let mut s = island(Config { large_standby: true, eye_breaks: true, ..Config::default() });
+        s.key(&KeyEvent { key: Key::Command('1'), mods: rune::Mods::default() }, &mut Tx::default());
+        s.set_fullscreen(true);
+        s.set_fullscreen(false);
+        assert!(s.large_open(), "a full screen app with no rule leaves a Large opened by hand alone");
+        s.cfg.fullscreen = "standby".into();
+        s.set_fullscreen(true);
+        assert!(s.mode == Mode::Large && s.large_open(), "nor does one with a rule");
+        s.remind("Look away 20s".into(), 0.0);
+        s.poll(7.0, &mut Tx::default());
+        assert!(s.reminder.is_none() && s.mode == Mode::Large, "a reminder ending leaves it open too");
     }
 
     #[test]
