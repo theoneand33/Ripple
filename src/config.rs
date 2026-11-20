@@ -199,7 +199,7 @@ impl Item {
     }
 }
 
-/// The Nextcloud account Notes, Tasks and Calendar events sync with.
+/// The Nextcloud account Notes, Tasks, Calendar events and the Shelf sync with.
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Nextcloud {
@@ -220,11 +220,19 @@ pub struct Nextcloud {
     pub calendar: String,
     /// Synced events deleted here, by path, that Nextcloud still has.
     pub deleted_events: Vec<String>,
+    /// The Nextcloud Files folder the Shelf syncs with; empty means `Ripple Shelf`.
+    pub shelf_folder: String,
+    /// Shelf files both sides had at the last sync, as `folder/name`. One missing from a side since was removed there.
+    pub shelf_synced: Vec<String>,
 }
 
 impl Nextcloud {
     pub fn account(&self) -> String { format!("{}@{}", self.user.trim(), self.url.trim().trim_end_matches('/')) }
     pub fn enabled(&self) -> bool { !self.url.trim().is_empty() && !self.user.trim().is_empty() }
+    pub fn shelf_folder(&self) -> String {
+        let f = self.shelf_folder.trim().trim_matches('/');
+        if f.is_empty() { "Ripple Shelf".into() } else { f.into() }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

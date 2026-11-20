@@ -69,6 +69,7 @@ pub struct Settings {
     nc_password: TextEdit,
     nc_list: TextEdit,
     nc_calendar: TextEdit,
+    nc_shelf: TextEdit,
 }
 
 impl Settings {
@@ -98,6 +99,7 @@ impl Settings {
             nc_password: TextEdit::new("").secure(),
             nc_list: edit(&cfg.nextcloud.list),
             nc_calendar: edit(&cfg.nextcloud.calendar),
+            nc_shelf: edit(&cfg.nextcloud.shelf_folder),
             screens: screens.iter().map(|s| s.name.clone()).collect(),
             open: None,
             dragging: None,
@@ -284,8 +286,8 @@ fn drag_tab(s: &mut Settings, from: usize, d: &mut Drag, tx: &mut Tx) {
 /// Whether a tab has its own settings page: one `panel` has sections for.
 fn has_panel(tab: Tab) -> bool {
     match tab {
-        Tab::Search | Tab::Workflows | Tab::Overview | Tab::Assistant | Tab::T3 | Tab::Limits | Tab::Tasks | Tab::Notes | Tab::Calendar => true,
-        Tab::Clipboard | Tab::Stremflix | Tab::Shelf | Tab::System | Tab::Plugins | Tab::Pomodoro | Tab::Calculator => false,
+        Tab::Search | Tab::Workflows | Tab::Overview | Tab::Assistant | Tab::T3 | Tab::Limits | Tab::Tasks | Tab::Notes | Tab::Calendar | Tab::Shelf => true,
+        Tab::Clipboard | Tab::Stremflix | Tab::System | Tab::Plugins | Tab::Pomodoro | Tab::Calculator => false,
     }
 }
 
@@ -414,10 +416,10 @@ fn panel(s: &Settings, k: &Kit, layer: &mut Vec<El>, tab: Tab) -> Vec<El> {
                     .binds(|s| &mut s.cliproxy_dir, |c, v| c.cliproxy_dir = v.trim().into()).build(k),
             ]));
         }
-        Tab::Tasks | Tab::Notes | Tab::Calendar => {
+        Tab::Tasks | Tab::Notes | Tab::Calendar | Tab::Shelf => {
             let label = |t: &str| text(t.to_string()).font(cfg.font(14.0, 500.0)).color(fg.alpha(0.8)).mt(10.0);
             let mut rows = vec![
-                text("Notes, Tasks and Calendar sync with this account. Make an app password in Nextcloud under Settings → Security.").font(cfg.font(12.0, 400.0)).color(fg.alpha(0.6)).wrap(),
+                text("Notes, Tasks, Calendar and the Shelf sync with this account. Make an app password in Nextcloud under Settings → Security.").font(cfg.font(12.0, 400.0)).color(fg.alpha(0.6)).wrap(),
                 label("Server"),
                 TextInput::new(&s.nc_url).width(None).label("Nextcloud server").placeholder("https://cloud.example.com")
                     .binds(|s| &mut s.nc_url, |c, v| c.nextcloud.url = v.trim().into()).build(k),
@@ -438,9 +440,14 @@ fn panel(s: &Settings, k: &Kit, layer: &mut Vec<El>, tab: Tab) -> Vec<El> {
                 rows.push(TextInput::new(&s.nc_calendar).width(None).label("Nextcloud calendar").placeholder("The first calendar with events")
                     .binds(|s| &mut s.nc_calendar, |c, v| c.nextcloud.calendar = v.trim().into()).build(k));
             }
+            if tab == Tab::Shelf {
+                rows.push(label("Shelf folder"));
+                rows.push(TextInput::new(&s.nc_shelf).width(None).label("Nextcloud shelf folder").placeholder("Ripple Shelf")
+                    .binds(|s| &mut s.nc_shelf, |c, v| c.nextcloud.shelf_folder = v.trim().into()).build(k));
+            }
             sections.push(section(s, "nextcloud", "Nextcloud", rows));
         }
-        Tab::Clipboard | Tab::Stremflix | Tab::Shelf | Tab::System | Tab::Plugins | Tab::Pomodoro | Tab::Calculator => {}
+        Tab::Clipboard | Tab::Stremflix | Tab::System | Tab::Plugins | Tab::Pomodoro | Tab::Calculator => {}
     }
     sections
 }

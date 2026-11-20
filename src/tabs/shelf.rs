@@ -13,12 +13,16 @@ pub fn view(s: &Island) -> El {
         .child(text("Shelf").font(s.cfg.font(17.0, 700.0)).color(fg))
         .child(icon(&icons::INBOX, 16.0).color(muted).a11y_hidden())
         .child(el().grow(1.0));
+    if let Some(e) = &s.shelf_sync.error {
+        header = header.child(text(e).font(s.cfg.font(12.0, 400.0)).color(muted).shrink().min_w(0.0).truncate());
+    }
     if let Some(undo) = undo_button(s) { header = header.child(undo) }
     if !s.cfg.shelf.is_empty() {
         header = header.child(tool(s, "clear-shelf", &icons::TRASH, "Clear shelf").on_press(|s: &mut Island| {
             let mut gone = Vec::new();
             s.save(|c| gone = std::mem::take(&mut c.shelf));
             s.undo = Some(Undo::Shelf(gone));
+            s.nextcloud_shelf_sync();
         }));
     }
     let root = col().key("shelf").w_full().h_full().px(16.0).pt(14.0).pb(14.0).gap(10.0).child(header);
@@ -46,7 +50,7 @@ pub fn view(s: &Island) -> El {
                 .hover(fg.alpha(0.08 * fg.a)).press(fg.alpha(0.14 * fg.a))
                 .transition(Transition::opacity())
                 .drag_out(move |_: &Island| Some(DragItem::new().file(&out)))
-                .on_drag_end(move |s: &mut Island, outcome, _| if outcome == DragOutcome::Moved { s.save(|c| c.shelf.retain(|f| *f != moved)) })
+                .on_drag_end(move |s: &mut Island, outcome, _| if outcome == DragOutcome::Moved { s.save(|c| c.shelf.retain(|f| *f != moved)); s.nextcloud_shelf_sync() })
                 .child(
                     el().size(52.0, 52.0).center().radius(s.cfg.radius(12.0)).fill(fg.alpha(0.08 * fg.a))
                         .child(icon(&icons::FILE, 24.0).color(fg).a11y_hidden())
@@ -55,7 +59,7 @@ pub fn view(s: &Island) -> El {
                                 .pin(None, Some(-4.0), Some(-4.0), None).size(18.0, 18.0).center().radius(9.0)
                                 .fill(fg.alpha(0.25 * fg.a)).hover(fg.alpha(0.4 * fg.a))
                                 .child(icon(&icons::X, 11.0).color(fg).a11y_hidden())
-                                .on_press(move |s: &mut Island| s.save(|c| c.shelf.retain(|f| *f != remove))),
+                                .on_press(move |s: &mut Island| { s.save(|c| c.shelf.retain(|f| *f != remove)); s.nextcloud_shelf_sync() }),
                         ),
                 )
                 .child(text(&name).font(s.cfg.font(11.0, 500.0)).color(fg).w_full().align(rune::Align::Center).max_lines(2).wrap_anywhere().a11y_hidden()),
