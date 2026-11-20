@@ -211,6 +211,8 @@ pub struct Island {
     pub tab: Tab,
     /// The pointer is over the Island or its dock.
     pub hovered: bool,
+    /// Large was opened on purpose (a click, Cmd+number, the Shelf), not resting there.
+    large_by_hand: bool,
     /// Over the Island, over the dock, over a bubble.
     over: [bool; 3],
     /// The pointer left both; the next poll lets the Island rest.
@@ -353,6 +355,7 @@ impl Island {
             mode: Mode::Still,
             tab: cfg.default_tab,
             hovered: false,
+            large_by_hand: false,
             over: [false; 3],
             left: false,
             time: String::new(),
@@ -648,6 +651,7 @@ impl Island {
     pub fn set_mode(&mut self, mode: Mode) {
         let was = self.mode;
         self.mode = if mode == Mode::Still { self.rest() } else { mode };
+        self.large_by_hand = mode == Mode::Large;
         if self.mode == Mode::Large && was != Mode::Large {
             if self.cfg.open_default_tab { self.tab = self.first_tab() }
             self.entered_tab();
@@ -791,6 +795,7 @@ impl Island {
     fn open_shelf(&mut self) {
         self.close_at = None;
         self.mode = Mode::Large;
+        self.large_by_hand = true;
         self.set_tab(Tab::Shelf);
         self.entered_tab();
     }
@@ -838,6 +843,7 @@ impl Island {
                 let Some(&tab) = self.visible_tabs().get(c as usize - '1' as usize) else { return false };
                 // Straight on that tab; the starred tab doesn't apply.
                 self.mode = Mode::Large;
+                self.large_by_hand = true;
                 self.open_tab(tab);
             }
             _ => return false,
@@ -942,9 +948,9 @@ impl Island {
         if !self.large_open() { self.set_mode(Mode::Quick) }
     }
 
-    /// Large is open by hand: opened beyond where the Island rests, or under the pointer.
+    /// Large is open by hand or under the pointer, not merely resting there (large_standby).
     fn large_open(&self) -> bool {
-        self.mode == Mode::Large && (self.rest() != Mode::Large || self.hovered)
+        self.mode == Mode::Large && (self.large_by_hand || self.hovered)
     }
 
     /// Once a second: the 20-20-20 eye break and the hourly break, paused while an app is full
@@ -1659,12 +1665,25 @@ mod tests {
         assert!(!s.large_open(), "resting in Large is not open by hand");
         s.remind("Look away 20s".into(), 0.0);
         assert_eq!(s.mode, Mode::Quick, "the reminder shows compact");
-        s.set_mode(Mode::Large);
+        s.set_mode(Mode::Still);
+        assert_eq!(s.mode, Mode::Large);
+        assert!(!s.large_open(), "back at rest");
         s.hovered = true;
         assert!(s.large_open(), "under the pointer");
+        s.hovered = false;
+        let cmd1 = KeyEvent { key: Key::Command('1'), mods: rune::Mods::default() };
+        assert!(s.key(&cmd1, &mut Tx::default()));
+        assert!(s.large_open(), "Cmd+1 opens it by hand with the pointer away");
+        let tab = s.tab;
+        s.remind("Look away 20s".into(), 0.0);
+        assert_eq!((s.mode, s.tab), (Mode::Large, tab), "the reminder waits");
+        s.set_mode(Mode::Still);
+        assert!(!s.large_open(), "resting clears it");
         let mut s = island(Config::default());
         s.set_mode(Mode::Large);
         assert!(s.large_open());
+        s.set_mode(Mode::Quick);
+        assert!(!s.large_open());
     }
 
     #[test]
