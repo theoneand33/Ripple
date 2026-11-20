@@ -91,6 +91,16 @@ impl Alert {
     }
 }
 
+/// A live activity shown in a bubble beside the compact Island.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Bubble {
+    Pomodoro,
+    CapsLock,
+}
+
+/// Room between the Island and a bubble, and between bubbles.
+const BUBBLE_GAP: f32 = 8.0;
+
 /// The Island's own handle: its window, or on Wayland a layer-shell overlay, since Wayland
 /// lets no ordinary window place or raise itself.
 #[derive(Clone)]
@@ -195,8 +205,8 @@ pub struct Island {
     pub tab: Tab,
     /// The pointer is over the Island or its dock.
     pub hovered: bool,
-    /// Over the Island, over the dock.
-    over: [bool; 2],
+    /// Over the Island, over the dock, over a bubble.
+    over: [bool; 3],
     /// The pointer left both; the next poll lets the Island rest.
     left: bool,
 
@@ -211,6 +221,8 @@ pub struct Island {
     pub track: Option<Track>,
     pub art: Option<Image>,
     pub art_hovered: bool,
+    /// The bubble under the pointer: a bubble that goes away takes no hover-leave with it.
+    bubble_hovered: Option<Bubble>,
     /// The marquee under the pointer, by key: it holds still so it can be read.
     pub marquee_hovered: Option<String>,
     /// What the last delete took, until the tab changes.
@@ -320,7 +332,7 @@ impl Island {
             mode: Mode::Still,
             tab: cfg.default_tab,
             hovered: false,
-            over: [false; 2],
+            over: [false; 3],
             left: false,
             time: String::new(),
             today: (1970, 1, 1),
@@ -331,6 +343,7 @@ impl Island {
             track: None,
             art: None,
             art_hovered: false,
+            bubble_hovered: None,
             marquee_hovered: None,
             undo: None,
             open_select: None,
@@ -439,7 +452,33 @@ impl Island {
         else if self.battery_alert_until.is_some() { Some(Alert::Battery) }
         else if self.bluetooth_alert_until.is_some() { Some(Alert::Bluetooth) }
         // A playing track goes over Caps Lock, which may stay on for good.
-        else { self.capture.map(|c| c.0).or((self.caps_lock && !self.shows_track()).then_some(Alert::CapsLock)) }
+        // Beside another live activity, Caps Lock moves to a bubble.
+        else { self.capture.map(|c| c.0).or((self.caps_lock && !self.shows_track() && !self.pomodoro.running()).then_some(Alert::CapsLock)) }
+    }
+
+    /// Live activities the compact Island has no room for, each in a circle of its own beside it:
+    /// away from the display edge the Island hugs, or taking turns right then left when centred.
+    pub fn bubbles(&self) -> Vec<(Bubble, [f32; 4])> {
+        if self.mode == Mode::Large { return Vec::new() }
+        let track = self.shows_track();
+        let mut kinds = Vec::new();
+        if track && self.pomodoro.running() { kinds.push(Bubble::Pomodoro) }
+        if self.caps_lock && (track || self.pomodoro.running()) { kinds.push(Bubble::CapsLock) }
+        let [x, y, w, h] = self.rect();
+        let (mut right, mut left) = (x + w, x);
+        kinds.into_iter().enumerate().map(|(i, kind)| {
+            let want_right = match self.placement.align { -1 => true, 1 => false, _ => i % 2 == 0 };
+            // A side with no room left in the window gives way to the other.
+            let (fits_right, fits_left) = (right + BUBBLE_GAP + h <= CANVAS.0, left - BUBBLE_GAP - h >= 0.0);
+            let x = if if want_right { fits_right || !fits_left } else { fits_right && !fits_left } {
+                right += BUBBLE_GAP + h;
+                right - h
+            } else {
+                left -= BUBBLE_GAP + h;
+                left
+            };
+            (kind, [x, y, h, h])
+        }).collect()
     }
 
     pub fn low_battery(&self) -> bool { !self.charging && self.percent.is_some_and(|p| p < 20) }
@@ -582,7 +621,7 @@ impl Island {
     fn set_over(&mut self, part: usize, inside: bool, tx: &mut Tx) {
         let was = self.hovered;
         self.over[part] = inside;
-        self.hovered = self.over[0] || self.over[1];
+        self.hovered = self.over.iter().any(|o| *o);
         if self.hovered && !was {
             self.close_at = None;
             // Each show makes a new layer surface, so this is asked again on every entry.
@@ -592,7 +631,8 @@ impl Island {
             if !self.focused && self.prior.is_none() && let Some(me @ Host::Window(_)) = self.me.clone() {
                 me.spawn(platform::gnome_focused_window, |s, w| if w.is_some() { s.prior = w });
             }
-            if self.mode == Mode::Still && self.cfg.show_info_idle && !self.playing() { self.set_mode(Mode::Large) }
+            // Not from a bubble: Large has none, so the hover would vanish and close it again.
+            if self.mode == Mode::Still && self.cfg.show_info_idle && !self.playing() && part != 2 { self.set_mode(Mode::Large) }
             else if self.mode != Mode::Large { self.set_mode(Mode::Quick) }
         } else if !self.hovered {
             self.art_hovered = false;
@@ -621,6 +661,25 @@ impl Island {
             self.give_focus_back();
         }
         true
+    }
+
+    /// A click on a bubble opens Large, on the activity's tab when it has a visible one.
+    pub fn open_bubble(&mut self, kind: Bubble, tx: &mut Tx) {
+        tx.blur();
+        self.set_mode(Mode::Large);
+        if kind == Bubble::Pomodoro && self.visible_tabs().contains(&Tab::Pomodoro) {
+            self.set_tab(Tab::Pomodoro);
+            self.entered_tab();
+        }
+        // The bubble is gone in Large, so its hover is too; the Island closes unless the pointer reaches it.
+        self.bubble_hovered = None;
+        self.over[2] = false;
+        self.hovered = self.over.iter().any(|o| *o);
+        if !self.hovered {
+            let at = tx.clock() + 3.0;
+            self.close_at = Some(at);
+            tx.wake_at(at);
+        }
     }
 
     /// A click on the Island itself: Large opens and closes.
@@ -999,6 +1058,10 @@ impl Island {
             // A tab change after the pointer left pushes the pending close out too.
             if self.close_at.is_some() { self.close_at = Some(at) }
         }
+        if let Some(kind) = self.bubble_hovered && !self.bubbles().iter().any(|b| b.0 == kind) {
+            self.bubble_hovered = None;
+            self.set_over(2, false, tx);
+        }
         changed |= self.leave(tx);
         changed |= due(&mut self.paused_until);
         if due(&mut self.intro_at) {
@@ -1021,8 +1084,13 @@ impl Island {
             let grow = (HOVER_SCALE - 1.0) / 2.0;
             let (mx, my) = (w * grow + 2.0, h * grow + 2.0);
             let [x, y, w, h] = [x - mx, y - my, w + 2.0 * mx, h + 2.0 * my];
-            // The dock takes clicks too: the region spans both.
-            match self.dock_rect() {
+            // The dock and the bubbles take clicks too: the region spans them all.
+            match self.dock_rect().or_else(|| {
+                let bubbles = self.bubbles();
+                let l = bubbles.iter().map(|b| b.1[0]).fold(x, f32::min);
+                let r = bubbles.iter().map(|b| b.1[0] + b.1[2]).fold(x + w, f32::max);
+                (!bubbles.is_empty()).then_some([l, y, r - l, h])
+            }) {
                 Some([dx, dy, dw, dh]) => {
                     let (l, t) = (x.min(dx), y.min(dy));
                     [l, t, (x + w).max(dx + dw) - l, (y + h).max(dy + dh) - t]
@@ -1199,6 +1267,7 @@ pub fn view(s: &Island, _: &mut Cx<Island>) -> El {
     // A select's menu opens outside the Island: the whole overlay takes clicks while one is open.
     if s.open_select.is_some() { canvas = canvas.hit() }
     if let Some(rect) = s.dock_rect() { canvas = canvas.child(dock(s, rect)) }
+    for (kind, rect) in s.bubbles() { canvas = canvas.child(bubble(s, kind, rect)) }
     rune_kit::root(canvas, layer)
 }
 
@@ -1230,6 +1299,28 @@ fn dock(s: &Island, [x, y, w, h]: [f32; 4]) -> El {
         .transition(Transition { insertion: edge, removal: Effect { opacity: 0.0, ..edge }, ..enter })
         .on_hover_change(Island::hover_dock);
     if s.placement.top { zone.pt(gap) } else { zone.pb(gap) }.child(pill)
+}
+
+/// A live activity in a circle beside the compact Island, styled like it. A press opens Large.
+fn bubble(s: &Island, kind: Bubble, [x, y, w, h]: [f32; 4]) -> El {
+    let cfg = &s.cfg;
+    let fg = cfg.text();
+    let (key, content) = match kind {
+        Bubble::Pomodoro => ("bubble-pomodoro", tabs::pomodoro_bubble(&s.pomodoro, h * 0.6)),
+        Bubble::CapsLock => ("bubble-caps-lock", el().role("img").label("Caps Lock").child(icon(Alert::CapsLock.icon(), h * 0.45).color(fg).a11y_hidden())),
+    };
+    let enter = Transition::blur_replace();
+    el().key(key).role("button").label(match kind { Bubble::Pomodoro => "Pomodoro: open its tab", Bubble::CapsLock => "Caps Lock is on: open Ripple" }).hit().absolute(x, y).size(w, h).center()
+        .fill(cfg.bg()).radius(cfg.radius(h / 2.0)).border(1.0, fg.alpha(0.12 * fg.a))
+        .box_shadow(Shadow { x: 0.0, y: 0.0, blur: 24.0, spread: 0.0, color: Color::BLACK.alpha(0.12), inset: false })
+        .motion(SPRING).transition(Transition { removal: Effect { opacity: 0.0, ..enter.insertion }, ..enter })
+        .hover(fg.alpha(0.1 * fg.a)).press_scale(0.95)
+        .on_hover_change(move |s: &mut Island, hovered, tx| {
+            s.bubble_hovered = hovered.then_some(kind);
+            s.set_over(2, hovered, tx)
+        })
+        .on_press_tx(move |s: &mut Island, tx| s.open_bubble(kind, tx))
+        .child(content)
 }
 
 fn border(s: &Island, radii: [f32; 4], hidden: bool) -> El {
@@ -1533,6 +1624,58 @@ mod tests {
         s.set_track(None, &mut tx);
         assert!(s.set_caps_lock(false));
         assert_eq!((s.alert(), s.mode), (None, Mode::Still));
+    }
+
+    #[test]
+    fn extra_live_activities_take_bubbles_beside_the_island() {
+        let mut s = island(Config::default());
+        let mut tx = Tx::default();
+        s.set_caps_lock(true);
+        assert!(s.bubbles().is_empty());
+        assert_eq!(s.alert(), Some(Alert::CapsLock));
+        s.set_track(Some(Track { name: "Song".into(), playing: true, ..Default::default() }), &mut tx);
+        s.pomodoro.ends = Some(60.0);
+        assert_eq!(s.alert(), None);
+        let [x, _, w, h] = s.rect();
+        let bubbles = s.bubbles();
+        assert_eq!(bubbles.iter().map(|b| b.0).collect::<Vec<_>>(), [Bubble::Pomodoro, Bubble::CapsLock]);
+        // Centred: the first goes right, the next left.
+        assert_eq!(bubbles[0].1[0], x + w + BUBBLE_GAP);
+        assert_eq!(bubbles[1].1[0], x - BUBBLE_GAP - h);
+        s.open_bubble(Bubble::Pomodoro, &mut tx);
+        assert_eq!((s.mode, s.tab), (Mode::Large, Tab::Pomodoro));
+        assert!(s.bubbles().is_empty());
+
+        // Against the left edge, both go right.
+        let mut s = island(Config { position_mode: "top-left".into(), ..Config::default() });
+        s.set_caps_lock(true);
+        s.set_track(Some(Track { name: "Song".into(), playing: true, ..Default::default() }), &mut tx);
+        s.pomodoro.ends = Some(60.0);
+        let [x, _, w, h] = s.rect();
+        assert_eq!(s.bubbles().iter().map(|b| b.1[0]).collect::<Vec<_>>(), [x + w + BUBBLE_GAP, x + w + 2.0 * BUBBLE_GAP + h]);
+
+        // Near the window's left edge, a centred Island's second bubble goes right too.
+        let mut s = island(Config { island_x: 0.0, ..Config::default() });
+        s.set_caps_lock(true);
+        s.set_track(Some(Track { name: "Song".into(), playing: true, ..Default::default() }), &mut tx);
+        s.pomodoro.ends = Some(60.0);
+        assert!(s.bubbles().iter().all(|b| b.1[0] >= 0.0 && b.1[0] + b.1[2] <= CANVAS.0));
+
+        // A bubble that goes away under the pointer lets go of the hover.
+        s.bubble_hovered = Some(Bubble::CapsLock);
+        s.set_over(2, true, &mut tx);
+        s.set_caps_lock(false);
+        s.poll(1.0, &mut tx);
+        assert!(!s.hovered);
+
+        // With info shown when idle, hovering a bubble still leaves the Island compact.
+        let mut s = island(Config { show_info_idle: true, ..Config::default() });
+        s.pomodoro.ends = Some(60.0);
+        s.set_caps_lock(true);
+        s.bubble_hovered = Some(Bubble::CapsLock);
+        s.set_over(2, true, &mut tx);
+        assert_ne!(s.mode, Mode::Large);
+        assert_eq!(s.bubbles().len(), 1);
     }
 
     #[test]

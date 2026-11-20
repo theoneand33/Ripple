@@ -208,6 +208,13 @@ fn island_spec() -> AppSpec<Island> {
                 let mut tx = rune::Tx::default();
                 s.set_track(Some(system::Track { name: "A Very Long Song Title That Scrolls".into(), artist: "Artist".into(), playing: true, ..Default::default() }), &mut tx);
             }),
+            ("playing-bubbles", |s| {
+                let mut tx = rune::Tx::default();
+                s.set_track(Some(system::Track { name: "Song".into(), artist: "Artist".into(), playing: true, ..Default::default() }), &mut tx);
+                s.pomodoro.ends = Some(15.0 * 60.0 + 23.0);
+                s.pomodoro.tick(0.0);
+                s.set_caps_lock(true);
+            }),
             ("playing-progress", |s| {
                 let mut tx = rune::Tx::default();
                 s.set_track(Some(system::Track { name: "Song".into(), artist: "Artist".into(), playing: true, progress: Some((80, 200)), ..Default::default() }), &mut tx);
