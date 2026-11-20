@@ -391,6 +391,8 @@ pub struct Island {
     /// The way the last tab change went: 1 to the next tab, -1 to the previous.
     pub tab_dir: i32,
     swipe_lock_until: f64,
+    /// What was typed into the dock to name a tab, and until when more letters add to it.
+    type_ahead: (String, f64),
     /// The tab just changed; the next poll stamps `linger_until` from it.
     tab_changed: bool,
     /// Until when leaving waits after the last tab change (`cfg.tab_linger` from the change).
@@ -399,6 +401,14 @@ pub struct Island {
     close_at: Option<f64>,
     next_second: f64,
     intro_at: Option<f64>,
+}
+
+/// The first of `tabs` whose name, or one of its words, starts with `typed` (lower case).
+fn tab_named(tabs: &[Tab], typed: &str) -> Option<Tab> {
+    let name = |t: &Tab| t.name().to_lowercase();
+    tabs.iter().find(|t| name(t).starts_with(typed))
+        .or_else(|| tabs.iter().find(|t| name(t).split([' ', '&']).any(|w| w.starts_with(typed))))
+        .copied()
 }
 
 /// How wide a single line of text draws, roughly: the compact Island sizes itself to its
@@ -513,6 +523,7 @@ impl Island {
             wheel_phased: false,
             tab_dir: 1,
             swipe_lock_until: 0.0,
+            type_ahead: (String::new(), 0.0),
             tab_changed: false,
             linger_until: None,
             close_at: None,
@@ -965,8 +976,11 @@ impl Island {
         match ev.key {
             Key::Right => self.move_tab(1),
             Key::Left => self.move_tab(-1),
-            Key::Command(c @ '1'..='8') => {
-                let Some(&tab) = self.visible_tabs().get(c as usize - '1' as usize) else { return false };
+            Key::Command(c @ '1'..='9') => {
+                let visible = self.visible_tabs();
+                // 9 is the last tab, however many there are, as in browsers.
+                let tab = if c == '9' { visible.last() } else { visible.get(c as usize - '1' as usize) };
+                let Some(&tab) = tab else { return false };
                 // Straight on that tab; the starred tab doesn't apply.
                 self.mode = Mode::Large;
                 self.large_by_hand = true;
@@ -976,6 +990,23 @@ impl Island {
         }
         // Keyboard tab changes land at once: they repeat too often to animate.
         tx.instant();
+        true
+    }
+
+    /// Typing while a dock button has focus jumps to the tab of that name; letters typed within
+    /// a second of each other add up ("ca" picks Calendar over Clipboard).
+    pub fn dock_key(&mut self, ev: &KeyEvent, tx: &mut Tx) -> bool {
+        let Key::Text(typed) = &ev.key else { return false };
+        let now = tx.clock();
+        if now > self.type_ahead.1 { self.type_ahead.0.clear() }
+        // A Space that starts nothing presses the focused button, as it always did.
+        if ev.mods.cmd || ev.mods.ctrl || ev.mods.alt || (typed.trim().is_empty() && self.type_ahead.0.is_empty()) { return false }
+        self.type_ahead = (self.type_ahead.0.clone() + &typed.to_lowercase(), now + 1.0);
+        if let Some(tab) = tab_named(&self.visible_tabs(), &self.type_ahead.0) {
+            self.open_tab(tab);
+            tx.instant();
+            tx.focus(format!("dock-{}", tab as u8), true);
+        }
         true
     }
 
@@ -1078,6 +1109,12 @@ impl Island {
         if !self.large_open() { self.set_mode(Mode::Quick) }
     }
 
+    /// Non-urgent alerts (water, breaks, rain, events, downloads, agents, `ripple notify`) wait:
+    /// it's quiet hours, or an app is full screen and that is set to quiet too. Low battery shows.
+    pub fn quiet(&self) -> bool {
+        (self.cfg.quiet_fullscreen && self.fullscreen) || (self.cfg.quiet_hours && self.cfg.quiet_at(LocalTime::at(crate::date::now_ms()).hour))
+    }
+
     /// Large is open by hand or under the pointer, not merely resting there (large_standby).
     pub(crate) fn large_open(&self) -> bool {
         self.mode == Mode::Large && (self.large_by_hand || self.hovered)
@@ -1090,7 +1127,7 @@ impl Island {
         if rune::is_headless() { return }
         let on = [self.cfg.eye_breaks, self.cfg.hourly_breaks];
         // While another reminder shows, the break waits rather than replace it.
-        let paused = self.fullscreen || self.large_open() || self.reminder.is_some();
+        let paused = self.fullscreen || self.large_open() || self.reminder.is_some() || self.quiet();
         if let Some(i) = count_breaks(&mut self.break_left, on, elapsed, paused) {
             self.remind(["Look away 20s", "Take a break"][i].into(), now);
         }
@@ -1100,7 +1137,7 @@ impl Island {
     /// glasses are short of the goal.
     pub fn water_reminders(&mut self, now: f64) {
         // An alert doesn't show over an open Large or replace another: the hour stays due until then.
-        if rune::is_headless() || self.large_open() || self.reminder.is_some() { return }
+        if rune::is_headless() || self.large_open() || self.reminder.is_some() || self.quiet() { return }
         let t = LocalTime::at(crate::date::now_ms());
         let mark = (crate::date::days_from_civil(t.year, t.month, t.day), t.hour);
         // Track the hour even while reminders are off, so turning them on or adding the widget mid-hour stays quiet.
@@ -1120,7 +1157,7 @@ impl Island {
     pub fn rain_alert(&mut self, now: f64) {
         // `rain_alerted` stays through a pause in the rain: `rain_due` lets only rain 3 hours away from it alert again.
         let Some((at, _)) = self.weather.precip else { return };
-        if rune::is_headless() || !self.cfg.rain_alerts || self.large_open() || self.reminder.is_some() { return }
+        if rune::is_headless() || !self.cfg.rain_alerts || self.large_open() || self.reminder.is_some() || self.quiet() { return }
         if !rain_due(at, crate::date::now_secs(), self.rain_alerted) { return }
         self.rain_alerted = Some(at);
         self.remind(self.precip_label(), now);
@@ -1145,7 +1182,7 @@ impl Island {
         let Some(dir) = self.store.dir() else { return };
         // An open Large draws no alerts: they stay queued until the Island is compact (`take` drops ones over 5 minutes old).
         // Resting in Large (Large standby) isn't open: `remind` shows the alert compact.
-        if self.large_open() { return }
+        if self.large_open() || self.quiet() { return }
         // An alert of ours showing counts as the alerts it merged; another reminder isn't replaced, so they wait.
         let shown = match &self.reminder { Some(r) if now < r.1 => if r.1 == self.notified.0 { self.notified.1 } else { return }, _ => 0 };
         if let Some((text, n)) = crate::notify::merge(shown, crate::notify::take(&dir)) {
@@ -1213,14 +1250,15 @@ impl Island {
         true
     }
 
-    /// A download that ends nearly done stays a moment, full, with a tick.
+    /// A download whose file is there (`Progress::done`) stays a moment, full, with a tick.
+    /// Quiet hours hold downloads back.
     pub fn set_download(&mut self, download: Option<crate::downloads::Progress>, tx: &mut Tx) -> bool {
+        let download = download.filter(|_| !self.quiet());
         if download.is_none() && self.download_done.is_some() { return false }
-        // Nearly done when it went, so not one that stalled or was dropped early.
-        // shortcut: a download cancelled past 90% still gets the tick; check the final file if users mind.
-        let finished = download.is_none() && self.download.is_some_and(|d| d.fraction.is_some_and(|f| f >= 0.9));
-        if finished {
-            self.download = self.download.map(|d| crate::downloads::Progress { fraction: Some(1.0), ..d });
+        if let Some(d) = download.filter(|d| d.done) {
+            // One the Island never showed running ends quietly too.
+            if self.download.is_none() { return false }
+            self.download = Some(d);
             let at = tx.clock() + DOWNLOAD_DONE;
             self.download_done = Some(at);
             tx.wake_at(at);
@@ -1473,7 +1511,7 @@ impl Island {
         let h = me.clone();
         let store = self.store.clone();
         // No rule and no break reminders, no query: the default pays nothing.
-        every(1000, move || { let f = { let c = store.get(); (c.fullscreen != "none" || c.eye_breaks || c.hourly_breaks) && platform::fullscreen() }; h.update_if(move |s, _| s.set_fullscreen(f)); });
+        every(1000, move || { let f = { let c = store.get(); (c.fullscreen != "none" || c.eye_breaks || c.hourly_breaks || c.quiet_fullscreen) && platform::fullscreen() }; h.update_if(move |s, _| s.set_fullscreen(f)); });
         let h = me.clone();
         every(250, move || { let on = system::caps_lock().unwrap_or(false); h.update_if(move |s, _| s.set_caps_lock(on)); });
         let h = me.clone();
@@ -1491,6 +1529,27 @@ impl Island {
                 // Redraw only while the System tab shows; otherwise just keep the latest figures.
                 h.update_if(move |s, _| { let changed = s.stats != stats; s.stats = stats; changed && tabs::shows(s, Tab::System) });
             }
+        });
+
+        // Once a day, through `ripple notify`'s queue: it waits for quiet hours and a closed Large like any alert.
+        let store = self.store.clone();
+        std::thread::spawn(move || loop {
+            let cfg = store.get();
+            let t = LocalTime::at(crate::date::now_ms());
+            let today = crate::date::days_from_civil(t.year, t.month, t.day);
+            // Not in quiet hours: the queue drops an alert that waits over 5 minutes.
+            if cfg.update_check && cfg.update_day != today && !cfg.quiet_at(t.hour) {
+                // A failed request tries again next hour.
+                let latest = crate::net::latest_release();
+                if latest.is_some() { store.update(|c| c.update_day = today); }
+                if let Some(tag) = latest.filter(|tag| crate::net::newer(tag, env!("CARGO_PKG_VERSION")))
+                    && let Some(dir) = store.dir()
+                    && let Err(e) = crate::notify::queue(&dir, &format!("Ripple {tag} is out"))
+                {
+                    eprintln!("Ripple: {e}");
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_secs(3600));
         });
 
         let (kick, kicked) = std::sync::mpsc::channel();
@@ -1656,7 +1715,7 @@ fn dock(s: &Island, [x, y, w, h]: [f32; 4]) -> El {
     let (bg, fg) = (s.island_bg(), cfg.text());
     let (height, gap, button, space) = DOCK;
     let round = |r: f32| cfg.radius(r);
-    let mut pill = row().key("dock").role("group").label("Tabs").w_full().h(height).px(space).gap(space).center_y()
+    let mut pill = row().key("dock").role("group").label("Tabs").on_key(Island::dock_key).w_full().h(height).px(space).gap(space).center_y()
         .fill(bg).radius(round(height / 2.0)).border(1.0, fg.alpha(0.12 * fg.a))
         .box_shadow(Shadow { x: 0.0, y: 0.0, blur: 24.0, spread: 0.0, color: Color::BLACK.alpha(0.2), inset: false });
     for tab in s.visible_tabs() {
@@ -2022,6 +2081,40 @@ mod tests {
     }
 
     #[test]
+    fn quiet_holds_back_downloads_but_not_low_battery() {
+        let mut s = island(Config { quiet_fullscreen: true, ..Config::default() });
+        let mut tx = Tx::default();
+        assert!(!s.quiet());
+        s.set_fullscreen(true);
+        assert!(s.quiet(), "an app is full screen");
+        let p = Some(crate::downloads::Progress { fraction: Some(0.5), count: 1, done: false });
+        assert!(!s.set_download(p, &mut tx) && s.download.is_none());
+        assert!(s.set_battery(Some((15, false)), &mut tx));
+        assert_eq!(s.alert(), Some(Alert::Battery));
+        s.set_fullscreen(false);
+        assert!(s.set_download(p, &mut tx), "shows once it's no longer quiet");
+    }
+
+    #[test]
+    fn ctrl_9_and_typing_a_name_reach_every_tab() {
+        let mut s = island(Config::default());
+        let key = |key| KeyEvent { key, mods: rune::Mods::default() };
+        assert!(s.key(&key(Key::Command('9')), &mut Tx::default()));
+        assert_eq!((s.mode, s.tab), (Mode::Large, *s.visible_tabs().last().unwrap()));
+        let mut tx = Tx::default();
+        for c in ["c", "a"] { assert!(s.dock_key(&key(Key::Text(c.into())), &mut tx)) }
+        assert_eq!(s.tab, Tab::Calendar, "letters add up while typed together");
+        assert!(s.dock_key(&key(Key::Text("x".into())), &mut tx), "no tab named so: the key is still the dock's");
+        assert_eq!(s.tab, Tab::Calendar);
+        assert!(!island(Config::default()).dock_key(&key(Key::Text(" ".into())), &mut Tx::default()), "a lone Space still presses the button");
+        let tabs = Tab::ALL;
+        assert_eq!(tab_named(&tabs, "agents"), Some(Tab::Agents), "a later word counts");
+        assert_eq!(tab_named(&tabs, "w"), Some(Tab::Workflows));
+        assert_eq!(tab_named(&tabs, "qa"), Some(Tab::Workflows));
+        assert_eq!(tab_named(&tabs, "zz"), None);
+    }
+
+    #[test]
     fn breaks_count_while_the_island_rests_in_large() {
         let mut s = island(Config { large_standby: true, ..Config::default() });
         assert!(!s.large_open(), "resting in Large is not open by hand");
@@ -2231,23 +2324,25 @@ mod tests {
         let mut s = island(Config { hide_inactive: true, ..Config::default() });
         let mut tx = Tx::default();
         assert!(s.hidden());
-        assert!(s.set_download(Some(crate::downloads::Progress { fraction: Some(0.5), count: 1 }), &mut tx));
+        let p = |fraction, done| Some(crate::downloads::Progress { fraction, count: 1, done });
+        assert!(s.set_download(p(Some(0.5), false), &mut tx));
         assert!(!s.set_download(s.download, &mut tx), "no change, no redraw");
-        assert!(s.set_download(None, &mut tx) && s.download.is_none(), "gone at half way: stalled or cancelled, no tick");
-        s.set_download(Some(crate::downloads::Progress { fraction: Some(0.95), count: 1 }), &mut tx);
+        assert!(s.set_download(None, &mut tx) && s.download.is_none(), "gone with no file: cancelled, no tick");
+        assert!(!s.set_download(p(Some(1.0), true), &mut tx), "a finish the Island never saw running stays quiet");
+        s.set_download(p(Some(0.95), false), &mut tx);
         assert!(!s.hidden(), "a download shows even when the Island hides");
         assert!(s.bubbles().is_empty());
         s.set_track(Some(Track { name: "Song".into(), playing: true, ..Default::default() }), &mut tx);
         assert_eq!(s.bubbles().iter().map(|b| b.0).collect::<Vec<_>>(), [Bubble::Download]);
-        // Finished: it stays full, with its tick, until the moment is up.
-        assert!(s.set_download(None, &mut tx));
+        // Finished, its file there: it stays full, with its tick, until the moment is up.
+        assert!(s.set_download(p(Some(1.0), true), &mut tx));
         assert_eq!((s.download.map(|d| d.percent()), s.download_done.is_some()), (Some(100.0), true));
         assert!(!s.set_download(None, &mut tx));
         s.poll(DOWNLOAD_DONE + 1.0, &mut tx);
         assert_eq!((s.download, s.download_done), (None, None));
         assert!(s.bubbles().is_empty());
         // A download with no known percent just goes.
-        s.set_download(Some(crate::downloads::Progress { fraction: None, count: 1 }), &mut tx);
+        s.set_download(p(None, false), &mut tx);
         s.set_download(None, &mut tx);
         assert_eq!(s.download, None);
     }

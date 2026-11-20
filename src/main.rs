@@ -155,6 +155,7 @@ fn island_spec() -> AppSpec<Island> {
             ("notify", |s| s.remind("Build passed".into(), 0.0)),
             ("rain-alert", |s| { s.weather.precip = Some((date::now_secs() + 3000, false)); s.remind(s.precip_label(), 0.0) }),
             ("break-reminder", |s| s.remind("Look away 20s".into(), 0.0)),
+            ("update-alert", |s| s.remind("Ripple v0.7.0 is out".into(), 0.0)),
             ("tasks-sync-error", |s| {
                 s.mode = Mode::Large;
                 s.set_tab(Tab::Tasks);
@@ -230,8 +231,8 @@ fn island_spec() -> AppSpec<Island> {
             ("timer-done", |s| { s.pomodoro.timer.rung = true; s.pomodoro.timer.left = 0.0 }),
             ("stopwatch-live", |s| { s.pomodoro.stopwatch.toggle(0.0); s.pomodoro.stopwatch.elapsed = 3723.0; s.pomodoro.stopwatch.since = Some(-3723.0) }),
             ("pomodoro-live", |s| { s.pomodoro.ends = Some(15.0 * 60.0 + 23.0); s.pomodoro.tick(0.0); }),
-            ("download", |s| { s.set_download(Some(downloads::Progress { fraction: Some(0.42), count: 1 }), &mut rune::Tx::default()); }),
-            ("download-done", |s| { let mut tx = rune::Tx::default(); s.set_download(Some(downloads::Progress { fraction: Some(0.9), count: 1 }), &mut tx); s.set_download(None, &mut tx); }),
+            ("download", |s| { s.set_download(Some(downloads::Progress { fraction: Some(0.42), count: 1, done: false }), &mut rune::Tx::default()); }),
+            ("download-done", |s| { let mut tx = rune::Tx::default(); s.set_download(Some(downloads::Progress { fraction: Some(0.9), count: 1, done: false }), &mut tx); s.set_download(Some(downloads::Progress { fraction: Some(1.0), count: 1, done: true }), &mut tx); }),
             ("calculator", |s| {
                 s.mode = Mode::Large;
                 s.set_tab(Tab::Calculator);
@@ -274,7 +275,7 @@ fn island_spec() -> AppSpec<Island> {
             ("agents", |s| {
                 s.mode = Mode::Large;
                 s.set_tab(Tab::Agents);
-                let session = |key: &str, agent: &str, cwd: &str, working, detail: &str| agents::Session { key: key.into(), agent: agent.into(), cwd: cwd.into(), working, detail: detail.into() };
+                let session = |key: &str, agent: &str, cwd: &str, working, detail: &str| agents::Session { key: key.into(), agent: agent.into(), cwd: cwd.into(), working, detail: detail.into(), ..Default::default() };
                 s.agents.sessions = vec![
                     session("claude-1", "claude", "/home/me/ripple", true, ""),
                     session("opencode-2", "opencode", "/home/me/site", false, ""),
@@ -349,7 +350,7 @@ fn island_spec() -> AppSpec<Island> {
                 s.set_track(Some(system::Track { name: "Song".into(), artist: "Artist".into(), playing: true, ..Default::default() }), &mut tx);
                 s.pomodoro.ends = Some(15.0 * 60.0 + 23.0);
                 s.pomodoro.tick(0.0);
-                s.set_download(Some(downloads::Progress { fraction: None, count: 2 }), &mut tx);
+                s.set_download(Some(downloads::Progress { fraction: None, count: 2, done: false }), &mut tx);
                 s.set_caps_lock(true);
             }),
             ("playing-progress", |s| {
@@ -435,6 +436,9 @@ fn settings_spec() -> AppSpec<Settings> {
             ("appearance", |s| s.page = Page::Appearance),
             ("appearance-sun", |s| { s.page = Page::Appearance; s.cfg.auto_theme = true }),
             ("features", |s| s.page = Page::Features),
+            ("features-quiet", |s| { s.page = Page::Features; s.cfg.quiet_hours = true; s.cfg.quiet_fullscreen = true }),
+            ("search", |s| s.query.replace_text("alert")),
+            ("panel-stocks", |s| s.page = Page::Tab(Tab::Stocks)),
             ("panel-ai", |s| s.page = Page::Tab(Tab::Assistant)),
             ("panel-limits", |s| s.page = Page::Tab(Tab::Limits)),
             ("panel-tasks", |s| s.page = Page::Tab(Tab::Tasks)),

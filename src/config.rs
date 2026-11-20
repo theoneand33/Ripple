@@ -370,6 +370,17 @@ pub struct Config {
     pub hide_inactive: bool,
     /// Keep the Island out of screenshots, recordings and screen sharing (Windows and macOS).
     pub hide_from_capture: bool,
+    /// Quiet hours: from `quiet_from` until `quiet_to` (hours, 0-24, past midnight when `to` is
+    /// earlier) non-urgent alerts wait. Low battery still shows.
+    pub quiet_hours: bool,
+    pub quiet_from: u32,
+    pub quiet_to: u32,
+    /// Non-urgent alerts also wait while an app is full screen.
+    pub quiet_fullscreen: bool,
+    /// Once a day, an alert when GitHub has a newer release.
+    pub update_check: bool,
+    /// The day (days since 1970) the update check last ran.
+    pub update_day: i64,
     /// While an app is full screen: "none" (no change), "standby" (rest in Quick), "hidden" (hide when inactive), "still" (standby off).
     pub fullscreen: String,
     /// Wayland layer-shell: sit over panels (KDE Plasma) instead of below them.
@@ -471,6 +482,8 @@ pub struct Config {
     pub sure_url: String,
     /// Stocks: a Sure API key (Settings → API Keys, Read Only); empty turns the portfolio off.
     pub sure_key: String,
+    /// Stocks: the currency every account is converted to before the totals.
+    pub stocks_currency: String,
 }
 
 impl Default for Config {
@@ -494,6 +507,12 @@ impl Default for Config {
             large_standby: false,
             hide_inactive: false,
             hide_from_capture: false,
+            quiet_hours: false,
+            quiet_from: 22,
+            quiet_to: 7,
+            quiet_fullscreen: false,
+            update_check: true,
+            update_day: 0,
             fullscreen: "none".into(),
             overlap_panels: false,
             show_info_idle: false,
@@ -561,6 +580,7 @@ impl Default for Config {
             stocks: Vec::new(),
             sure_url: String::new(),
             sure_key: String::new(),
+            stocks_currency: "USD".into(),
         }
     }
 }
@@ -645,6 +665,18 @@ impl Config {
         kit
     }
 
+    /// Quiet hours cover `hour` (0-23).
+    pub fn quiet_at(&self, hour: u32) -> bool {
+        let (from, to) = (self.quiet_from, self.quiet_to);
+        self.quiet_hours && if from <= to { (from..to).contains(&hour) } else { hour >= from || hour < to }
+    }
+
+    /// The Stocks base currency's code; empty means USD.
+    pub fn stocks_currency(&self) -> String {
+        let c = self.stocks_currency.trim().to_uppercase();
+        if c.is_empty() { "USD".into() } else { c }
+    }
+
     /// Glasses of water drunk on `day`.
     pub fn water(&self, day: i64) -> u32 { if self.water_day == day { self.water_count } else { 0 } }
 
@@ -692,6 +724,19 @@ pub fn parse_color(s: &str) -> Option<Color> {
         [r, g, b, a] => Some(srgb(r, g, b, a)),
         _ => None,
     }
+}
+
+/// The settings as Settings → Export writes them: prefs.json's own shape.
+pub fn export(cfg: &Config) -> String {
+    serde_json::to_string_pretty(&serde_json::json!({ "settings": cfg })).unwrap_or_default()
+}
+
+/// An exported file's settings, checked whole before they replace the current ones: a file that
+/// isn't one, or holds a value this version can't read, is refused and nothing changes.
+pub fn import(text: &str) -> Result<Config, String> {
+    let file: serde_json::Value = serde_json::from_str(text).map_err(|e| format!("Not a settings file: {e}"))?;
+    let settings = file.get("settings").filter(|v| v.is_object()).ok_or("Not a Ripple settings file")?;
+    serde_json::from_value::<Config>(settings.clone()).map(Config::normalized).map_err(|e| format!("Settings this version can't read: {e}"))
 }
 
 /// The saved settings. Settings this version can't read (a hand edit, a newer version's) are
@@ -852,6 +897,27 @@ mod tests {
         assert_eq!(cfg.sun_theme(sun, 86_400 + 1500), Some("none"), "yesterday's times still say it's day");
         assert_eq!(cfg.sun_theme(sun, 86_400 + 999), Some("sleek-black"));
         assert_eq!(Config::default().sun_theme(sun, 1500), None, "off");
+    }
+
+    #[test]
+    fn imports_take_only_whole_readable_settings_files() {
+        let cfg = Config { notes: vec![Item::new("kept")], stocks_currency: "EUR".into(), ..Config::default() };
+        assert_eq!(import(&export(&cfg)), Ok(cfg));
+        assert!(import("not json").is_err());
+        assert!(import(r#"{"island_x": 50}"#).is_err(), "no settings key");
+        assert!(import(r#"{"settings": []}"#).is_err());
+        assert!(import(r#"{"settings": {"island_x": "50"}}"#).is_err(), "a wrong type refuses the whole file");
+        assert_eq!(import(r#"{"settings": {"standby": false}}"#).map(|c| c.standby), Ok(false), "missing fields take defaults");
+    }
+
+    #[test]
+    fn quiet_hours_wrap_past_midnight() {
+        let cfg = Config { quiet_hours: true, quiet_from: 22, quiet_to: 7, ..Config::default() };
+        assert!(cfg.quiet_at(22) && cfg.quiet_at(0) && cfg.quiet_at(6));
+        assert!(!cfg.quiet_at(7) && !cfg.quiet_at(21));
+        let day = Config { quiet_from: 9, quiet_to: 17, ..cfg.clone() };
+        assert!(day.quiet_at(9) && day.quiet_at(16) && !day.quiet_at(17) && !day.quiet_at(3));
+        assert!(!Config { quiet_hours: false, ..cfg }.quiet_at(23), "off");
     }
 
     #[test]

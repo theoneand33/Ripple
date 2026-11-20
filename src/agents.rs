@@ -19,9 +19,10 @@ use serde_json::{Value, json};
 
 /// How old `alive`, or a waiting hook's request, may get before it counts as gone.
 const GONE: Duration = Duration::from_secs(5);
-/// Sessions with no event for this long are dropped.
-// shortcut: an agent killed without SessionEnd lingers until then; check its process if that bites.
+/// Sessions with no event for this long are dropped; so is one whose agent process is gone.
 const STALE: Duration = Duration::from_secs(6 * 3600);
+/// Hooks often run under a shell (`sh -c`): the agent is the nearest ancestor that isn't one.
+const SHELLS: [&str; 12] = ["sh", "bash", "zsh", "dash", "fish", "ksh", "tcsh", "csh", "nu", "cmd", "powershell", "pwsh"];
 /// The longest prompt or reply kept.
 const DETAIL: usize = 400;
 /// The longest command shown for approval: long enough not to hide what it does.
@@ -39,6 +40,10 @@ pub struct Session {
     pub working: bool,
     /// The prompt it works on, or its last reply once it stops.
     pub detail: String,
+    /// The agent's process and when it started (Unix seconds), so a reused pid isn't taken
+    /// for it; 0 where it couldn't be read, and then only `STALE` drops the session.
+    pub pid: u32,
+    pub started: u64,
 }
 
 /// A permission the agent asks for, or its questions when it has some.
@@ -127,6 +132,36 @@ fn touch(path: &Path) {
 
 fn alive(dir: &Path) -> bool { age(&dir.join("alive")).is_some_and(|a| a < GONE) }
 
+fn refresh(sys: &mut sysinfo::System, pids: &[sysinfo::Pid]) {
+    sys.refresh_processes_specifics(sysinfo::ProcessesToUpdate::Some(pids), true, sysinfo::ProcessRefreshKind::nothing());
+}
+
+/// The agent running this hook, as (pid, start time): the nearest ancestor that isn't a shell.
+fn agent_process() -> Option<(u32, u64)> {
+    let mut sys = sysinfo::System::new();
+    let mut pid = sysinfo::get_current_pid().ok()?;
+    refresh(&mut sys, &[pid]);
+    for _ in 0..8 {
+        // Past pid 1 is init or launchd: the agent is gone or was never found.
+        let parent = sys.process(pid)?.parent().filter(|p| p.as_u32() > 1)?;
+        refresh(&mut sys, &[parent]);
+        let p = sys.process(parent)?;
+        let name = p.name().to_string_lossy().to_lowercase();
+        if !SHELLS.contains(&name.strip_suffix(".exe").unwrap_or(&name)) { return Some((parent.as_u32(), p.start_time())) }
+        pid = parent;
+    }
+    None
+}
+
+/// Whether each session's agent still runs; one with no recorded process counts as running.
+fn running(sessions: &[Session]) -> Vec<bool> {
+    let pids: Vec<sysinfo::Pid> = sessions.iter().filter(|s| s.pid != 0).map(|s| sysinfo::Pid::from_u32(s.pid)).collect();
+    let mut sys = sysinfo::System::new();
+    if !pids.is_empty() { refresh(&mut sys, &pids) }
+    // A second's slack: start times are rounded.
+    sessions.iter().map(|s| s.pid == 0 || sys.process(sysinfo::Pid::from_u32(s.pid)).is_some_and(|p| p.start_time().abs_diff(s.started) <= 1)).collect()
+}
+
 /// Records one hook event in the session's file; a PermissionRequest comes back to wait on.
 fn record(dir: &Path, agent: &str, input: &Value) -> std::io::Result<Option<Request>> {
     let s = |k: &str| input.get(k).and_then(Value::as_str).unwrap_or_default();
@@ -134,6 +169,8 @@ fn record(dir: &Path, agent: &str, input: &Value) -> std::io::Result<Option<Requ
     let path = dir.join("sessions").join(format!("{session}.json"));
     let mut info = fs::read_to_string(&path).ok().and_then(|t| serde_json::from_str::<Session>(&t).ok()).unwrap_or_default();
     info.agent = agent.to_string();
+    // Again once the saved process is gone: a resumed session runs in a new one.
+    if (info.pid == 0 || !running(std::slice::from_ref(&info))[0]) && let Some((pid, started)) = agent_process() { (info.pid, info.started) = (pid, started) }
     if !s("cwd").is_empty() { info.cwd = s("cwd").to_string() }
     let event = s("hook_event_name");
     match event {
@@ -229,8 +266,14 @@ pub fn scan(dir: &Path) -> (Vec<Session>, Vec<Request>) {
         files.sort_by_key(|f| f.2);
         files
     };
-    let sessions = read("sessions", STALE).into_iter()
+    let sessions: Vec<Session> = read("sessions", STALE).into_iter()
         .filter_map(|(key, text, _)| serde_json::from_str(&text).ok().map(|s| Session { key, ..s })).collect();
+    // An agent killed without SessionEnd: its process is gone, so is the session.
+    let live = running(&sessions);
+    let sessions = sessions.into_iter().zip(live).filter_map(|(s, live)| {
+        if !live { let _ = fs::remove_file(dir.join("sessions").join(format!("{}.json", s.key))); }
+        live.then_some(s)
+    }).collect();
     let mut requests: Vec<Request> = read("requests", GONE).into_iter()
         .filter_map(|(key, text, _)| serde_json::from_str(&text).ok().map(|r| Request { key, ..r })).collect();
     requests.sort_by(|a, b| a.key.cmp(&b.key));
@@ -258,13 +301,34 @@ mod tests {
         let event = |e: Value| record(&dir, "claude", &e).unwrap();
         assert!(event(json!({"session_id": "a/../b", "cwd": "/src/ripple", "hook_event_name": "UserPromptSubmit", "prompt": "Fix the build"})).is_none());
         let (sessions, _) = scan(&dir);
-        assert_eq!(sessions, [Session { key: "claude-a____b".into(), agent: "claude".into(), cwd: "/src/ripple".into(), working: true, detail: "Fix the build".into() }]);
+        assert_eq!(sessions, [Session { key: "claude-a____b".into(), agent: "claude".into(), cwd: "/src/ripple".into(), working: true, detail: "Fix the build".into(), ..sessions[0].clone() }]);
+        assert_ne!(sessions[0].pid, 0, "the agent's process is recorded: here, what runs the tests");
         event(json!({"session_id": "a/../b", "hook_event_name": "Stop", "last_assistant_message": "Done."}));
         let (sessions, _) = scan(&dir);
         assert_eq!((sessions[0].working, sessions[0].detail.as_str(), sessions[0].cwd.as_str()), (false, "Done.", "/src/ripple"), "cwd kept from before");
         event(json!({"session_id": "a/../b", "hook_event_name": "SessionEnd"}));
         assert!(scan(&dir).0.is_empty());
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_session_goes_with_its_agents_process() {
+        let dir = temp("gone");
+        let me = sysinfo::get_current_pid().unwrap();
+        let mut sys = sysinfo::System::new();
+        refresh(&mut sys, &[me]);
+        let started = sys.process(me).unwrap().start_time();
+        let write = |key: &str, pid: u32, started: u64| write_atomic(&dir.join("sessions").join(format!("{key}.json")), &serde_json::to_string(&Session { agent: "claude".into(), pid, started, ..Session::default() }).unwrap()).unwrap();
+        write("alive", me.as_u32(), started);
+        write("reused", me.as_u32(), started + 100);
+        write("gone", u32::MAX - 7, 1);
+        write("unknown", 0, 0);
+        let mut keys: Vec<String> = scan(&dir).0.into_iter().map(|s| s.key).collect();
+        keys.sort();
+        let gone_file = dir.join("sessions/gone.json").exists();
+        let _ = fs::remove_dir_all(&dir);
+        assert_eq!(keys, ["alive", "unknown"], "a pid now used by another process doesn't keep it");
+        assert!(!gone_file, "its file is deleted");
     }
 
     #[test]

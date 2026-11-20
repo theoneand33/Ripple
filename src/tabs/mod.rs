@@ -182,7 +182,7 @@ pub fn deadline(s: &Island) -> Option<f64> { s.clipboard.copied.map(|c| c.1) }
 pub fn reloaded(s: &mut Island, old: &Config) {
     if shows(s, Tab::T3) && old.t3_devices != s.cfg.t3_devices { s.t3_load() }
     // Settings saves each keystroke: wait until typing stops, and drop answers for what was typed over.
-    if (old.sure_url != s.cfg.sure_url || old.sure_key != s.cfg.sure_key) && !s.cfg.sure_key.is_empty() {
+    if (old.sure_url != s.cfg.sure_url || old.sure_key != s.cfg.sure_key || old.stocks_currency != s.cfg.stocks_currency) && !s.cfg.sure_key.is_empty() {
         (s.stocks.portfolio, s.stocks.generation, s.stocks.reload_in) = (None, s.stocks.generation + 1, Some(2));
     }
     if old.github_user != s.cfg.github_user || old.leetcode_user != s.cfg.leetcode_user { s.contributions.reload_in = Some(2) }

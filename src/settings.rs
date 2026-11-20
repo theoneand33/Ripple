@@ -1,6 +1,8 @@
 //! The Settings window. Every change saves at once and the Island picks it up.
 
-use rune::{Color, Cursor, Cx, Drag, El, Phase, ScrollSpec, Shortcut, ShortcutError, TextEdit, Tx, col, el, icon, row, text};
+use std::cell::RefCell;
+
+use rune::{Color, Cursor, Cx, Drag, El, FileDialogOptions, FileDialogResult, Phase, ScrollSpec, Shortcut, ShortcutError, TextEdit, Tx, col, el, icon, row, text};
 use rune_kit::{Button, ButtonVariant, IconButton, Kit, RadioGroup, RadioItem, Select, ShortcutRecorder, ShortcutRecorderState, Switch, TextArea, TextInput};
 
 use crate::config::{Config, POSITIONS, PROVIDERS, QuickApp, SEARCH_ENGINES, Store, T3Device, THEMES, Tab, Workflow};
@@ -74,9 +76,16 @@ pub struct Settings {
     nc_shelf: TextEdit,
     sure_url: TextEdit,
     sure_key: TextEdit,
+    stocks_currency: TextEdit,
     pub hotkey: ShortcutRecorderState,
     github_user: TextEdit,
     leetcode_user: TextEdit,
+    /// The search box at the top of the sidebar; while it has text, the page shows the matching rows.
+    pub query: TextEdit,
+    /// While a search builds the pages: the rows that match it, by label. `setting` fills it.
+    found: RefCell<Option<Vec<(String, El)>>>,
+    /// How the last export or import went.
+    transfer: Option<String>,
 }
 
 impl Settings {
@@ -111,9 +120,13 @@ impl Settings {
             nc_shelf: edit(&cfg.nextcloud.shelf_folder),
             sure_url: edit(&cfg.sure_url),
             sure_key: TextEdit::new("").secure(),
+            stocks_currency: edit(&cfg.stocks_currency),
             hotkey: ShortcutRecorderState::new(cfg.hotkey.parse().ok()),
             github_user: edit(&cfg.github_user),
             leetcode_user: edit(&cfg.leetcode_user),
+            query: edit(""),
+            found: RefCell::new(None),
+            transfer: None,
             screens: screens.iter().map(|s| s.name.clone()).collect(),
             open: None,
             dragging: None,
@@ -172,6 +185,51 @@ impl Settings {
         Ok(())
     }
 
+    /// Writes every setting to a file the user picks, readable by its owner only: it holds the
+    /// API keys, tokens and passwords too.
+    fn export(&mut self, tx: &mut Tx) {
+        let options = FileDialogOptions { title: "Export settings".into(), file_name: Some("ripple-settings.json".into()), ..Default::default() }.filter("Ripple settings", &["json"]);
+        tx.save_file(options, |s: &mut Settings, picked: FileDialogResult, _| {
+            s.transfer = match picked {
+                Ok(Some(path)) => Some(match write_private(&path, &crate::config::export(&s.store.get())) {
+                    Ok(()) => format!("Exported to {}", path.display()),
+                    Err(e) => format!("Couldn't export: {e}"),
+                }),
+                Ok(None) => return,
+                Err(e) => Some(format!("Couldn't export: {e}")),
+            };
+        });
+    }
+
+    /// Replaces every setting with an exported file's, once the whole file reads as settings.
+    fn import(&mut self, tx: &mut Tx) {
+        let options = FileDialogOptions { title: "Import settings".into(), ..Default::default() }.filter("Ripple settings", &["json"]);
+        tx.open_file(options, |s: &mut Settings, picked: FileDialogResult, tx| {
+            let text = match picked {
+                Ok(Some(path)) => std::fs::read_to_string(&path).map_err(|e| e.to_string()),
+                Ok(None) => return,
+                Err(e) => Err(e.to_string()),
+            };
+            match text.and_then(|t| crate::config::import(&t)) {
+                Ok(cfg) => s.load(cfg, tx),
+                Err(e) => s.transfer = Some(format!("Nothing changed: {e}")),
+            }
+        });
+    }
+
+    /// Takes on imported settings: saved, shown in every field, and told to the Island.
+    fn load(&mut self, cfg: Config, tx: &mut Tx) {
+        let hotkey = cfg.hotkey.clone();
+        let changed = hotkey != self.cfg.hotkey;
+        self.store.update(|c| *c = cfg);
+        let fresh = Settings::new(self.store.clone(), self.island.clone(), &[]);
+        *self = Settings { screens: std::mem::take(&mut self.screens), installed: std::mem::take(&mut self.installed), page: self.page, ..fresh };
+        self.save(|_| {});
+        // The Island registers the shortcut itself; a refused one is left off, as at launch.
+        if changed && let Err(e) = self.set_hotkey(hotkey.parse().ok().as_ref(), tx) { eprintln!("Ripple: the shortcut {hotkey} is off: {e}") }
+        self.transfer = Some("Imported".into());
+    }
+
     fn t3_addable(&self) -> bool {
         let url = self.t3_url.text.trim();
         (url.starts_with("http://") || url.starts_with("https://")) && !self.t3_token.text.trim().is_empty()
@@ -185,6 +243,18 @@ impl Settings {
         self.t3_url.clear();
         self.t3_token.clear();
     }
+}
+
+fn write_private(path: &std::path::Path, text: &str) -> std::io::Result<()> {
+    let mut file = std::fs::File::options();
+    file.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut file, 0o600);
+    let mut file = file.open(path)?;
+    // `mode` only applies to a new file: one written over keeps its own.
+    #[cfg(unix)]
+    file.set_permissions(std::os::unix::fs::PermissionsExt::from_mode(0o600))?;
+    std::io::Write::write_all(&mut file, text.as_bytes())
 }
 
 /// A field bound to a setting: it edits `edit`, and each change saves its text through `set`.
@@ -234,9 +304,32 @@ fn toggle(s: &Settings, k: &Kit, label: &str, on: bool, flip: fn(&mut Config)) -
 
 fn setting(s: &Settings, label: &str, control: El) -> El {
     let fg = s.cfg.text().alpha(1.0);
-    row().key(label.to_string()).w_full().min_h(40.0).gap(12.0).center_y().justify_between()
+    found(s, label, row().key(label.to_string()).w_full().min_h(40.0).gap(12.0).center_y().justify_between()
         .child(text(label).font(s.cfg.font(14.0, 500.0)).color(fg.alpha(0.85)).shrink())
-        .child(control)
+        .child(control))
+}
+
+/// A setting whose label sits above its control, for a wide field.
+fn stacked(s: &Settings, label: &str, control: El) -> El {
+    let fg = s.cfg.text().alpha(1.0);
+    found(s, label, col().key(label.to_string()).w_full().gap(6.0).pt(4.0)
+        .child(text(label).font(s.cfg.font(14.0, 500.0)).color(fg.alpha(0.85)))
+        .child(control))
+}
+
+/// A labelled row as it is, or while a search builds the pages, kept aside when it matches.
+fn found(s: &Settings, label: &str, row: El) -> El {
+    let mut found = s.found.borrow_mut();
+    let Some(rows) = found.as_mut() else { return row };
+    // Tabs share sections (Nextcloud's): each row shows once.
+    if matches(&s.query.text, label) && !rows.iter().any(|r| r.0 == label) { rows.push((label.to_string(), row)) }
+    el()
+}
+
+/// Every word of the search is in the label, in any case.
+fn matches(query: &str, label: &str) -> bool {
+    let label = label.to_lowercase();
+    query.split_whitespace().all(|w| label.contains(&w.to_lowercase()))
 }
 
 /// A titled card of rows.
@@ -426,18 +519,12 @@ fn panel(s: &Settings, k: &Kit, layer: &mut Vec<El>, tab: Tab) -> Vec<El> {
                         })
                         .build(k, layer)
                 }),
-                col().w_full().gap(6.0)
-                    .child(text("AI model").font(cfg.font(14.0, 500.0)).color(fg.alpha(0.85)))
-                    .child(TextInput::new(&s.ai_model).width(None).label("AI model").placeholder(cfg.provider().model)
-                        .binds(|s| &mut s.ai_model, |c, v| c.ai_model = v.into()).build(k)),
-                col().w_full().gap(6.0)
-                    .child(text("Base URL").font(cfg.font(14.0, 500.0)).color(fg.alpha(0.85)))
-                    .child(TextInput::new(&s.ai_url).width(None).label("Base URL").placeholder(cfg.provider().url)
-                        .binds(|s| &mut s.ai_url, |c, v| c.ai_url = v.trim().into()).build(k)),
-                col().w_full().gap(6.0)
-                    .child(text("API key").font(cfg.font(14.0, 500.0)).color(fg.alpha(0.85)))
-                    .child(TextInput::new(&s.api_key).width(None).label("API key").secure().placeholder(match cfg.provider().key_hint { "" => "Not needed", hint => hint })
-                        .binds(|s| &mut s.api_key, |c, v| c.api_key = v.into()).build(k)),
+                stacked(s, "AI model", TextInput::new(&s.ai_model).width(None).label("AI model").placeholder(cfg.provider().model)
+                    .binds(|s| &mut s.ai_model, |c, v| c.ai_model = v.into()).build(k)),
+                stacked(s, "Base URL", TextInput::new(&s.ai_url).width(None).label("Base URL").placeholder(cfg.provider().url)
+                    .binds(|s| &mut s.ai_url, |c, v| c.ai_url = v.trim().into()).build(k)),
+                stacked(s, "API key", TextInput::new(&s.api_key).width(None).label("API key").secure().placeholder(match cfg.provider().key_hint { "" => "Not needed", hint => hint })
+                    .binds(|s| &mut s.api_key, |c, v| c.api_key = v.into()).build(k)),
             ]));
         }
         Tab::T3 => {
@@ -465,33 +552,27 @@ fn panel(s: &Settings, k: &Kit, layer: &mut Vec<El>, tab: Tab) -> Vec<El> {
             ]));
         }
         Tab::Tasks | Tab::Notes | Tab::Calendar | Tab::Shelf => {
-            let label = |t: &str| text(t.to_string()).font(cfg.font(14.0, 500.0)).color(fg.alpha(0.8)).mt(10.0);
+            // Labels name Nextcloud: a search lists these beside other pages' rows.
             let mut rows = vec![
                 text("Notes, Tasks, Calendar and the Shelf sync with this account. Make an app password in Nextcloud under Settings → Security.").font(cfg.font(12.0, 400.0)).color(fg.alpha(0.6)).wrap(),
-                label("Server"),
-                TextInput::new(&s.nc_url).width(None).label("Nextcloud server").placeholder("https://cloud.example.com")
-                    .binds(|s| &mut s.nc_url, |c, v| c.nextcloud.url = v.trim().into()).build(k),
-                label("User"),
-                TextInput::new(&s.nc_user).width(None).label("Nextcloud user").placeholder("User name")
-                    .binds(|s| &mut s.nc_user, |c, v| c.nextcloud.user = v.trim().into()).build(k),
-                label("App password"),
-                TextInput::new(&s.nc_password).width(None).label("Nextcloud app password").secure().placeholder(if cfg.nextcloud.password.is_empty() { "App password" } else { "Saved" })
-                    .binds(|s| &mut s.nc_password, |c, v| c.nextcloud.password = v.into()).build(k),
+                stacked(s, "Nextcloud server", TextInput::new(&s.nc_url).width(None).label("Nextcloud server").placeholder("https://cloud.example.com")
+                    .binds(|s| &mut s.nc_url, |c, v| c.nextcloud.url = v.trim().into()).build(k)),
+                stacked(s, "Nextcloud user", TextInput::new(&s.nc_user).width(None).label("Nextcloud user").placeholder("User name")
+                    .binds(|s| &mut s.nc_user, |c, v| c.nextcloud.user = v.trim().into()).build(k)),
+                stacked(s, "Nextcloud app password", TextInput::new(&s.nc_password).width(None).label("Nextcloud app password").secure().placeholder(if cfg.nextcloud.password.is_empty() { "App password" } else { "Saved" })
+                    .binds(|s| &mut s.nc_password, |c, v| c.nextcloud.password = v.into()).build(k)),
             ];
             if tab == Tab::Tasks {
-                rows.push(label("Tasks list"));
-                rows.push(TextInput::new(&s.nc_list).width(None).label("Nextcloud tasks list").placeholder("The first list with tasks")
-                    .binds(|s| &mut s.nc_list, |c, v| c.nextcloud.list = v.trim().into()).build(k));
+                rows.push(stacked(s, "Nextcloud tasks list", TextInput::new(&s.nc_list).width(None).label("Nextcloud tasks list").placeholder("The first list with tasks")
+                    .binds(|s| &mut s.nc_list, |c, v| c.nextcloud.list = v.trim().into()).build(k)));
             }
             if tab == Tab::Calendar {
-                rows.push(label("Calendar"));
-                rows.push(TextInput::new(&s.nc_calendar).width(None).label("Nextcloud calendar").placeholder("The first calendar with events")
-                    .binds(|s| &mut s.nc_calendar, |c, v| c.nextcloud.calendar = v.trim().into()).build(k));
+                rows.push(stacked(s, "Nextcloud calendar", TextInput::new(&s.nc_calendar).width(None).label("Nextcloud calendar").placeholder("The first calendar with events")
+                    .binds(|s| &mut s.nc_calendar, |c, v| c.nextcloud.calendar = v.trim().into()).build(k)));
             }
             if tab == Tab::Shelf {
-                rows.push(label("Shelf folder"));
-                rows.push(TextInput::new(&s.nc_shelf).width(None).label("Nextcloud shelf folder").placeholder("Ripple Shelf")
-                    .binds(|s| &mut s.nc_shelf, |c, v| c.nextcloud.shelf_folder = v.trim().into()).build(k));
+                rows.push(stacked(s, "Nextcloud Shelf folder", TextInput::new(&s.nc_shelf).width(None).label("Nextcloud shelf folder").placeholder("Ripple Shelf")
+                    .binds(|s| &mut s.nc_shelf, |c, v| c.nextcloud.shelf_folder = v.trim().into()).build(k)));
             }
             sections.push(section(s, "nextcloud", "Nextcloud", rows));
             if tab == Tab::Calendar {
@@ -512,15 +593,15 @@ fn panel(s: &Settings, k: &Kit, layer: &mut Vec<El>, tab: Tab) -> Vec<El> {
             }
         }
         Tab::Stocks => {
-            let label = |t: &str| text(t.to_string()).font(cfg.font(14.0, 500.0)).color(fg.alpha(0.8)).mt(10.0);
             sections.push(section(s, "sure", "Sure", vec![
                 text("The portfolio comes from Sure's investment and crypto accounts. Make a Read Only key in Sure under Settings → API Keys.").font(cfg.font(12.0, 400.0)).color(fg.alpha(0.6)).wrap(),
-                label("Server"),
-                TextInput::new(&s.sure_url).width(None).label("Sure server").placeholder("https://app.sure.am")
-                    .binds(|s| &mut s.sure_url, |c, v| c.sure_url = v.trim().into()).build(k),
-                label("API key"),
-                TextInput::new(&s.sure_key).width(None).label("Sure API key").secure().placeholder(if cfg.sure_key.is_empty() { "API key" } else { "Saved" })
-                    .binds(|s| &mut s.sure_key, |c, v| c.sure_key = v.trim().into()).build(k),
+                stacked(s, "Sure server", TextInput::new(&s.sure_url).width(None).label("Sure server").placeholder("https://app.sure.am")
+                    .binds(|s| &mut s.sure_url, |c, v| c.sure_url = v.trim().into()).build(k)),
+                stacked(s, "Sure API key", TextInput::new(&s.sure_key).width(None).label("Sure API key").secure().placeholder(if cfg.sure_key.is_empty() { "API key" } else { "Saved" })
+                    .binds(|s| &mut s.sure_key, |c, v| c.sure_key = v.trim().into()).build(k)),
+                setting(s, "Portfolio currency", TextInput::new(&s.stocks_currency).label("Base currency").placeholder("USD").width(Some(120.0))
+                    .binds(|s| &mut s.stocks_currency, |c, v| c.stocks_currency = v.trim().to_uppercase()).build(k)),
+                text("Accounts in other currencies convert at Frankfurter's reference rates before the totals.").font(cfg.font(12.0, 400.0)).color(fg.alpha(0.6)).wrap(),
             ]));
         }
         Tab::Clipboard | Tab::Stremflix | Tab::System | Tab::Plugins | Tab::Pomodoro | Tab::Calculator | Tab::Habits | Tab::Clocks | Tab::Agents => {}
@@ -551,7 +632,16 @@ fn page(s: &Settings, k: &Kit, layer: &mut Vec<El>, page: Page) -> Vec<El> {
             }
             general.push(setting(s, "Open Large Mode", ShortcutRecorder::new("hotkey", &s.hotkey, |s: &mut Settings| &mut s.hotkey)
                 .label("Open Large Mode").width(190.0).on_change(Settings::set_hotkey).build(k)));
+            general.push(toggle(s, k, "Check for updates daily", cfg.update_check, |c| c.update_check = !c.update_check));
             sections.push(section(s, "general", "System", general));
+            let mut backup = vec![
+                text("A file of every setting, tasks and notes included. It holds your API keys and passwords: keep it private.").font(cfg.font(12.0, 400.0)).color(fg.alpha(0.6)).wrap(),
+                row().key("backup-buttons").gap(8.0)
+                    .child(Button::new("Export settings…").variant(ButtonVariant::Contrast).on_press_tx(Settings::export).build(k))
+                    .child(Button::new("Import settings…").on_press_tx(Settings::import).build(k)),
+            ];
+            if let Some(t) = &s.transfer { backup.push(text(t).key("transfer").font(cfg.font(12.0, 500.0)).color(fg.alpha(0.8)).wrap()) }
+            sections.push(section(s, "backup", "Back up", backup));
         }
         Page::Tabs => {
             let mut tabs = vec![
@@ -648,10 +738,8 @@ fn page(s: &Settings, k: &Kit, layer: &mut Vec<El>, page: Page) -> Vec<El> {
                     .binds(|s| &mut s.bg_color, |c, v| c.bg_color = v.into()).build(k)),
                 setting(s, "Text color", TextInput::new(&s.text_color).label("Text color").placeholder("#FAFAFA").width(Some(160.0))
                     .binds(|s| &mut s.text_color, |c, v| c.text_color = v.into()).build(k)),
-                col().w_full().gap(6.0)
-                    .child(text("Background image URL").font(cfg.font(14.0, 500.0)).color(fg.alpha(0.85)))
-                    .child(TextInput::new(&s.bg_image).width(None).label("Background image URL").placeholder("https://...")
-                        .binds(|s| &mut s.bg_image, |c, v| c.bg_image = v.into()).build(k)),
+                stacked(s, "Background image URL", TextInput::new(&s.bg_image).width(None).label("Background image URL").placeholder("https://...")
+                    .binds(|s| &mut s.bg_image, |c, v| c.bg_image = v.into()).build(k)),
             ]));
         }
         Page::Features => {
@@ -664,6 +752,17 @@ fn page(s: &Settings, k: &Kit, layer: &mut Vec<El>, page: Page) -> Vec<El> {
                     &cfg.fullscreen, |c, v| c.fullscreen = v.into())),
                 toggle(s, k, "Show info when idle", cfg.show_info_idle, |c| c.show_info_idle = !c.show_info_idle),
             ]));
+            let hour = |h: u32| if cfg.hour12 { format!("{}{}", (h + 11) % 12 + 1, if h % 24 < 12 { " AM" } else { " PM" }) } else { format!("{:02}:00", h % 24) };
+            let mut quiet = vec![
+                text("Water, break, rain, event and agent alerts wait until it ends; downloads don't show, and a script's alert waits up to 5 minutes. Low battery still shows.").font(cfg.font(12.0, 400.0)).color(fg.alpha(0.6)).wrap(),
+                toggle(s, k, "Quiet hours", cfg.quiet_hours, |c| c.quiet_hours = !c.quiet_hours),
+            ];
+            if cfg.quiet_hours {
+                quiet.push(setting(s, &format!("Quiet from {}", hour(cfg.quiet_from)), slider(s, "quiet-from", "Quiet from", (0.0, 23.0, 1.0), |c| c.quiet_from as f32, |c, v| c.quiet_from = v as u32)).key("quiet-from-row"));
+                quiet.push(setting(s, &format!("Quiet until {}", hour(cfg.quiet_to)), slider(s, "quiet-to", "Quiet until", (0.0, 23.0, 1.0), |c| c.quiet_to as f32, |c, v| c.quiet_to = v as u32)).key("quiet-to-row"));
+            }
+            quiet.push(toggle(s, k, "Quiet while an app is full screen", cfg.quiet_fullscreen, |c| c.quiet_fullscreen = !c.quiet_fullscreen));
+            sections.push(section(s, "quiet", "Quiet hours", quiet));
             sections.push(section(s, "breaks", "Break reminders (paused while an app is full screen)", vec![
                 toggle(s, k, "20-20-20 eye break", cfg.eye_breaks, |c| c.eye_breaks = !c.eye_breaks),
                 toggle(s, k, "Hourly break", cfg.hourly_breaks, |c| c.hourly_breaks = !c.hourly_breaks),
@@ -682,13 +781,36 @@ fn nav_item(s: &Settings, item: Page) -> El {
         .fill(fg.alpha(if on { 0.1 } else { 0.0 })).hover(fg.alpha(if on { 0.12 } else { 0.06 }))
         .child(icon(item.icon(), 16.0).color(fg.alpha(if on { 1.0 } else { 0.6 })))
         .child(text(item.title()).font(s.cfg.font(13.0, if on { 600.0 } else { 500.0 })).color(fg.alpha(if on { 1.0 } else { 0.75 })).truncate().shrink())
-        .on_press(move |s: &mut Settings| { s.open = None; s.page = item })
+        .on_press(move |s: &mut Settings| { s.open = None; s.page = item; s.query.clear() })
+}
+
+/// The rows of every page whose labels match the search, under their page's title.
+fn results(s: &Settings, k: &Kit, layer: &mut Vec<El>) -> Vec<El> {
+    let pages = [Page::General, Page::Tabs, Page::Appearance, Page::Features].into_iter()
+        .chain(s.cfg.tab_order.iter().filter(|&&t| has_panel(t)).map(|&t| Page::Tab(t)));
+    let mut seen = Vec::new();
+    let mut sections = Vec::new();
+    for p in pages {
+        *s.found.borrow_mut() = Some(Vec::new());
+        let _ = page(s, k, layer, p);
+        let rows: Vec<El> = s.found.borrow_mut().take().unwrap_or_default().into_iter()
+            .filter(|(label, _)| !seen.contains(label) && { seen.push(label.clone()); true }).map(|r| r.1).collect();
+        let key = match p { Page::Tab(tab) => format!("found-tab-{}", tab as u8), p => format!("found-{p:?}") };
+        if !rows.is_empty() { sections.push(section(s, &key, p.title(), rows)) }
+    }
+    if sections.is_empty() {
+        let fg = s.cfg.text().alpha(1.0);
+        sections.push(text("No settings match.").key("no-results").font(s.cfg.font(14.0, 400.0)).color(fg.alpha(0.6)));
+    }
+    sections
 }
 
 fn sidebar(s: &Settings) -> El {
     let fg = s.cfg.text().alpha(1.0);
     let group = |title: &str| text(title.to_string()).font(s.cfg.font(11.0, 600.0)).color(fg.alpha(0.4)).px(10.0).pt(14.0).pb(4.0);
-    let mut items = vec![text("Settings").font(s.cfg.font(17.0, 700.0)).color(fg).px(10.0).pb(10.0)];
+    let search = TextInput::new(&s.query).width(None).label("Search settings").placeholder("Search")
+        .on_edit(|s: &mut Settings| &mut s.query).on_change(|s: &mut Settings, _| s.open = None).build(&s.cfg.kit());
+    let mut items = vec![text("Settings").font(s.cfg.font(17.0, 700.0)).color(fg).px(10.0).pb(10.0), el().key("settings-search").w_full().pb(8.0).child(search)];
     items.extend([Page::General, Page::Tabs, Page::Appearance, Page::Features].map(|p| nav_item(s, p)));
     items.push(group("Tab settings"));
     items.extend(s.cfg.tab_order.iter().filter(|&&t| has_panel(t)).map(|&t| nav_item(s, Page::Tab(t))));
@@ -704,10 +826,12 @@ pub fn view(s: &Settings, _: &mut Cx<Settings>) -> El {
     let mut layer = Vec::new();
     let cfg = &s.cfg;
     let fg = cfg.text().alpha(1.0);
-    let title = text(s.page.title()).font(cfg.font(22.0, 700.0)).color(fg).key("page-title");
-    let sections = std::iter::once(title).chain(page(s, &k, &mut layer, s.page));
+    let searching = !s.query.text.trim().is_empty();
+    let title = text(if searching { "Search results" } else { s.page.title() }).font(cfg.font(22.0, 700.0)).color(fg).key("page-title");
+    let body = if searching { results(s, &k, &mut layer) } else { page(s, &k, &mut layer, s.page) };
+    let sections = std::iter::once(title).chain(body);
     let content = sections.fold(col().key("settings-content").w_full().max_w(720.0).px(28.0).pt(24.0).pb(36.0).gap(24.0), El::child);
-    let scroll_key = match s.page { Page::Tab(tab) => format!("settings-scroll-tab-{}", tab as u8), p => format!("settings-scroll-{p:?}") };
+    let scroll_key = if searching { "settings-scroll-search".into() } else { match s.page { Page::Tab(tab) => format!("settings-scroll-tab-{}", tab as u8), p => format!("settings-scroll-{p:?}") } };
     // An opaque base, so a translucent Island colour stays readable in a normal window.
     let base = row().key("settings").w_full().h_full().min_h(0.0).fill(Color::BLACK)
         .child(row().w_full().h_full().min_h(0.0).fill(cfg.bg())
@@ -738,6 +862,38 @@ mod tests {
         for _ in 0..30 { rt.frame(1.0 / 60.0); }
         let after = rt.find("tab-0").unwrap().1;
         assert!(after < before - 50.0, "tab-0 stayed at {before} -> {after}");
+    }
+
+    #[test]
+    fn a_search_shows_only_matching_rows_from_every_page() {
+        let mut s = Settings::new(Store::memory(Config::default()), None, &[]);
+        s.query.replace_text("battery");
+        let mut rt = rune::Runtime::new(s, view, (720.0, 1400.0), rune::Env { system_dark: true, scale: 1.0 });
+        rt.frame(0.0);
+        assert!(rt.find("Low battery alerts").is_some(), "a Features row, found from General");
+        assert!(rt.find("Standby mode").is_none() && rt.find("Clock format").is_none());
+        let mut s = Settings::new(Store::memory(Config::default()), None, &[]);
+        s.query.replace_text("nextcloud server");
+        let mut rt = rune::Runtime::new(s, view, (720.0, 1400.0), rune::Env { system_dark: true, scale: 1.0 });
+        rt.frame(0.0);
+        assert!(rt.find("Nextcloud server").is_some(), "a tab's panel row, shown once though four tabs share it");
+        assert!(rt.find("found-tab-9").is_none() && rt.find("Nextcloud user").is_none());
+        let mut s = Settings::new(Store::memory(Config::default()), None, &[]);
+        s.query.replace_text("zzz");
+        let mut rt = rune::Runtime::new(s, view, (720.0, 720.0), rune::Env { system_dark: true, scale: 1.0 });
+        rt.frame(0.0);
+        assert!(rt.find("no-results").is_some());
+    }
+
+    #[test]
+    fn an_import_replaces_the_settings_and_its_fields() {
+        let store = Store::memory(Config::default());
+        let mut s = Settings::new(store.clone(), None, &[]);
+        s.page = Page::Features;
+        let cfg = crate::config::import(&crate::config::export(&Config { location: "Oslo".into(), quiet_hours: true, ..Config::default() })).unwrap();
+        s.load(cfg, &mut Tx::default());
+        assert_eq!((store.get().location.as_str(), store.get().quiet_hours), ("Oslo", true));
+        assert_eq!((s.location.text.as_str(), s.page), ("Oslo", Page::Features), "the fields show it, the page stays");
     }
 
     #[test]

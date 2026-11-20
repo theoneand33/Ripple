@@ -284,6 +284,8 @@ pub fn watch_progress(dir: &std::path::Path, put: impl Fn(Vec<Option<f64>>)) {
             let ended: bool = msg_send![&**p, isFinished];
             let cancelled: bool = msg_send![&**p, isCancelled];
             let unknown: bool = msg_send![&**p, isIndeterminate];
+            // Finished reads as full until it is unpublished, so `downloads::watch` knows it wasn't cancelled.
+            if ended && !cancelled { return Some(Some(1.0)) }
             (!ended && !cancelled).then(|| (!unknown).then(|| -> f64 { msg_send![&**p, fractionCompleted] }))
         }).collect();
         put(fractions);

@@ -34,9 +34,16 @@ impl Island {
         self.stocks.generation += 1;
         let (generation, range) = (self.stocks.generation, self.stocks.range);
         if !self.cfg.sure_key.is_empty() {
-            let (url, key) = (self.cfg.sure_url.clone(), self.cfg.sure_key.clone());
+            let (url, key, base, rates) = (self.cfg.sure_url.clone(), self.cfg.sure_key.clone(), self.cfg.stocks_currency(), self.calc.rates.clone());
             if matches!(self.stocks.portfolio, Some(Err(_))) { self.stocks.portfolio = None }
-            me.spawn(move || api::portfolio(&url, &key, range), move |s, p| if s.stocks.generation == generation { s.stocks.portfolio = Some(p) });
+            // The Calculator's rates, fetched here first if it hasn't opened yet.
+            me.spawn(move || {
+                let rates = rates.or_else(crate::net::rates);
+                (api::portfolio(&url, &key, range, &base, rates.as_ref()), rates)
+            }, move |s, (p, rates)| {
+                if s.calc.rates.is_none() { s.calc.rates = rates }
+                if s.stocks.generation == generation { s.stocks.portfolio = Some(p) }
+            });
         }
         // One job per ticker, so a slow one holds up no other; an answer for another range or a removed ticker is dropped.
         for t in self.cfg.stocks.clone() {
