@@ -23,8 +23,8 @@ pub const CANVAS: (f32, f32) = (680.0, 460.0);
 /// Room kept around the Island inside the window for its shadow and hover scale.
 const PAD: f32 = 30.0;
 /// The tab dock under the Large Island: its height, the gap above it, one button and the space between.
-// 3pt between buttons leaves room past all 18 tabs in the canvas.
-const DOCK: (f32, f32, f32, f32) = (44.0, 12.0, 32.0, 3.0);
+// 30pt buttons 3pt apart leave room past all 20 tabs in the canvas.
+const DOCK: (f32, f32, f32, f32) = (44.0, 12.0, 30.0, 3.0);
 /// Room between the Large Island's edge and its tab's content.
 const LARGE_EDGE: f32 = 12.0;
 /// Framer's spring (stiffness 400, damping 40, mass 2.5) as duration and bounce.
@@ -288,6 +288,7 @@ pub struct Island {
     pub stats: Option<system::Stats>,
     pub limits: tabs::Limits,
     pub stocks: tabs::Stocks,
+    pub clocks: tabs::Clocks,
     /// A file drag is over the Island.
     pub dropping: bool,
     /// A drag started elsewhere on the desktop opened the Shelf; it rests when the drag ends.
@@ -402,6 +403,7 @@ impl Island {
             stats: None,
             limits: tabs::Limits::default(),
             stocks: tabs::Stocks::default(),
+            clocks: tabs::Clocks::default(),
             dropping: false,
             desktop_drag: false,
             t3: tabs::T3::new(store.dir().as_deref()),

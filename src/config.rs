@@ -44,6 +44,7 @@ tabs! {
     Calculator = 17,
     Habits = 18,
     Stocks = 20,
+    Clocks = 21,
     Plugins = 15,
     Weather = 19,
 }
@@ -71,6 +72,7 @@ impl Tab {
             Tab::Calculator => "Calculator",
             Tab::Habits => "Habits",
             Tab::Stocks => "Stocks",
+            Tab::Clocks => "World Clocks",
         }
     }
 }
@@ -348,6 +350,8 @@ pub struct Config {
     pub hour12: bool,
     pub weather_unit: String,
     pub location: String,
+    /// World Clocks: the cities shown, as typed (Open-Meteo looks each one up).
+    pub world_clocks: Vec<String>,
     pub theme: String,
     pub bg_color: String,
     pub text_color: String,
@@ -432,6 +436,7 @@ impl Default for Config {
             hour12: true,
             weather_unit: "f".into(),
             location: String::new(),
+            world_clocks: ["London", "New York", "Tokyo"].map(Into::into).into(),
             theme: "none".into(),
             bg_color: "#000000".into(),
             text_color: "#FFFFFF".into(),
@@ -671,7 +676,7 @@ mod tests {
     fn saved_orders_drop_retired_tabs_and_gain_new_ones() {
         use Tab::*;
         let cfg = serde_json::from_str::<Config>(r#"{"tab_order": [7, 2, 3, 0], "hidden_tabs": [3, 0], "default_tab": 7}"#).unwrap().normalized();
-        assert_eq!(cfg.tab_order, [Overview, Search, Workflows, Assistant, Clipboard, Tasks, T3, Notes, Stremflix, Shelf, System, Calendar, Limits, Pomodoro, Calculator, Habits, Stocks, Plugins, Weather]);
+        assert_eq!(cfg.tab_order, [Overview, Search, Workflows, Assistant, Clipboard, Tasks, T3, Notes, Stremflix, Shelf, System, Calendar, Limits, Pomodoro, Calculator, Habits, Stocks, Clocks, Plugins, Weather]);
         assert_eq!((cfg.hidden_tabs.as_slice(), cfg.default_tab), ([Search].as_slice(), Overview));
     }
 
