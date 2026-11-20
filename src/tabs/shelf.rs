@@ -37,10 +37,11 @@ fn shelve(s: &mut Island, old: Option<&Path>, new: PathBuf) {
     s.save(|c| {
         c.shelf.retain(|f| *f != new);
         match old.and_then(|o| c.shelf.iter().position(|f| f == o)) {
-            Some(i) => c.shelf[i] = new,
-            None => c.shelf.insert(0, new),
+            Some(i) => c.shelf[i] = new.clone(),
+            None => c.shelf.insert(0, new.clone()),
         }
     });
+    s.shelf_new_files(&[new]);
 }
 
 /// Runs a blocking file job off the UI thread; its result goes on top of the Shelf.
@@ -158,7 +159,7 @@ fn menu(s: &Island, path: &Path, tile: El, layer: &mut Vec<El>) -> El {
     }
     m.item(MenuItem::new("Copy Path").on_select_tx(act(|_, p, tx| tx.copy(p.display().to_string()))))
         .separator()
-        .item(MenuItem::new("Remove from Shelf").danger(true).on_select_tx(act(|s, p, _| s.save(|c| c.shelf.retain(|f| *f != p)))))
+        .item(MenuItem::new("Remove from Shelf").danger(true).on_select_tx(act(|s, p, _| { s.save(|c| c.shelf.retain(|f| *f != p)); s.nextcloud_shelf_sync() })))
         .on_close(close_menu)
         .build(&s.cfg.kit(), layer)
 }
@@ -169,8 +170,9 @@ pub fn view(s: &Island, layer: &mut Vec<El>) -> El {
     let mut header = row().key("shelf-header").w_full().h(28.0).gap(8.0).center_y()
         .child(text("Shelf").font(s.cfg.font(17.0, 700.0)).color(fg))
         .child(icon(&icons::INBOX, 16.0).color(muted).a11y_hidden());
-    if !s.shelf.status.is_empty() {
-        header = header.child(text(&s.shelf.status).font(s.cfg.font(12.0, 400.0)).color(muted).shrink().min_w(0.0).max_lines(1));
+    let status = if s.shelf.status.is_empty() { s.shelf_sync.error.as_deref().unwrap_or_default() } else { &s.shelf.status };
+    if !status.is_empty() {
+        header = header.child(text(status).font(s.cfg.font(12.0, 400.0)).color(muted).shrink().min_w(0.0).max_lines(1));
     }
     header = header.child(el().grow(1.0));
     if let Some(undo) = undo_button(s) { header = header.child(undo) }
@@ -179,6 +181,7 @@ pub fn view(s: &Island, layer: &mut Vec<El>) -> El {
             let mut gone = Vec::new();
             s.save(|c| gone = std::mem::take(&mut c.shelf));
             s.undo = Some(Undo::Shelf(gone));
+            s.nextcloud_shelf_sync();
         }));
     }
     let root = col().key("shelf").w_full().h_full().px(16.0).pt(14.0).pb(14.0).gap(10.0).child(header);
@@ -213,7 +216,7 @@ pub fn view(s: &Island, layer: &mut Vec<El>) -> El {
             .hover(fg.alpha(0.08 * fg.a)).press(fg.alpha(0.14 * fg.a))
             .transition(Transition::opacity())
             .drag_out(move |_: &Island| Some(DragItem::new().file(&out)))
-            .on_drag_end(move |s: &mut Island, outcome, _| if outcome == DragOutcome::Moved { s.save(|c| c.shelf.retain(|f| *f != moved)) })
+            .on_drag_end(move |s: &mut Island, outcome, _| if outcome == DragOutcome::Moved { s.save(|c| c.shelf.retain(|f| *f != moved)); s.nextcloud_shelf_sync() })
             .on_secondary_press(move |s: &mut Island, at, _| { s.shelf.menu = Some((target.clone(), at)); s.open_select = Some(MENU) })
             .child(
                 el().size(52.0, 52.0).center().radius(s.cfg.radius(12.0)).fill(fg.alpha(0.08 * fg.a))
@@ -223,7 +226,7 @@ pub fn view(s: &Island, layer: &mut Vec<El>) -> El {
                             .pin(None, Some(-4.0), Some(-4.0), None).size(18.0, 18.0).center().radius(9.0)
                             .fill(fg.alpha(0.25 * fg.a)).hover(fg.alpha(0.4 * fg.a))
                             .child(icon(&icons::X, 11.0).color(fg).a11y_hidden())
-                            .on_press(move |s: &mut Island| s.save(|c| c.shelf.retain(|f| *f != remove))),
+                            .on_press(move |s: &mut Island| { s.save(|c| c.shelf.retain(|f| *f != remove)); s.nextcloud_shelf_sync() }),
                     ),
             )
             .child(label);

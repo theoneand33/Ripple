@@ -267,6 +267,8 @@ pub struct Island {
     pub notes: tabs::Notes,
     /// Nextcloud sync of Notes, Tasks and events, by `nextcloud::Kind`.
     pub nextcloud: [crate::nextcloud::SyncState; 3],
+    /// Nextcloud sync of the Shelf.
+    pub shelf_sync: crate::nextcloud::SyncState,
     pub stremflix: tabs::Stremflix,
     /// The System tab's figures; None until the first sample.
     pub stats: Option<system::Stats>,
@@ -375,6 +377,7 @@ impl Island {
             calendar: tabs::Calendar::default(),
             notes: tabs::Notes::new(&cfg),
             nextcloud: Default::default(),
+            shelf_sync: Default::default(),
             stremflix: tabs::Stremflix::default(),
             stats: None,
             limits: tabs::Limits::default(),
@@ -778,6 +781,7 @@ impl Island {
             c.shelf.retain(|f| !files.contains(f));
             c.shelf.splice(0..0, files.iter().cloned());
         });
+        self.shelf_new_files(files);
         self.dropping = false;
         self.desktop_drag = false;
         self.open_shelf();

@@ -102,6 +102,7 @@ fn load(s: &mut Island, tab: Tab) {
             (s.calendar.offset, s.calendar.day) = (0, None);
             s.nextcloud_sync(Kind::Events);
         }
+        Tab::Shelf => s.nextcloud_shelf_sync(),
         Tab::Plugins => s.plugins.scan(),
         _ => {}
     }
@@ -144,7 +145,10 @@ impl Island {
                 self.nextcloud_sync(kind);
             }
             // Files dropped since stay in front.
-            Some(Undo::Shelf(files)) => self.save(|c| { let back: Vec<_> = files.into_iter().filter(|f| !c.shelf.contains(f)).collect(); c.shelf.extend(back) }),
+            Some(Undo::Shelf(files)) => {
+                self.save(|c| { let back: Vec<_> = files.into_iter().filter(|f| !c.shelf.contains(f)).collect(); c.shelf.extend(back) });
+                self.nextcloud_shelf_sync();
+            }
             None => {}
         }
     }

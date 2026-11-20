@@ -1,8 +1,9 @@
-//! Nextcloud sync for Notes (the Notes app's REST API), Tasks (CalDAV to-dos) and Calendar
-//! events (CalDAV events).
+//! Nextcloud sync for Notes (the Notes app's REST API), Tasks (CalDAV to-dos), Calendar
+//! events (CalDAV events) and the Shelf (WebDAV files in one folder).
 //! `sync` blocks, so it runs off the UI thread; `apply` merges its outcome on the UI thread,
 //! so edits made while it ran are kept.
 
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use base64::Engine;
@@ -11,7 +12,7 @@ use serde_json::{Value, json};
 use crate::config::{Config, Item, Nextcloud, Remote};
 use crate::date::days_from_civil;
 use crate::island::Island;
-use crate::net::percent_encode;
+use crate::net::{percent_decode, percent_encode};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Kind {
@@ -65,6 +66,8 @@ pub fn restore(c: &mut Config, kind: Kind, at: usize, item: Item, syncing: bool)
 pub struct SyncState {
     pub running: bool,
     again: bool,
+    /// Shelf only: names dropped while a sync ran.
+    pub dropped: Vec<String>,
     pub error: Option<String>,
 }
 
@@ -149,14 +152,7 @@ impl Island {
         if current && answered {
             let open = self.cfg.notes.get(self.notes.index).map(|n| (n.key, n.text.clone()));
             self.save(|c| {
-                if c.nextcloud.synced_with != account {
-                    for k in Kind::ALL {
-                        let (items, pending) = k.lists(c);
-                        for i in items { i.remote = None }
-                        pending.clear();
-                    }
-                    c.nextcloud.synced_with = account.to_string();
-                }
+                adopt(c, account);
                 let (items, pending) = kind.lists(c);
                 apply(items, pending, out);
             });
@@ -173,6 +169,78 @@ impl Island {
         // A changed account waits for the next sync asked of it, so no resync chases a URL that is still being typed.
         if std::mem::take(&mut self.nextcloud[kind as usize].again) && current { self.nextcloud_sync(kind) }
     }
+
+    /// Syncs the Shelf with its Nextcloud folder in the background, as `nextcloud_sync` does a kind.
+    pub fn nextcloud_shelf_sync(&mut self) {
+        if !self.cfg.nextcloud.enabled() { self.shelf_sync.error = None; return }
+        let (Some(me), Some(dir)) = (self.me.clone(), self.store.dir()) else { return };
+        if self.shelf_sync.running { self.shelf_sync.again = true; return }
+        self.shelf_sync.running = true;
+        let account = self.cfg.nextcloud.account();
+        let nc = self.cfg.nextcloud.clone();
+        let folder = nc.shelf_folder();
+        // Another account's folder says nothing of this one's: nothing counts as removed.
+        let base: Vec<String> = if nc.synced_with == account { nc.shelf_synced.iter().filter_map(|e| in_folder(e, &folder)).map(str::to_string).collect() } else { Vec::new() };
+        let files = self.cfg.shelf.clone();
+        let at = folder.clone();
+        me.spawn(move || sync_shelf(&nc, &at, &files, &base, &dir.join("Shelf")), move |s, out| s.nextcloud_shelf_synced(&account, &folder, out));
+    }
+
+    /// Files just put on the Shelf (dropped, renamed, compressed, extracted), then a sync. A name
+    /// the sync record knows is a new file now, not one Nextcloud since removed.
+    pub fn shelf_new_files(&mut self, files: &[PathBuf]) {
+        let names: Vec<_> = files.iter().filter_map(|f| f.file_name().map(|n| n.to_string_lossy().into_owned())).collect();
+        self.save(|c| c.nextcloud.shelf_synced.retain(|e| !names.iter().any(|n| e.rsplit('/').next() == Some(n.as_str()))));
+        if self.shelf_sync.running { self.shelf_sync.dropped.extend(names) }
+        self.nextcloud_shelf_sync();
+    }
+
+    fn nextcloud_shelf_synced(&mut self, account: &str, folder: &str, out: ShelfOutcome) {
+        self.shelf_sync.running = false;
+        let current = self.cfg.nextcloud.account() == account;
+        if current { self.shelf_sync.error = out.error }
+        let changed = self.shelf_sync.again;
+        // Dropped while it ran: new files whose names this run's record would wrongly mark as synced.
+        let dropped = std::mem::take(&mut self.shelf_sync.dropped);
+        if current && let Some(mut both) = out.both {
+            self.save(|c| {
+                adopt(c, account);
+                if changed {
+                    // The Shelf changed while it ran, so a file it found gone may have been dropped
+                    // again: it stays on, and the rerun decides.
+                    for f in &out.gone {
+                        let Some(name) = f.file_name().map(|n| n.to_string_lossy().into_owned()) else { continue };
+                        both.push(name);
+                    }
+                }
+                both.retain(|n| !dropped.contains(n));
+                if !changed {
+                    c.shelf.retain(|f| !out.gone.contains(f));
+                }
+                for f in out.downloaded { if !c.shelf.contains(&f) { c.shelf.push(f) } }
+                // Only this folder's: a stale record of another would make its files look removed on a switch back.
+                c.nextcloud.shelf_synced = both.into_iter().map(|n| format!("{folder}/{n}")).collect();
+            });
+        }
+        if std::mem::take(&mut self.shelf_sync.again) && current { self.nextcloud_shelf_sync() }
+    }
+}
+
+/// Starts afresh with another account: the old one's ids mean nothing to it.
+fn adopt(c: &mut Config, account: &str) {
+    if c.nextcloud.synced_with == account { return }
+    for k in Kind::ALL {
+        let (items, pending) = k.lists(c);
+        for i in items { i.remote = None }
+        pending.clear();
+    }
+    c.nextcloud.shelf_synced.clear();
+    c.nextcloud.synced_with = account.to_string();
+}
+
+/// The file name a `shelf_synced` entry has in `folder`, if it is in that folder.
+fn in_folder<'a>(entry: &'a str, folder: &str) -> Option<&'a str> {
+    entry.strip_prefix(folder)?.strip_prefix('/').filter(|n| !n.contains('/'))
 }
 
 // --- The network half ---
@@ -214,6 +282,16 @@ impl Client {
         let etag = res.headers().get("etag").and_then(|v| v.to_str().ok()).unwrap_or_default().to_string();
         let text = res.body_mut().with_config().limit(32 << 20).read_to_string().map_err(|e| e.to_string())?;
         Ok((res.status().as_u16(), etag, text))
+    }
+}
+
+impl Client {
+    /// A file transfer: an hour, not 30 seconds, as a big file takes long; a stalled one still ends.
+    fn transfer(&self, method: &str, url: &str, body: impl ureq::AsSendBody) -> Result<ureq::http::Response<ureq::Body>, String> {
+        let req = ureq::http::Request::builder().method(method).uri(url).header("authorization", &self.auth).body(body).map_err(|e| e.to_string())?;
+        let wait = Some(Duration::from_secs(30));
+        let req = self.agent.configure_request(req).timeout_global(Some(Duration::from_secs(3600))).timeout_connect(wait).timeout_recv_response(wait).build();
+        self.agent.run(req).map_err(|e| format!("Nextcloud: {e}"))
     }
 }
 
@@ -519,6 +597,159 @@ fn completed(ics: &str, stamp: &str) -> String {
     out
 }
 
+// --- Shelf: files in one Nextcloud Files folder, over WebDAV ---
+
+const FOLDER: &str = r#"<?xml version="1.0"?><d:propfind xmlns:d="DAV:"><d:prop><d:resourcetype/><d:getcontentlength/></d:prop></d:propfind>"#;
+
+#[derive(Debug, Default, PartialEq)]
+pub struct ShelfOutcome {
+    /// The names both sides have now; None when the folder couldn't be read.
+    both: Option<Vec<String>>,
+    /// Shelf files removed on Nextcloud, so off the Shelf here too. The files themselves stay.
+    gone: Vec<PathBuf>,
+    /// Files new on Nextcloud, downloaded into the cache folder.
+    downloaded: Vec<PathBuf>,
+    error: Option<String>,
+}
+
+/// Two-way sync of the Shelf with `folder`, by file name, against `base`, what both had at the
+/// last sync: a name one side lacks is new on the other, unless it is in `base`, when it was removed.
+/// shortcut: a file changed on one side after it synced isn't sent again; compare ETags if people ask.
+pub fn sync_shelf(nc: &Nextcloud, folder: &str, files: &[PathBuf], base: &[String], cache: &Path) -> ShelfOutcome {
+    let c = Client::new(nc);
+    let mut out = ShelfOutcome::default();
+    out.error = match shelf(&c, folder, files, base, cache, &mut out) {
+        Ok(skipped) => skipped,
+        // Stopped partway: a Shelf file not reached keeps its place in `base`, so the next sync still
+        // knows Nextcloud removed it. (Names Nextcloud lists are in `both` already; one on neither side goes.)
+        Err(e) => {
+            let name = |f: &PathBuf| f.file_name().map(|n| n.to_string_lossy().into_owned());
+            let (gone, here): (Vec<_>, Vec<_>) = (out.gone.iter().filter_map(name).collect(), files.iter().filter_map(name).collect());
+            if let Some(both) = &mut out.both {
+                for b in base { if !both.contains(b) && here.contains(b) && !gone.contains(b) { both.push(b.clone()) } }
+            }
+            Some(e)
+        }
+    };
+    out
+}
+
+/// Ok with a file that was skipped, or Err when the sync stopped partway.
+fn shelf(c: &Client, folder: &str, files: &[PathBuf], base: &[String], cache: &Path, out: &mut ShelfOutcome) -> Result<Option<String>, String> {
+    let mut url = format!("{}/remote.php/dav/files/{}/", c.base, percent_encode(&c.user));
+    let mut made = Vec::new();
+    for part in folder.split('/').filter(|p| !matches!(*p, "" | "." | "..")) {
+        url = format!("{url}{}/", percent_encode(part));
+        made.push(url.clone());
+    }
+    let (status, _, res) = c.call("PROPFIND", &url, &[XML, ("depth", "1")], FOLDER)?;
+    let sizes = match status {
+        207 => folder_files(&res),
+        // Not made yet: each missing level is (405 is one already there).
+        404 => {
+            for level in made {
+                let (status, ..) = c.call("MKCOL", &level, &[], "")?;
+                if !ok(status) && status != 405 { return Err(failed(status)) }
+            }
+            Vec::new()
+        }
+        s => return Err(failed(s)),
+    };
+    let listed: Vec<String> = sizes.iter().map(|(n, _)| n.clone()).collect();
+    // shortcut: of two Shelf files with one name, the first syncs; the other stays here only.
+    let mut local: Vec<(String, &PathBuf)> = Vec::new();
+    for f in files {
+        let Some(name) = f.file_name().map(|n| n.to_string_lossy().into_owned()) else { continue };
+        if !local.iter().any(|(n, _)| *n == name) { local.push((name, f)) }
+    }
+    let here = |name: &String| local.iter().any(|(n, _)| n == name);
+    // A name met for the first time on both sides is one file only if the bytes match. Otherwise
+    // it is two: neither is taken for the other, so removing one never deletes the other.
+    let mut clashes = Vec::new();
+    for (name, path) in &local {
+        let Some((_, theirs)) = sizes.iter().find(|(n, _)| n == name).filter(|_| !base.contains(name)) else { continue };
+        let mine = std::fs::metadata(path).ok().filter(|m| m.is_file()).map(|m| m.len());
+        let same = theirs.is_some() && *theirs == mine && {
+            let mut res = c.transfer("GET", &format!("{url}{}", percent_encode(name)), ())?;
+            if matches!(res.status().as_u16(), 401 | 403) { return Err(failed(res.status().as_u16())) }
+            ok(res.status().as_u16()) && std::fs::File::open(path).is_ok_and(|f| same_bytes(res.body_mut().as_reader(), f))
+        };
+        if !same { clashes.push(name.clone()) }
+    }
+    let clash = |name: &String| clashes.contains(name);
+    let removed_here: Vec<&String> = listed.iter().filter(|n| !here(n) && base.contains(n)).collect();
+    // One file that fails (too big, a name this OS can't save) doesn't hold up the rest; its error still shows.
+    let mut skipped = None;
+    let both = out.both.insert(listed.iter().filter(|n| here(n) && !clash(n)).chain(removed_here.iter().copied()).cloned().collect());
+    for name in removed_here {
+        let (status, ..) = c.call("DELETE", &format!("{url}{}", percent_encode(name)), &[], "")?;
+        if matches!(status, 401 | 403) { return Err(failed(status)) }
+        // Still there, so still in `both`: the next sync tries again.
+        if !ok(status) && status != 404 { skipped.get_or_insert(format!("Couldn't remove {name}: {}", failed(status))); continue }
+        both.retain(|n| n != name);
+    }
+    for (name, path) in &local {
+        if listed.contains(name) {
+            if clash(name) { skipped.get_or_insert(format!("Nextcloud already has another {name}; rename one to sync it")); }
+            continue;
+        }
+        if base.contains(name) { out.gone.push((*path).clone()); continue }
+        // shortcut: folders and files that are missing or unreadable stay here only.
+        if !path.is_file() { continue }
+        let Ok(file) = std::fs::File::open(path) else { continue };
+        let status = c.transfer("PUT", &format!("{url}{}", percent_encode(name)), file)?.status().as_u16();
+        if matches!(status, 401 | 403) { return Err(failed(status)) }
+        if !ok(status) { skipped.get_or_insert(format!("Couldn't upload {name}: {}", failed(status))); continue }
+        both.push(name.clone());
+    }
+    for name in listed.iter().filter(|n| !here(n) && !base.contains(n) && savable(n)) {
+        let mut res = c.transfer("GET", &format!("{url}{}", percent_encode(name)), ())?;
+        let status = res.status().as_u16();
+        if matches!(status, 401 | 403) { return Err(failed(status)) }
+        if !ok(status) { skipped.get_or_insert(format!("Couldn't download {name}: {}", failed(status))); continue }
+        // Written beside, then renamed, so a broken download never sits on the Shelf.
+        // shortcut: a downloaded file stays in the cache after it leaves the Shelf; prune it if the folder grows.
+        // A file kept from before (it left the Shelf, not the disk) is never overwritten: the new one
+        // goes in a numbered folder, keeping its name so it still matches Nextcloud's.
+        let dir = (1..).map(|i| if i == 1 { cache.to_path_buf() } else { cache.join(i.to_string()) }).find(|d| !d.join(name).exists()).unwrap_or_default();
+        let (path, part) = (dir.join(name), dir.join(format!(".{name}.ripple-download")));
+        let copied = std::fs::create_dir_all(&dir).and_then(|_| std::fs::File::create(&part)).and_then(|mut f| std::io::copy(&mut res.body_mut().as_reader(), &mut f)).and_then(|_| std::fs::rename(&part, &path));
+        if let Err(e) = copied { let _ = std::fs::remove_file(&part); skipped.get_or_insert(format!("Couldn't save {name}: {e}")); continue }
+        out.downloaded.push(path);
+        both.push(name.clone());
+    }
+    Ok(skipped)
+}
+
+/// Whether two readers hold the same bytes, read a piece at a time.
+fn same_bytes(mut a: impl std::io::Read, mut b: impl std::io::Read) -> bool {
+    let (mut x, mut y) = ([0u8; 8192], [0u8; 8192]);
+    loop {
+        let Ok(n) = a.read(&mut x) else { return false };
+        if n == 0 { return b.read(&mut y[..1]).is_ok_and(|m| m == 0) }
+        if b.read_exact(&mut y[..n]).is_err() || x[..n] != y[..n] { return false }
+    }
+}
+
+/// Whether a name from Nextcloud is safe to download as: not one that could leave the cache folder,
+/// nor one Windows takes as a device or a stream.
+fn savable(name: &str) -> bool {
+    let stem = name.split('.').next().unwrap_or_default().trim_end().to_ascii_uppercase();
+    let device = matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL") || (stem.len() == 4 && (stem.starts_with("COM") || stem.starts_with("LPT")) && stem.as_bytes()[3].is_ascii_digit());
+    Path::new(name).file_name() == Some(name.as_ref()) && !name.contains(['/', '\\', ':']) && !device
+}
+
+/// The files (not folders) a PROPFIND of a folder lists, by name, with their sizes.
+fn folder_files(xml: &str) -> Vec<(String, Option<u64>)> {
+    elements(xml, "response").into_iter().filter_map(|r| {
+        let href = unescape(elements(r, "href").first()?);
+        if href.ends_with('/') { return None }
+        let name = percent_decode(href.rsplit('/').next()?);
+        let size = elements(r, "getcontentlength").first().and_then(|s| s.trim().parse().ok());
+        Some((name, size))
+    }).collect()
+}
+
 // --- Calendar events: CalDAV VEVENTs in one of the user's calendars ---
 
 /// Events that end after `since` (a UTC stamp). Older ones drop out of the Calendar tab.
@@ -766,6 +997,72 @@ mod tests {
         assert_eq!(puts.len(), 1, "the matching event was claimed, not uploaded again, and the old one stays local");
         assert!(puts[0].2.contains("DTSTART;VALUE=DATE:20261119") && puts[0].2.contains("SUMMARY:Launch"));
         assert!(seen.iter().any(|r| r.0 == "REPORT" && r.2.contains("<c:time-range start=\"")));
+    }
+
+    #[test]
+    fn shelf_syncs_with_a_files_folder() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let log = seen.clone();
+        let dir = "/remote.php/dav/files/me/Ripple%20Shelf/";
+        let base = serve(move |r| {
+            log.lock().unwrap().push((r.method.clone(), r.path.clone(), r.body.clone()));
+            let res = |status, body: &str| Response { status, headers: vec![], body: body.into() };
+            let file = |name: &str, size: u64| format!("<d:response><d:href>{dir}{name}</d:href><d:propstat><d:prop><d:getcontentlength>{size}</d:getcontentlength></d:prop></d:propstat></d:response>");
+            match (r.method.as_str(), r.path.as_str()) {
+                ("PROPFIND", p) if p == dir => res(207, &format!("<d:multistatus xmlns:d=\"DAV:\"><d:response><d:href>{dir}</d:href></d:response>{}{}{}{}{}{}{}{}{}{}<d:response><d:href>{dir}sub/</d:href></d:response></d:multistatus>", file("kept.txt", 8), file("their%20file.txt", 5), file("dropped.txt", 1), file("%2E%2E%2Fevil", 1), file("clash.txt", 99), file("a%3Ab", 1), file("nul.txt", 1), file("COM1", 1), file("twin.txt", 8), file("same.txt", 8))),
+                ("PROPFIND", _) => res(404, ""),
+                ("GET", p) if p == format!("{dir}their%20file.txt") => res(200, "hello"),
+                ("GET", p) if p == format!("{dir}twin.txt") => res(200, "twin.txt"),
+                ("GET", p) if p == format!("{dir}same.txt") => res(200, "SAME.TXT"),
+                ("PUT", p) if p.ends_with("big.txt") => res(507, ""),
+                ("PUT" | "DELETE" | "MKCOL", _) => res(201, ""),
+                _ => res(500, ""),
+            }
+        });
+        let nc = Nextcloud { url: base, user: "me".into(), password: "pw".into(), ..Nextcloud::default() };
+        let tmp = std::env::temp_dir().join(format!("ripple-shelf-{}", std::process::id()));
+        let cache = tmp.join("cache");
+        std::fs::create_dir_all(&cache).unwrap();
+        // Downloaded once, then off the Shelf: kept on disk, so the new download goes beside it.
+        std::fs::write(cache.join("their file.txt"), "kept").unwrap();
+        let names = ["big.txt", "kept.txt", "mine.txt", "old.txt", "clash.txt", "twin.txt", "same.txt"];
+        for name in names { std::fs::write(tmp.join(name), name).unwrap() }
+        // The server has no room for big.txt: it's skipped, and the rest still syncs. Its clash.txt
+        // and same.txt (same size, other bytes) are other files: neither is uploaded nor in `both`.
+        // twin.txt has the same bytes there, so it is that file.
+        let files = names.map(|n| tmp.join(n));
+        // dropped.txt left the Shelf here and old.txt left Nextcloud since the last sync.
+        let out = sync_shelf(&nc, "Ripple Shelf", &files, &["dropped.txt".into(), "old.txt".into(), "kept.txt".into()], &cache);
+        assert_eq!(out.error.as_deref(), Some("Couldn't upload big.txt: Nextcloud answered 507"));
+        assert_eq!(out.both.unwrap(), ["kept.txt", "twin.txt", "mine.txt", "their file.txt"]);
+        assert_eq!(out.gone, [tmp.join("old.txt")]);
+        assert_eq!(out.downloaded, [cache.join("2").join("their file.txt")]);
+        assert_eq!(std::fs::read_to_string(&out.downloaded[0]).unwrap(), "hello");
+        assert_eq!(std::fs::read_to_string(cache.join("their file.txt")).unwrap(), "kept");
+        let first = std::mem::take(&mut *seen.lock().unwrap());
+        let sent: Vec<_> = first.iter().filter(|r| r.0 == "PUT" || r.0 == "DELETE").map(|r| (r.0.as_str(), r.1.as_str(), r.2.as_str())).collect();
+        assert_eq!(sent, [("DELETE", &*format!("{dir}dropped.txt"), ""), ("PUT", &*format!("{dir}big.txt"), "big.txt"), ("PUT", &*format!("{dir}mine.txt"), "mine.txt")]);
+        // A folder not made yet is made, level by level, and counts as empty.
+        let out = sync_shelf(&nc, "/A/../B/", &[], &[], &cache);
+        assert_eq!((out.error, out.both), (None, Some(Vec::new())));
+        let made: Vec<_> = seen.lock().unwrap().iter().filter(|r| r.0 == "MKCOL").map(|r| r.1.clone()).collect();
+        assert_eq!(made, ["/remote.php/dav/files/me/A/", "/remote.php/dav/files/me/A/B/"], "'..' is dropped, not followed");
+        // A delete refused partway stops the sync; old.txt, not yet reached, stays known as synced.
+        let base = serve(move |r| match r.method.as_str() {
+            "PROPFIND" => Response { status: 207, headers: vec![], body: format!("<d:multistatus xmlns:d=\"DAV:\"><d:response><d:href>{dir}x.txt</d:href></d:response></d:multistatus>") },
+            _ => Response { status: 401, headers: vec![], body: String::new() },
+        });
+        let nc = Nextcloud { url: base, user: "me".into(), password: "pw".into(), ..Nextcloud::default() };
+        // gone.txt, on neither side any more, is forgotten: a new gone.txt there later isn't taken as removed here.
+        let out = sync_shelf(&nc, "Ripple Shelf", &[tmp.join("old.txt")], &["old.txt".into(), "x.txt".into(), "gone.txt".into()], &cache);
+        assert_eq!(out.error.as_deref(), Some("Nextcloud refused the user or app password"));
+        assert_eq!((out.both.unwrap(), out.gone), (vec!["x.txt".to_string(), "old.txt".into()], Vec::new()));
+        let names = ["a:b", "nul.txt", "COM1", "con", "COM", "console.log", "..", "../x"];
+        assert_eq!(names.map(savable), [false, false, false, false, true, true, false, false], "devices, streams and '..' aren't downloaded");
+        let folder = |f: &str| Nextcloud { shelf_folder: f.into(), ..Nextcloud::default() }.shelf_folder();
+        assert_eq!([folder(""), folder(".."), folder(" /./ "), folder("/A/../ B /")], ["Ripple Shelf", "Ripple Shelf", "Ripple Shelf", "A/B"]);
+        assert_eq!([in_folder("A/x", "A"), in_folder("A/B/x", "A"), in_folder("AB/x", "A")], [Some("x"), None, None]);
+        std::fs::remove_dir_all(&tmp).ok();
     }
 
     #[test]

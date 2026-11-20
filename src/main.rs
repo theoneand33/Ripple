@@ -176,6 +176,7 @@ fn island_spec() -> AppSpec<Island> {
             ("plugins-empty", |s| { s.mode = Mode::Large; s.set_tab(Tab::Plugins); s.plugins = Default::default() }),
             ("shelf-drop", |s| { s.mode = Mode::Large; s.set_tab(Tab::Shelf); s.dropping = true }),
             ("shelf", |s| { s.mode = Mode::Large; s.set_tab(Tab::Shelf); s.cfg.shelf = vec!["/home/me/Report final.pdf".into(), "/home/me/photo.png".into()] }),
+            ("shelf-sync-error", |s| { s.mode = Mode::Large; s.set_tab(Tab::Shelf); s.cfg.shelf = vec!["/home/me/photo.png".into()]; s.shelf_sync.error = Some("Nextcloud refused the user or app password".into()) }),
             ("shelf-menu", |s| {
                 s.mode = Mode::Large;
                 s.set_tab(Tab::Shelf);
