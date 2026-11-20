@@ -955,6 +955,9 @@ fn sync_events(c: &Client, want: &str, items: &[Item], pending: &[String], out: 
     upload_edits(c, items, out, |ics, text| edited_event(ics, text).filter(|_| event_day(text).is_some_and(|(day, _)| listable(day))))?;
     upload_new(c, items, &listed, out, |uid, text| event_day(text).filter(|(day, _)| listable(*day)).map(|(day, title)| new_event(uid, day, title, &stamp)))?;
     out.server = Some(list_objects(c, &calendar, &query, event)?);
+    // Written there, the next listing would miss it and drop it here, so it isn't: say so.
+    let stranded = items.iter().any(|i| i.remote.as_ref().is_some_and(|r| r.text != i.text) && event_day(&i.text).is_some_and(|(day, _)| !listable(day)));
+    if stranded { return Err("An event moved over a year back stays in Ripple only".into()) }
     Ok(())
 }
 
@@ -1198,6 +1201,11 @@ mod tests {
         assert_eq!(put.3.as_deref(), Some("\"1\""), "written only over the copy just read");
         assert!(put.2.contains("DESCRIPTION:Keep me") && put.2.contains("DTSTART;VALUE=DATE:20261121") && put.2.contains("SUMMARY:Review\\, moved"));
         assert!(!seen.iter().any(|r| r.0 == "DELETE"));
+        drop(seen);
+        let old = [item("2001-01-01 Review", 2, Some(("/remote.php/dav/calendars/me/personal/a.ics", "\"1\"", "2026-11-20 Review")))];
+        let out = sync(&nc, Kind::Events, &old, &[]);
+        assert_eq!(out.error.as_deref(), Some("An event moved over a year back stays in Ripple only"));
+        assert!(out.server.is_some() && out.pushed.is_empty(), "the rest of the sync still counts");
     }
 
     #[test]
