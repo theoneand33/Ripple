@@ -24,6 +24,7 @@ pub use calendar::Calendar;
 pub use clipboard::Clipboard;
 pub use limits::Limits;
 pub use notes::Notes;
+pub use shelf::Shelf;
 pub use pomodoro::{Pomodoro, bubble as pomodoro_bubble, live as pomodoro_live};
 pub use stremflix::Stremflix;
 pub use t3::T3;
@@ -46,7 +47,7 @@ pub fn view(s: &Island, layer: &mut Vec<El>) -> El {
         Tab::T3 => t3::view(s, layer),
         Tab::Notes => notes::view(s),
         Tab::Stremflix => stremflix::view(s),
-        Tab::Shelf => shelf::view(s),
+        Tab::Shelf => shelf::view(s, layer),
         Tab::System => monitor::view(s),
         Tab::Limits => limits::view(s),
         Tab::Calendar => calendar::view(s),
