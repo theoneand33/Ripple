@@ -260,7 +260,7 @@ pub struct Island {
     pub reminder: Option<(String, f64)>,
     /// The reminder's meeting link, for its Join button.
     pub reminder_link: Option<String>,
-    /// Events already alerted, as `minute title` (`tabs::calendar::due_event`).
+    /// Events already alerted, as `minute title` (`tabs::calendar::due_events`).
     pub alerted_events: Vec<String>,
     /// The minute task reminders were last checked, as `YYYY-MM-DDTHH:MM`; empty until the first.
     pub task_mark: String,

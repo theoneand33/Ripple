@@ -32,19 +32,22 @@ pub fn meeting_link(title: &str) -> (Option<String>, String) {
     (link.map(str::to_string), rest)
 }
 
-/// The timed event to alert now (`now` and `lead` in minutes, since 1970 on this clock): one
-/// starting within `lead` minutes, or that started this minute, and not in `alerted`. Returns
-/// its id for `alerted`, its title, and its meeting link.
-pub fn due_event(events: &[Item], now: i64, lead: i64, alerted: &[String]) -> Option<(String, String, Option<String>)> {
-    events.iter().find_map(|e| {
+/// Minutes after its start that an event can still alert, for one held while Large was open.
+const EVENT_GRACE: i64 = 15;
+
+/// The timed events to alert now (`now` and `lead` in minutes, since 1970 on this clock): those
+/// starting within `lead` minutes, or that started up to `EVENT_GRACE` minutes ago, and not in
+/// `alerted`. Each is its id for `alerted`, its title, and its meeting link.
+pub fn due_events(events: &[Item], now: i64, lead: i64, alerted: &[String]) -> Vec<(String, String, Option<String>)> {
+    events.iter().filter_map(|e| {
         let ((y, m, d), title) = event_day(&e.text)?;
         let (Some((h, min)), rest) = nextcloud::leading_time(title) else { return None };
         let start = crate::date::days_from_civil(y, m, d) * 1440 + i64::from(h * 60 + min);
         let id = format!("{start} {rest}");
-        if !(start - lead..=start).contains(&now) || alerted.contains(&id) { return None }
+        if !(start - lead..=start + EVENT_GRACE).contains(&now) || alerted.contains(&id) { return None }
         let (link, title) = meeting_link(rest);
         Some((id, title, link))
-    })
+    }).collect()
 }
 
 impl Island {
@@ -55,8 +58,12 @@ impl Island {
         if rune::is_headless() || lead == 0 || self.mode == crate::island::Mode::Large { return }
         let t = rune::time::LocalTime::at(crate::date::now_ms());
         let minute = crate::date::days_from_civil(t.year, t.month, t.day) * 1440 + i64::from(t.hour * 60 + t.minute);
-        let Some((id, title, link)) = due_event(&self.cfg.events, minute, lead, &self.alerted_events) else { return };
-        self.alerted_events.push(id);
+        let due = due_events(&self.cfg.events, minute, lead, &self.alerted_events);
+        if due.is_empty() { return }
+        // Several at once share one alert, with the first meeting link.
+        let title = if due.len() == 1 { due[0].1.clone() } else { format!("{} events", due.len()) };
+        let link = due.iter().find_map(|d| d.2.clone());
+        self.alerted_events.extend(due.into_iter().map(|d| d.0));
         self.remind_event(title, link, now);
     }
 }
@@ -222,13 +229,19 @@ mod tests {
 
     #[test]
     fn an_event_alerts_once_within_its_lead_with_its_meeting_link() {
-        let events = ["2026-01-01 All day", "2026-01-01 09:30 Standup https://meet.example.com/abc daily"].map(Item::new);
+        let events = ["2026-01-01 All day", "2026-01-01 09:30 Standup https://meet.example.com/abc daily", "2026-01-01 09:30 Review"].map(Item::new);
         let start = crate::date::days_from_civil(2026, 1, 1) * 1440 + 9 * 60 + 30;
-        assert_eq!(super::due_event(&events, start - 11, 10, &[]), None, "too early");
-        let (id, title, link) = super::due_event(&events, start - 10, 10, &[]).unwrap();
+        assert!(super::due_events(&events, start - 11, 10, &[]).is_empty(), "too early");
+        let due = super::due_events(&events, start - 10, 10, &[]);
+        assert_eq!(due.len(), 2, "events starting together alert together");
+        let (id, title, link) = &due[0];
         assert_eq!((title.as_str(), link.as_deref()), ("Standup daily", Some("https://meet.example.com/abc")));
-        assert_eq!(super::due_event(&events, start, 10, &[id]), None, "once");
-        assert_eq!(super::due_event(&events, start + 1, 10, &[]), None, "past");
+        let alerted: Vec<String> = due.iter().map(|d| d.0.clone()).collect();
+        assert!(super::due_events(&events, start, 10, &alerted).is_empty(), "once");
+        let held = super::due_events(&events, start + 15, 10, &[]);
+        assert_eq!(held.len(), 2, "held while Large was open");
+        assert_eq!(&held[0].0, id);
+        assert!(super::due_events(&events, start + 16, 10, &[]).is_empty(), "past");
         assert_eq!(super::meeting_link("Lunch"), (None, "Lunch".into()));
     }
 
