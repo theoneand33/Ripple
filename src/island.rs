@@ -997,7 +997,8 @@ impl Island {
     /// On the hour within the set hours, while the Water widget is on the Overview and today's
     /// glasses are short of the goal.
     pub fn water_reminders(&mut self, now: f64) {
-        if rune::is_headless() { return }
+        // An alert doesn't show over an open Large: the hour stays due until the Island is compact.
+        if rune::is_headless() || self.large_open() { return }
         let t = LocalTime::at(crate::date::now_ms());
         let mark = (crate::date::days_from_civil(t.year, t.month, t.day), t.hour);
         // Track the hour even while reminders are off, so turning them on or adding the widget mid-hour stays quiet.
