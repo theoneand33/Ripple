@@ -711,7 +711,7 @@ impl Island {
         if notch && track && !alerting && self.mode != Mode::Large { w = (w + 40.0).max(300.0) }
         let h = match self.mode {
             // The Overview fits its tiles.
-            Mode::Large if self.tab == Tab::Overview => ((self.notch_inset() - LARGE_EDGE).max(0.0) + 2.0 * LARGE_EDGE + tabs::overview_height(self)).min(self.placement.max_h()),
+            Mode::Large if self.tab == Tab::Overview => ((self.notch_inset() - LARGE_EDGE).max(0.0) + 2.0 * LARGE_EDGE + tabs::overview_height(self)).min(self.placement.max_h().max(large.1)),
             Mode::Large => (self.notch_inset() - LARGE_EDGE).max(0.0) + large.1,
             _ => if self.cfg.notch_mode { 34.0 } else { 40.0 }, // Mini notch keeps the notch height
         };
@@ -2062,6 +2062,12 @@ mod tests {
             let (top, bottom) = (iy.min(dy), (iy + ih).max(dy + dh));
             assert!(top >= 0.0 && bottom <= s.placement.visible_h, "{mode}: {top}..{bottom}");
         }
+        // No room at all below the Island: it keeps the Overview's usual size.
+        let mut s = island(Config { position_mode: "free".into(), island_y: 500.0, ..Config::default() });
+        s.placement = Placement::of(&s.cfg, (960.0, 540.0));
+        s.mode = Mode::Large;
+        s.set_tab(Tab::Overview);
+        assert_eq!(s.size().1, tabs::size(Tab::Overview).1);
     }
 
     #[test]
