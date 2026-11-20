@@ -297,7 +297,7 @@ fn panel(s: &Settings, k: &Kit, layer: &mut Vec<El>, tab: Tab) -> Vec<El> {
     match tab {
         Tab::Search => {
             let engines: Vec<(&str, &str)> = SEARCH_ENGINES.iter().map(|e| (e.0, e.1)).collect();
-            sections.push(section(s, "search", "Browser Search", vec![
+            sections.push(section(s, "search", "Search", vec![
                 setting(s, "Search engine", choice(s, k, layer, "engine", "Search engine", &engines, &cfg.search_engine, |c, v| c.search_engine = v.into())),
             ]));
         }

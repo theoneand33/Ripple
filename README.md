@@ -27,7 +27,7 @@ https://github.com/user-attachments/assets/a7b9ed8a-97b5-4603-bad7-6f4c4bef1f5d
 
 ### Tabs
 
-- Browser Search sends queries to Google, DuckDuckGo, Brave Search, Bing, or Startpage. Pick the engine in Settings.
+- Search works like Spotlight: it lists matching apps first, then files from the OS search index (Spotlight, Windows Search, or on Linux GNOME LocalSearch or KDE Baloo), then a web search on Google, DuckDuckGo, Brave Search, Bing, or Startpage. Pick the engine in Settings.
 - Workflows & QA opens a saved set of URLs with one click and keeps quick-access apps.
 - Overview shows the time, weather, and battery. While music plays, it also shows the current track with playback controls. Long titles scroll with soft blurred edges, and the track stays on screen for 3 seconds after you pause.
 - AI Assistant answers questions using Groq.

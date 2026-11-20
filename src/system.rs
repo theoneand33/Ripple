@@ -5,9 +5,7 @@ use std::ffi::OsString;
 use std::process::{Command, Stdio};
 use std::sync::OnceLock;
 
-#[cfg(target_os = "linux")]
 use crate::command::tokenize_args;
-#[cfg(windows)]
 use crate::config::QuickApp;
 
 /// `WAYLAND_DISPLAY` as Ripple was started with it; set only in a Wayland session.
@@ -867,7 +865,7 @@ pub fn open_external(url: &str) {
 }
 
 /// Web pages, and `file:` documents that wouldn't run as programs.
-fn openable(url: &str) -> bool {
+pub(crate) fn openable(url: &str) -> bool {
     let lower = url.to_ascii_lowercase();
     if lower.starts_with("http://") || lower.starts_with("https://") { return true }
     let Some(path) = lower.strip_prefix("file://") else { return false };
@@ -978,7 +976,120 @@ pub fn open_music_player(source: &str) {
     if source.contains("Apple") { open_app("Music") } else { open_app(source) }
 }
 
-// --- Installed apps (Windows: suggestions for the quick apps field) ---
+// --- Installed apps (Search results; on Windows also suggestions for the quick apps field) ---
+
+/// `.desktop` files in the XDG applications folders, as (Name, Exec without field codes).
+#[cfg(target_os = "linux")]
+pub fn discover_apps() -> Vec<QuickApp> {
+    let home = rune::dirs::home().unwrap_or_default();
+    let data_home = std::env::var("XDG_DATA_HOME").ok().filter(|d| !d.is_empty()).map(std::path::PathBuf::from).unwrap_or_else(|| home.join(".local/share"));
+    let data_dirs = std::env::var("XDG_DATA_DIRS").ok().filter(|d| !d.is_empty()).unwrap_or_else(|| "/usr/local/share:/usr/share".into());
+    let dirs = std::iter::once(data_home.clone())
+        .chain(data_dirs.split(':').map(std::path::PathBuf::from))
+        .chain([data_home.join("flatpak/exports/share"), "/var/lib/flatpak/exports/share".into()]);
+    let mut seen = std::collections::HashSet::new();
+    let mut apps = Vec::new();
+    for dir in dirs {
+        let Ok(entries) = std::fs::read_dir(dir.join("applications")) else { continue };
+        for entry in entries.flatten() {
+            // The first folder wins for a desktop-file id, as XDG says.
+            if !seen.insert(entry.file_name()) { continue }
+            if let Some(app) = std::fs::read_to_string(entry.path()).ok().and_then(|t| parse_desktop(&t)) { apps.push(app) }
+        }
+    }
+    apps.sort_by_key(|a| a.name.to_lowercase());
+    apps.dedup_by(|a, b| a.name == b.name && a.launch == b.launch);
+    apps
+}
+
+/// One `.desktop` file's app, or None when it is hidden or not an app.
+#[cfg_attr(not(any(target_os = "linux", test)), allow(dead_code))]
+fn parse_desktop(text: &str) -> Option<QuickApp> {
+    let (mut name, mut exec, mut app, mut in_entry) = (None, None, false, false);
+    for line in text.lines().map(str::trim) {
+        if line.starts_with('[') { in_entry = line == "[Desktop Entry]"; continue }
+        if !in_entry { continue }
+        let Some((k, v)) = line.split_once('=') else { continue };
+        match (k.trim(), v.trim()) {
+            ("Name", v) => name = Some(v.to_string()),
+            ("Exec", v) => exec = Some(v.to_string()),
+            ("Type", v) => app = v == "Application",
+            // Terminal apps would start with no terminal to show them.
+            ("NoDisplay" | "Hidden" | "Terminal", "true") => return None,
+            _ => {}
+        }
+    }
+    // %f, %U and the like are filled in by a launcher with files; there are none here.
+    let exec = tokenize_args(&exec?).into_iter().filter(|a| !(a.len() == 2 && a.starts_with('%'))).collect::<Vec<_>>();
+    if !app || exec.is_empty() { return None }
+    // Back to one string `launch_app` splits again: tokens with spaces stay quoted.
+    let launch = exec.iter().map(|a| if a.contains(char::is_whitespace) { format!("\"{a}\"") } else { a.clone() }).collect::<Vec<_>>().join(" ");
+    Some(QuickApp { name: name?, launch })
+}
+
+// --- File search: the OS's own index ---
+
+/// Files and folders whose name (or, where the index does, content) matches `query`, from
+/// Spotlight, Windows Search, GNOME's LocalSearch/Tracker or KDE's Baloo. Empty when there's no index.
+#[cfg(target_os = "linux")]
+pub fn find_files(query: &str, limit: usize) -> Vec<std::path::PathBuf> {
+    let n = limit.to_string();
+    let kde = std::env::var("XDG_CURRENT_DESKTOP").is_ok_and(|d| d.to_ascii_uppercase().contains("KDE"));
+    // `--` keeps a query that starts with `-` from reading as an option.
+    let baloo = || ["baloosearch6", "baloosearch"].iter().find_map(|b| output(b, &["-l", &n, "--", query])).map(|o| baloo_paths(&o));
+    let tracker = || ["localsearch", "tracker3"].iter().find_map(|t| output(t, &["search", "-f", "-l", &n, "--", query])).map(|o| tracker_paths(&o));
+    let found = if kde { baloo().or_else(tracker) } else { tracker().or_else(baloo) };
+    found.unwrap_or_default().into_iter().take(limit).collect()
+}
+
+/// `baloosearch` prints one path a line, then how long it took.
+#[cfg_attr(not(any(target_os = "linux", test)), allow(dead_code))]
+fn baloo_paths(out: &str) -> Vec<std::path::PathBuf> {
+    out.lines().map(str::trim).filter(|l| l.starts_with('/')).map(Into::into).collect()
+}
+
+/// `localsearch search` prints a heading, then indented `file://` URIs.
+#[cfg_attr(not(any(target_os = "linux", test)), allow(dead_code))]
+fn tracker_paths(out: &str) -> Vec<std::path::PathBuf> {
+    out.lines().filter_map(|l| l.trim().strip_prefix("file://")).map(|p| crate::net::percent_decode(p).into()).collect()
+}
+
+#[cfg(target_os = "macos")]
+pub fn find_files(query: &str, limit: usize) -> Vec<std::path::PathBuf> {
+    let home = rune::dirs::home().unwrap_or_else(|| "/".into());
+    let out = output("mdfind", &["-onlyin", &home.to_string_lossy(), "-name", query]).unwrap_or_default();
+    out.lines().filter(|l| !l.is_empty()).take(limit).map(Into::into).collect()
+}
+
+#[cfg(windows)]
+pub fn find_files(query: &str, limit: usize) -> Vec<std::path::PathBuf> {
+    // Its own process: a slow index query mustn't hold up the pollers' shared one.
+    static SERVER: PsSlot = std::sync::Mutex::new(None);
+    // The query is a PowerShell literal, then a SQL literal with LIKE's wildcards bracketed.
+    let script = format!(r#"
+$q = '{}' -replace '([\[%_])', '[$1]' -replace "'", "''"
+$c = New-Object -ComObject ADODB.Connection
+$c.Open("Provider=Search.CollatorDSO;Extended Properties='Application=Windows';")
+$r = $c.Execute("SELECT TOP {limit} System.ItemPathDisplay FROM SYSTEMINDEX WHERE SCOPE='file:' AND System.FileName LIKE '%" + $q + "%'")
+while (-not $r.EOF) {{ $r.Fields.Item('System.ItemPathDisplay').Value; $r.MoveNext() }}
+$c.Close()
+"#, ps_quote(query));
+    powershell_in(&SERVER, &script).lines().filter(|l| !l.trim().is_empty()).map(|l| l.trim().into()).collect()
+}
+
+/// `.app` bundles in the Applications folders; `open -a` takes the name.
+#[cfg(target_os = "macos")]
+pub fn discover_apps() -> Vec<QuickApp> {
+    let home = rune::dirs::home().unwrap_or_default();
+    let dirs = ["/Applications".into(), "/Applications/Utilities".into(), "/System/Applications".into(), "/System/Applications/Utilities".into(), home.join("Applications")];
+    let mut apps: Vec<QuickApp> = dirs.iter().filter_map(|d: &std::path::PathBuf| std::fs::read_dir(d).ok()).flatten().flatten()
+        .filter_map(|e| e.file_name().to_str()?.strip_suffix(".app").map(|n| QuickApp { name: n.into(), launch: n.into() }))
+        .collect();
+    apps.sort_by_key(|a| a.name.to_lowercase());
+    apps.dedup_by(|a, b| a.name == b.name);
+    apps
+}
+
 
 /// Start Menu shortcuts and Store apps as (name, launch target), sorted by name.
 #[cfg(windows)]
@@ -1067,6 +1178,21 @@ mod tests {
         assert_eq!(progress(None, Some(200.0)), Some((0, 200)));
         assert_eq!(progress(Some(30.0), Some(0.0)), None);
         assert_eq!(progress(Some(30.0), None), None);
+    }
+
+    #[test]
+    fn desktop_files_give_visible_apps_without_field_codes() {
+        let app = parse_desktop("[Desktop Entry]\nType=Application\nName=Code\nName[de]=Kode\nExec=\"/opt/my code/code\" --new %F\n[Desktop Action new]\nName=New Window\nExec=code -n");
+        assert_eq!(app, Some(QuickApp { name: "Code".into(), launch: "\"/opt/my code/code\" --new".into() }));
+        assert_eq!(parse_desktop("[Desktop Entry]\nType=Application\nName=X\nExec=x\nNoDisplay=true"), None);
+        assert_eq!(parse_desktop("[Desktop Entry]\nType=Link\nName=X\nExec=x"), None);
+        assert_eq!(parse_desktop("[Desktop Entry]\nType=Application\nName=htop\nExec=htop\nTerminal=true"), None);
+    }
+
+    #[test]
+    fn index_search_output_becomes_paths() {
+        assert_eq!(baloo_paths("/home/me/a b.txt\n/home/me/c\nElapsed: 1.2 msecs\n"), ["/home/me/a b.txt", "/home/me/c"].map(std::path::PathBuf::from));
+        assert_eq!(tracker_paths("Files:\n  file:///home/me/a%20b.txt\n  file:///home/me/c\n"), ["/home/me/a b.txt", "/home/me/c"].map(std::path::PathBuf::from));
     }
 
     #[test]

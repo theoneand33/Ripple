@@ -98,6 +98,13 @@ fn island_spec() -> AppSpec<Island> {
             ("caps-lock", |s| { s.set_caps_lock(true); }),
             ("large", |s| s.mode = Mode::Large),
             ("search", |s| { s.mode = Mode::Large; s.set_tab(Tab::Search) }),
+            ("search-results", |s| {
+                s.mode = Mode::Large;
+                s.set_tab(Tab::Search);
+                s.finder.apps = Some(vec![config::QuickApp { name: "Notes".into(), launch: "notes".into() }]);
+                s.finder.files = ["~/Documents/notes.md", "~/Projects/ripple-notes"].map(Into::into).into();
+                s.search.replace_text("notes");
+            }),
             ("workflows", |s| { s.mode = Mode::Large; s.set_tab(Tab::Workflows) }),
             ("assistant", |s| { s.mode = Mode::Large; s.set_tab(Tab::Assistant); s.ai.asked = true; s.ai.answer = Some("**Rust** is a systems language.\n\n```rust\nfn main() {}\n```".into()) }),
             ("clipboard", |s| { s.mode = Mode::Large; s.set_tab(Tab::Clipboard); s.clipboard.push("Hello from Ripple"); }),

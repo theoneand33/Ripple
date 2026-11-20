@@ -25,6 +25,7 @@ pub use clipboard::Clipboard;
 pub use limits::Limits;
 pub use notes::Notes;
 pub use pomodoro::{Pomodoro, live as pomodoro_live};
+pub use search::Finder;
 pub use stremflix::Stremflix;
 pub use t3::T3;
 
@@ -59,7 +60,7 @@ pub fn view(s: &Island, layer: &mut Vec<El>) -> El {
 /// The Large Island's size on each tab, before any notch inset.
 pub fn size(tab: Tab) -> (f32, f32) {
     match tab {
-        Tab::Search => (445.0, 160.0),
+        Tab::Search => (480.0, 330.0),
         Tab::Workflows => (520.0, 250.0),
         Tab::Notes | Tab::Stremflix | Tab::Limits => (520.0, 290.0),
         Tab::Shelf | Tab::System => (520.0, 230.0),
@@ -73,6 +74,7 @@ pub fn size(tab: Tab) -> (f32, f32) {
 /// Loads what a tab shows, as it opens.
 pub fn entered(s: &mut Island) {
     match s.tab {
+        Tab::Search => s.search_load(),
         Tab::T3 => s.t3_load(),
         Tab::Stremflix => s.stremflix_load(),
         Tab::Limits => s.limits_load(),
@@ -95,7 +97,10 @@ pub fn each_second(s: &mut Island, now: f64) -> bool {
 }
 
 /// Before every frame, from `Island::poll`.
-pub fn poll(s: &mut Island, now: f64, tx: &mut Tx) -> bool { s.clipboard_poll(now, tx) }
+pub fn poll(s: &mut Island, now: f64, tx: &mut Tx) -> bool {
+    if s.mode == Mode::Large && s.tab == Tab::Search { s.search_poll() }
+    s.clipboard_poll(now, tx)
+}
 
 /// The next time a tab needs a poll.
 pub fn deadline(s: &Island) -> Option<f64> { s.clipboard.copied.map(|c| c.1) }
