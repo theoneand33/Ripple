@@ -1004,9 +1004,9 @@ impl Island {
 
     /// Once a second: an alert once rain or snow is due within the hour; Large waits for compact.
     pub fn rain_alert(&mut self, now: f64) {
-        // Raining now or none coming: the rain alerted is over, so the next shower alerts afresh.
-        let Some((at, _)) = self.weather.precip else { self.rain_alerted = None; return };
-        if rune::is_headless() || !self.cfg.rain_alerts || self.large_open() { return }
+        // `rain_alerted` stays through a pause in the rain: `rain_due` lets only rain 3 hours away from it alert again.
+        let Some((at, _)) = self.weather.precip else { return };
+        if rune::is_headless() || !self.cfg.rain_alerts || self.large_open() || self.reminder.is_some() { return }
         if !rain_due(at, crate::date::now_secs(), self.rain_alerted) { return }
         self.rain_alerted = Some(at);
         self.remind(self.precip_label(), now);
@@ -1710,10 +1710,11 @@ mod tests {
         assert!(rain_due(10_000 + 4 * 3600, 10_000 + 3 * 3600, Some(10_000)), "a later rain");
         assert!(rain_due(10_000, 10_900, None), "held back by Large, still shown up to 15 minutes after it starts");
         assert!(!rain_due(10_000, 10_901, None), "too late");
+        assert!(!rain_due(10_000 + 5400, 10_000 + 1800, Some(10_000)), "a pause in the same storm");
         let mut s = island(Config { hour12: false, ..Config::default() });
         s.rain_alerted = Some(10_000);
         s.rain_alert(0.0);
-        assert_eq!(s.rain_alerted, None, "no rain coming: the next shower alerts afresh");
+        assert_eq!(s.rain_alerted, Some(10_000), "raining now keeps the storm alerted");
         s.weather.precip = Some((0, true));
         assert!(s.precip_label().starts_with("Snow at "));
     }
