@@ -28,7 +28,7 @@ pub use notes::Notes;
 pub use pomodoro::{Clock, Pomodoro, live as pomodoro_live};
 pub use stremflix::Stremflix;
 pub use t3::T3;
-pub use tasks::{Every, Task};
+pub use tasks::{Every, Task, TaskDraft};
 
 use rune::{Color, El, Key, KeyEvent, ScrollSpec, TextEdit, Tx, el, icon, row, text, text_input};
 
@@ -67,7 +67,8 @@ pub fn size(tab: Tab) -> (f32, f32) {
         Tab::Notes | Tab::Stremflix | Tab::Limits => (520.0, 290.0),
         Tab::Shelf => (520.0, 230.0),
         Tab::System => (520.0, 342.0),
-        Tab::Tasks | Tab::T3 | Tab::Plugins | Tab::Calculator => (420.0, 290.0),
+        Tab::T3 | Tab::Plugins | Tab::Calculator => (420.0, 290.0),
+        Tab::Tasks => (480.0, 320.0),
         Tab::Pomodoro => (440.0, 236.0),
         Tab::Calendar => (560.0, 280.0),
         Tab::Overview | Tab::Assistant => (420.0, 230.0),
@@ -84,7 +85,10 @@ pub fn entered(s: &mut Island) {
         Tab::Limits => s.limits_load(),
         Tab::Calculator => s.calc_load(),
         Tab::Notes => s.nextcloud_sync(Kind::Notes),
-        Tab::Tasks => s.nextcloud_sync(Kind::Tasks),
+        Tab::Tasks => {
+            if s.task_draft.editing.is_some() { tasks::reset_draft(s) }
+            s.nextcloud_sync(Kind::Tasks);
+        }
         Tab::Calendar => {
             (s.calendar.offset, s.calendar.day) = (0, None);
             if s.calendar.editing.take().is_some() { s.calendar.event.clear() }

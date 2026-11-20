@@ -124,6 +124,14 @@ fn island_spec() -> AppSpec<Island> {
                 s.set_tab(Tab::Tasks);
                 s.cfg.tasks = ["Water the plants due:2026-01-01 every:week", "!!! Ship v0.5 due:2026-01-02T17:00", "Read the RFC", "! Book flights due:2026-01-09"].map(config::Item::new).into();
             }),
+            ("tasks-edit", |s| {
+                s.mode = Mode::Large;
+                s.set_tab(Tab::Tasks);
+                s.cfg.tasks = ["!!! Ship v0.5 due:2026-01-02T17:00", "Water the plants due:2026-01-01 every:week"].map(config::Item::new).into();
+                let key = s.cfg.tasks[0].key;
+                s.task_draft = tabs::TaskDraft { priority: 3, due: Some((2026, 1, 2)), time: Some((17, 0)), every: Some(tabs::Every::Week), editing: Some(key) };
+                s.task.replace_text("Ship v0.5");
+            }),
             ("reminder", |s| s.remind("Ship v0.5 release notes".into(), 0.0)),
             ("tasks-sync-error", |s| {
                 s.mode = Mode::Large;

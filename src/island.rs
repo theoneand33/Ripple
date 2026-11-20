@@ -258,6 +258,7 @@ pub struct Island {
     pub pomodoro: tabs::Pomodoro,
     pub calc: tabs::Calculator,
     pub task: TextEdit,
+    pub task_draft: tabs::TaskDraft,
     pub calendar: tabs::Calendar,
     pub notes: tabs::Notes,
     /// Nextcloud sync of Notes, Tasks and events, by `nextcloud::Kind`.
@@ -362,6 +363,7 @@ impl Island {
             pomodoro: tabs::Pomodoro::default(),
             calc: tabs::Calculator::default(),
             task: TextEdit::default(),
+            task_draft: tabs::TaskDraft::default(),
             calendar: tabs::Calendar::default(),
             notes: tabs::Notes::new(&cfg),
             nextcloud: Default::default(),
