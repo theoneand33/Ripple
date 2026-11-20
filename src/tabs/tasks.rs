@@ -196,18 +196,35 @@ fn tick(s: &mut Island, key: u64) {
     s.nextcloud_sync(Kind::Tasks);
 }
 
+/// The tasks due by `now` (`YYYY-MM-DDTHH:MM`) that `reminded` doesn't hold yet, as their
+/// reminder id (`key@due`, so a task moved to a new time reminds again) and title.
+pub fn due_reminders(tasks: &[Item], reminded: &[String], now: &str, today: Date) -> Vec<(String, String)> {
+    tasks.iter().filter_map(|item| {
+        let task = Task::parse(&item.text, today);
+        let due = task.due_key().filter(|k| k.as_str() <= now)?;
+        let id = format!("{}@{due}", item.key);
+        (!reminded.contains(&id)).then_some((id, task.title))
+    }).collect()
+}
+
 impl Island {
-    /// Once a second: a reminder for each task that fell due since the last check. Tasks due
-    /// before Ripple started don't all fire at once.
+    /// Once a minute: a reminder for the tasks that fell due and haven't had one, including those
+    /// that fell due while Ripple wasn't running. Several at once share one reminder.
     pub fn task_reminders(&mut self, now: f64) {
         if rune::is_headless() { return }
         let t = LocalTime::at(crate::date::now_ms());
         let mark = format!("{:04}-{:02}-{:02}T{:02}:{:02}", t.year, t.month, t.day, t.hour, t.minute);
-        let last = std::mem::replace(&mut self.task_mark, mark.clone());
-        if last.is_empty() || last == mark { return }
-        let due = self.cfg.tasks.iter().map(|i| Task::parse(&i.text, self.today))
-            .find(|task| task.due_key().is_some_and(|k| *k > *last && k <= mark));
-        if let Some(task) = due { self.remind(task.title, now) }
+        if std::mem::replace(&mut self.task_mark, mark.clone()) == mark { return }
+        let due = due_reminders(&self.cfg.tasks, &self.cfg.reminded_tasks, &mark, self.today);
+        if due.is_empty() { return }
+        let title = if due.len() == 1 { due[0].1.clone() } else { format!("{} tasks due", due.len()) };
+        self.save(|c| {
+            // Ids of tasks gone or moved since are dropped.
+            let live: Vec<String> = c.tasks.iter().map(|i| format!("{}@", i.key)).collect();
+            c.reminded_tasks.retain(|id| live.iter().any(|k| id.starts_with(k)));
+            c.reminded_tasks.extend(due.into_iter().map(|d| d.0));
+        });
+        self.remind(title, now);
     }
 }
 
@@ -344,6 +361,19 @@ mod tests {
         s.task_draft.every = None;
         super::add_task(&mut s, &mut rune::Tx::default());
         assert_eq!((s.cfg.tasks.len(), s.cfg.tasks[0].key, s.cfg.tasks[0].text.as_str()), (1, key, "!! Pay rent due:2026-01-31T23:30"));
+    }
+
+    #[test]
+    fn reminders_come_once_for_each_due_time_even_if_missed() {
+        use crate::config::Item;
+        let tasks = vec![Item::new("Missed yesterday due:2026-01-01"), Item::new("Later due:2026-01-02T18:00"), Item::new("No date")];
+        let due = super::due_reminders(&tasks, &[], "2026-01-02T12:00", (2026, 1, 2));
+        assert_eq!(due.iter().map(|d| d.1.as_str()).collect::<Vec<_>>(), ["Missed yesterday"]);
+        let reminded = vec![due[0].0.clone()];
+        assert!(super::due_reminders(&tasks, &reminded, "2026-01-02T12:01", (2026, 1, 2)).is_empty(), "once only");
+        assert_eq!(super::due_reminders(&tasks, &reminded, "2026-01-02T18:00", (2026, 1, 2)).len(), 1);
+        let moved = vec![Item { text: "Missed yesterday due:2026-01-02T11:00".into(), ..tasks[0].clone() }];
+        assert_eq!(super::due_reminders(&moved, &reminded, "2026-01-02T12:00", (2026, 1, 2)).len(), 1, "a new due time reminds again");
     }
 
     #[test]

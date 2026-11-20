@@ -243,7 +243,7 @@ pub struct Island {
     bluetooth_alert_until: Option<f64>,
     /// The task that fell due, and until when its reminder shows.
     pub reminder: Option<(String, f64)>,
-    /// The minute task reminders were last checked, as `YYYY-MM-DDTHH:MM`.
+    /// The minute task reminders were last checked, as `YYYY-MM-DDTHH:MM`; empty until the first.
     pub task_mark: String,
     capture: Option<(Alert, f64)>,
     capture_queue: Vec<Alert>,
