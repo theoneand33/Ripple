@@ -54,7 +54,11 @@ fn all() -> impl Iterator<Item = Widget> {
 
 fn add(s: &mut Island, widget: Widget) {
     s.save(|c| if !c.dashboard.iter().any(|t| t.widget == widget) { c.dashboard.push(Tile::new(widget)) });
-    if let Widget::Panel(tab) = widget { super::load(s, tab) }
+    match widget {
+        Widget::Panel(tab) => super::load(s, tab),
+        Widget::Contributions => s.contributions_load(),
+        _ => {}
+    }
 }
 
 fn move_tile(s: &mut Island, from: usize, to: usize) {
@@ -258,6 +262,8 @@ pub struct Contributions {
     pub leetcode: Option<(String, Result<Graph, String>)>,
     /// When they were last asked for (Unix seconds).
     loaded_at: i64,
+    /// Seconds left before a changed user name loads, so typing in Settings doesn't fetch each keystroke.
+    pub(super) reload_in: Option<u8>,
 }
 
 impl Island {
