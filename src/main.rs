@@ -433,6 +433,9 @@ fn attach_console() {
     }
 }
 
+/// Reverse-DNS: GNOME's shortcuts portal refuses other app ids.
+const APP_ID: &str = "io.github.theoneand33.Ripple";
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().is_some_and(|a| a == "--test-plugin") {
@@ -448,9 +451,10 @@ fn main() {
         let overlay = wayland && !rune::is_headless() && has_layer_shell();
         // SAFETY: single-threaded here, before the event loop or any thread starts.
         unsafe { system::note_wayland(!overlay && std::env::var_os("DISPLAY").is_some()) };
+        if wayland && !rune::is_headless() { system::install_desktop_entry(APP_ID) }
         overlay
     };
-    rune::set_app_id("ripple");
+    rune::set_app_id(APP_ID);
 
     rune::run_windows_with(RunOptions { accessory: true }, move |displays| {
         let screens = Screen::all(displays);

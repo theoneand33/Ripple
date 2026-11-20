@@ -1118,6 +1118,22 @@ pub fn open_music_player(source: &str) {
     if source.contains("Apple") { open_app("Music") } else { open_app(source) }
 }
 
+/// Writes a hidden `.desktop` file named for the app id, unless a package installed one: a
+/// Wayland portal serves GlobalShortcuts (the hotkey) only to an app id naming an installed one.
+#[cfg(target_os = "linux")]
+pub fn install_desktop_entry(app_id: &str) {
+    let name = format!("{app_id}.desktop");
+    let data_dirs = std::env::var("XDG_DATA_DIRS").ok().filter(|d| !d.is_empty()).unwrap_or_else(|| "/usr/local/share:/usr/share".into());
+    if data_dirs.split(':').any(|d| std::path::Path::new(d).join("applications").join(&name).exists()) { return }
+    let Some(exe) = std::env::var_os("APPIMAGE").map(std::path::PathBuf::from).or_else(|| std::env::current_exe().ok()) else { return };
+    let Some(home) = rune::dirs::home() else { return };
+    let dir = std::env::var("XDG_DATA_HOME").ok().filter(|d| !d.is_empty()).map(std::path::PathBuf::from).unwrap_or_else(|| home.join(".local/share")).join("applications");
+    let file = dir.join(name);
+    let entry = format!("[Desktop Entry]\nType=Application\nName=Ripple\nComment=A Dynamic Island for All\nExec={}\nIcon=ripple\nTerminal=false\nNoDisplay=true\n", desktop_exec(&exe.to_string_lossy()));
+    if std::fs::read_to_string(&file).is_ok_and(|old| old == entry) { return }
+    if let Err(e) = std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&file, entry)) { eprintln!("Ripple: failed to write {}: {e}", file.display()) }
+}
+
 // --- Installed apps (Search results; on Windows also suggestions for the quick apps field) ---
 
 /// `.desktop` files in the XDG applications folders, as (Name, Exec without field codes).
