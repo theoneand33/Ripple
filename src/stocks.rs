@@ -121,13 +121,14 @@ fn minor(currency: &str) -> f64 {
     if matches!(currency, "JPY" | "KRW" | "VND" | "CLP" | "ISK" | "PYG" | "UGX") { 1.0 } else { 100.0 }
 }
 
-/// A Money#format string ("$1,234.56", "1.234,56 €", "¥1,234", "-$5.00") as a number: the last
-/// `.` or `,` is the decimal mark unless three digits follow it.
-fn money(s: &str) -> Option<f64> {
+/// A Money#format string ("$1,234.56", "1.234,56 €", "¥1,234", "-$5.00") in `currency` as a
+/// number. Money#format always prints the currency's decimals, so the last `.` or `,` is the
+/// decimal mark, except in currencies without minor units, where every one groups thousands.
+fn money(s: &str, currency: &str) -> Option<f64> {
     let kept: String = s.chars().filter(|c| c.is_ascii_digit() || *c == '.' || *c == ',').collect();
     let digits = |p: &str| p.chars().filter(char::is_ascii_digit).collect::<String>();
     let n = match kept.rfind(['.', ',']) {
-        Some(i) if kept.len() - i - 1 != 3 => format!("{}.{}", digits(&kept[..i]), &kept[i + 1..]),
+        Some(i) if minor(currency) != 1.0 => format!("{}.{}", digits(&kept[..i]), &kept[i + 1..]),
         _ => digits(&kept),
     };
     let n: f64 = n.parse().ok()?;
@@ -189,7 +190,8 @@ pub fn portfolio(url: &str, key: &str, range: Range) -> Result<Portfolio, String
             let qty: f64 = h["qty"].as_str().and_then(|q| q.parse().ok()).unwrap_or(0.0);
             if qty == 0.0 { continue }
             acct.positions += 1;
-            if let (Some(avg), Some(amount)) = (h["avg_cost"].as_str().and_then(money), h["amount"].as_str().and_then(money)) {
+            let hc = h["currency"].as_str().unwrap_or(cur);
+            if let (Some(avg), Some(amount)) = (h["avg_cost"].as_str().and_then(|m| money(m, hc)), h["amount"].as_str().and_then(|m| money(m, hc))) {
                 (acct.cost, acct.value) = (acct.cost + qty * avg, acct.value + amount);
             }
         }
@@ -246,11 +248,11 @@ mod tests {
 
     #[test]
     fn reads_money_and_formats_it() {
-        assert_eq!(money("$1,234.56"), Some(1234.56));
-        assert_eq!(money("1.234,56 €"), Some(1234.56));
-        assert_eq!(money("¥1,234"), Some(1234.0));
-        assert_eq!(money("-$5.00"), Some(-5.0));
-        assert_eq!(money("$0.1234"), Some(0.1234));
+        assert_eq!(money("$1,234.56", "USD"), Some(1234.56));
+        assert_eq!(money("1.234,56 €", "EUR"), Some(1234.56));
+        assert_eq!(money("¥1,234", "JPY"), Some(1234.0));
+        assert_eq!(money("-$5.00", "USD"), Some(-5.0));
+        assert_eq!(money("$0.123", "USD"), Some(0.123));
         assert_eq!(format_money(34721.554, "EUR"), "€34,721.55");
         assert_eq!(format_money(-5.0, "USD"), "-$5.00");
         assert_eq!(format_money(1234.5, "CHF"), "1,234.50 CHF");
