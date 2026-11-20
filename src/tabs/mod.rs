@@ -25,7 +25,7 @@ pub use calendar::Calendar;
 pub use clipboard::Clipboard;
 pub use limits::Limits;
 pub use notes::Notes;
-pub use pomodoro::{Pomodoro, live as pomodoro_live};
+pub use pomodoro::{Clock, Pomodoro, live as pomodoro_live};
 pub use stremflix::Stremflix;
 pub use t3::T3;
 
@@ -66,7 +66,7 @@ pub fn size(tab: Tab) -> (f32, f32) {
         Tab::Notes | Tab::Stremflix | Tab::Limits => (520.0, 290.0),
         Tab::Shelf | Tab::System => (520.0, 230.0),
         Tab::Tasks | Tab::T3 | Tab::Plugins | Tab::Calculator => (420.0, 290.0),
-        Tab::Pomodoro => (440.0, 190.0),
+        Tab::Pomodoro => (440.0, 236.0),
         Tab::Calendar => (560.0, 280.0),
         Tab::Overview | Tab::Assistant | Tab::Clipboard => (420.0, 230.0),
         Tab::Weather => (420.0, 190.0),
@@ -86,6 +86,8 @@ pub fn entered(s: &mut Island) {
             s.nextcloud_sync(Kind::Events);
         }
         Tab::Plugins => s.plugins.scan(),
+        // Seen: a rung timer leaves the compact Island.
+        Tab::Pomodoro => s.pomodoro.timer.rung = false,
         _ => {}
     }
 }
@@ -94,7 +96,7 @@ pub fn entered(s: &mut Island) {
 pub fn each_second(s: &mut Island, now: f64) -> bool {
     let plugins = s.mode == Mode::Large && s.tab == Tab::Plugins && s.plugins.tick();
     s.notes_tick();
-    s.pomodoro.tick(now) | plugins
+    s.pomodoro.tick_all(now) | plugins
 }
 
 /// Before every frame, from `Island::poll`.

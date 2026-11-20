@@ -126,6 +126,10 @@ fn island_spec() -> AppSpec<Island> {
             ("t3", |s| { s.mode = Mode::Large; s.set_tab(Tab::T3) }),
             ("pomodoro", |s| { s.mode = Mode::Large; s.set_tab(Tab::Pomodoro); s.pomodoro.left = 18.0 * 60.0 + 42.0; s.pomodoro.rounds = 2 }),
             // Ends on the app clock, which starts near zero in a headless render.
+            ("timer", |s| { s.mode = Mode::Large; s.set_tab(Tab::Pomodoro); s.pomodoro.clock = tabs::Clock::Timer; s.pomodoro.timer.set(10.0, 0.0); s.pomodoro.timer.left = 4.0 * 60.0 + 12.0 }),
+            ("stopwatch", |s| { s.mode = Mode::Large; s.set_tab(Tab::Pomodoro); s.pomodoro.clock = tabs::Clock::Stopwatch; s.pomodoro.stopwatch.elapsed = 83.0 }),
+            ("timer-done", |s| { s.pomodoro.timer.rung = true; s.pomodoro.timer.left = 0.0 }),
+            ("stopwatch-live", |s| { s.pomodoro.stopwatch.toggle(0.0); s.pomodoro.stopwatch.elapsed = 3723.0; s.pomodoro.stopwatch.since = Some(-3723.0) }),
             ("pomodoro-live", |s| { s.pomodoro.ends = Some(15.0 * 60.0 + 23.0); s.pomodoro.tick(0.0); }),
             ("calculator", |s| {
                 s.mode = Mode::Large;

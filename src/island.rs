@@ -420,7 +420,7 @@ impl Island {
     pub fn shows_track(&self) -> bool { self.playing() || self.paused_until.is_some() }
 
     /// Hide when inactive: resting with no track to show.
-    pub fn hidden(&self) -> bool { self.cfg.hide_inactive && self.mode == Mode::Still && !self.shows_track() && !self.caps_lock && !self.pomodoro.running() }
+    pub fn hidden(&self) -> bool { self.cfg.hide_inactive && self.mode == Mode::Still && !self.shows_track() && !self.caps_lock && !self.pomodoro.active() }
 
     pub fn alert(&self) -> Option<Alert> {
         // The level answers a key just pressed, so it goes over the rest.
@@ -474,7 +474,7 @@ impl Island {
         let percent = || label(&self.percent_label());
         let (left, right) = match self.alert() {
             Some(alert) => (20.0, label(&self.alert_label(alert))),
-            None if self.pomodoro.running() => (label(&self.time), 20.0 + label(&self.pomodoro.label())),
+            None if self.pomodoro.active() => (label(&self.time), 20.0 + label(&self.pomodoro.live_label())),
             None => (label(&self.time), match self.weather.temp {
                 Some(temp) if !(self.cfg.standby && self.percent.is_some()) => 16.0 + label(&format!("{temp}º")),
                 _ if self.charging && self.percent.is_some() => 16.0 + percent(),
@@ -494,8 +494,8 @@ impl Island {
             _ if self.level.is_some() && !notch => 100.0, // just the ring
             _ if alerting => if notch { self.notch_glance_width() } else { 176.0 }, // fits icon + "Disconnected"
             _ if track => self.now_playing_width(),
-            _ if notch => if self.mode == Mode::Quick || self.cfg.show_info_idle || self.pomodoro.running() { self.notch_glance_width() } else { 210.0 },
-            _ if self.pomodoro.running() => 168.0, // "23:59" + ring + "24:59"
+            _ if notch => if self.mode == Mode::Quick || self.cfg.show_info_idle || self.pomodoro.active() { self.notch_glance_width() } else { 210.0 },
+            _ if self.pomodoro.active() => (110.0 + estimate_width(&self.pomodoro.live_label(), 15.0)).ceil().max(168.0), // "23:59" + ring + "24:59"
             Mode::Quick | Mode::Still => 140.0, // fits "23:59" + weather/"100%"
         };
         if notch && track && !alerting && self.mode != Mode::Large { w = (w + 40.0).max(300.0) }
@@ -1170,7 +1170,7 @@ pub fn view(s: &Island, _: &mut Cx<Island>) -> El {
         if s.open_select.is_some() && let Some(menu) = layer.pop() {
             layer.push(menu.on_hover_change(|s: &mut Island, hovered, _| s.menu_hovered = hovered));
         }
-    } else if s.mode == Mode::Quick || s.alert().is_some() || s.shows_track() || cfg.show_info_idle || s.pomodoro.running() {
+    } else if s.mode == Mode::Quick || s.alert().is_some() || s.shows_track() || cfg.show_info_idle || s.pomodoro.active() {
         island = island.child(if s.shows_track() && s.alert().is_none() { now_playing(s, fg) } else { glance(s, fg) });
     }
 
@@ -1277,7 +1277,7 @@ fn glance(s: &Island, fg: Color) -> El {
     let right = match alert {
         Some(alert) => text(s.alert_label(alert)).key("label").font(style).color(color),
         // A running Pomodoro is a live activity: its ring and time left take the right side.
-        None if s.pomodoro.running() => tabs::pomodoro_live(&s.pomodoro, style),
+        None if s.pomodoro.active() => tabs::pomodoro_live(&s.pomodoro, style),
         None if cfg.standby && s.percent.is_some() => battery(),
         None => match s.weather.temp {
             Some(temp) => row().key("weather").gap(2.0).center_y()
@@ -1289,7 +1289,7 @@ fn glance(s: &Island, fg: Color) -> El {
     let row = row().key(alert.map_or("glance", Alert::key)).w_full().h_full().px(pad).center_y()
         .transition(Transition::blur_replace());
     // Mini notch centers the time when there is nothing to show beside it.
-    if cfg.notch_mode && cfg.notch_mini && alert.is_none() && s.weather.temp.is_none() && s.percent.is_none() && !s.pomodoro.running() {
+    if cfg.notch_mode && cfg.notch_mini && alert.is_none() && s.weather.temp.is_none() && s.percent.is_none() && !s.pomodoro.active() {
         return row.justify_center().child(left);
     }
     row.justify_between().child(left).child(right)

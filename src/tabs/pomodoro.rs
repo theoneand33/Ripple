@@ -1,5 +1,5 @@
-//! Pomodoro: 25 minutes of focus, then a 5 minute break, round after round. While it runs, the
-//! compact Island shows the time left beside a ring, as a live activity.
+//! Pomodoro: 25 minutes of focus, then a 5 minute break, round after round; beside it a timer
+//! and a stopwatch. While one runs, the compact Island shows it beside a ring, as a live activity.
 
 use rune::tok::TextStyle;
 use rune::{El, Tx, col, el, icon, row, text};
@@ -11,7 +11,19 @@ use crate::island::Island;
 pub const FOCUS: f64 = 25.0 * 60.0;
 pub const BREAK: f64 = 5.0 * 60.0;
 
+/// Which of the tab's clocks shows.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Clock {
+    #[default]
+    Pomodoro,
+    Timer,
+    Stopwatch,
+}
+
 pub struct Pomodoro {
+    pub clock: Clock,
+    pub timer: Timer,
+    pub stopwatch: Stopwatch,
     pub focus: bool,
     /// Seconds left, as of the last tick.
     pub left: f64,
@@ -22,11 +34,92 @@ pub struct Pomodoro {
 }
 
 impl Default for Pomodoro {
-    fn default() -> Self { Pomodoro { focus: true, left: FOCUS, ends: None, rounds: 0 } }
+    fn default() -> Self { Pomodoro { clock: Clock::Pomodoro, timer: Timer::default(), stopwatch: Stopwatch::default(), focus: true, left: FOCUS, ends: None, rounds: 0 } }
+}
+
+/// "4:05", or "1:02:03" past an hour.
+fn clock_label(secs: f64) -> String {
+    let s = secs.max(0.0) as u64;
+    if s >= 3600 { format!("{}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60) } else { format!("{}:{:02}", s / 60, s % 60) }
+}
+
+/// A countdown of `length` seconds. Once it runs out it has `rung` until reset or seen.
+pub struct Timer {
+    pub length: f64,
+    pub left: f64,
+    pub ends: Option<f64>,
+    pub rung: bool,
+}
+
+impl Default for Timer {
+    fn default() -> Self { Timer { length: 5.0 * 60.0, left: 5.0 * 60.0, ends: None, rung: false } }
+}
+
+impl Timer {
+    pub fn label(&self) -> String { if self.rung { "Done".into() } else { clock_label(self.left.ceil()) } }
+
+    pub fn percent(&self) -> f32 { ((1.0 - self.left / self.length) * 100.0).clamp(0.0, 100.0) as f32 }
+
+    pub fn toggle(&mut self, now: f64) {
+        if self.left <= 0.0 { self.reset() }
+        self.ends = match self.ends { Some(ends) => { self.left = (ends - now).max(0.0); None } None => Some(now + self.left) };
+    }
+
+    /// Picks a length; a running timer starts over on it.
+    pub fn set(&mut self, minutes: f64, now: f64) {
+        (self.length, self.left, self.rung) = (minutes * 60.0, minutes * 60.0, false);
+        if self.ends.is_some() { self.ends = Some(now + self.left) }
+    }
+
+    pub fn reset(&mut self) { (self.left, self.ends, self.rung) = (self.length, None, false) }
+
+    fn tick(&mut self, now: f64) -> bool {
+        let Some(ends) = self.ends.filter(|_| now.is_finite()) else { return false };
+        if now >= ends { (self.left, self.ends, self.rung) = (0.0, None, true) } else { self.left = ends - now }
+        true
+    }
+}
+
+/// Counts up from when it started, less its pauses.
+#[derive(Default)]
+pub struct Stopwatch {
+    pub elapsed: f64,
+    /// The app clock when it would have started, had it never paused; None while paused.
+    pub since: Option<f64>,
+}
+
+impl Stopwatch {
+    pub fn label(&self) -> String { clock_label(self.elapsed) }
+
+    /// The seconds hand: the ring goes round once a minute.
+    pub fn percent(&self) -> f32 { (self.elapsed % 60.0 / 60.0 * 100.0) as f32 }
+
+    pub fn toggle(&mut self, now: f64) {
+        self.since = match self.since { Some(since) => { self.elapsed = now - since; None } None => Some(now - self.elapsed) };
+    }
+
+    pub fn reset(&mut self) { *self = Stopwatch::default() }
+
+    fn tick(&mut self, now: f64) -> bool {
+        let Some(since) = self.since.filter(|_| now.is_finite()) else { return false };
+        self.elapsed = now - since;
+        true
+    }
 }
 
 impl Pomodoro {
     pub fn running(&self) -> bool { self.ends.is_some() }
+
+    /// A clock the compact Island shows: one running, or a timer that has rung.
+    pub fn active(&self) -> bool { self.running() || self.timer.ends.is_some() || self.timer.rung || self.stopwatch.since.is_some() }
+
+    /// The time the live activity shows.
+    pub fn live_label(&self) -> String {
+        if self.running() { self.label() } else if self.timer.ends.is_some() || self.timer.rung { self.timer.label() } else { self.stopwatch.label() }
+    }
+
+    /// Ticks every clock; false while none runs.
+    pub fn tick_all(&mut self, now: f64) -> bool { self.tick(now) | self.timer.tick(now) | self.stopwatch.tick(now) }
 
     fn length(&self) -> f64 { if self.focus { FOCUS } else { BREAK } }
 
@@ -68,15 +161,74 @@ impl Pomodoro {
 
 fn color(focus: bool) -> rune::Color { if focus { accent::orange() } else { accent::green() } }
 
-/// The compact Island's live activity while it runs: a ring and the time left.
+/// The compact Island's live activity: the Pomodoro, else the timer, else the stopwatch, as a
+/// ring and its time.
 pub fn live(p: &Pomodoro, style: TextStyle) -> El {
-    let (glyph, tint) = (if p.focus { &icons::TIMER } else { &icons::COFFEE }, color(p.focus));
-    row().key("pomodoro").role("img").label(format!("{}, {} left", if p.focus { "Focus" } else { "Break" }, p.label())).gap(6.0).center_y()
-        .child(ring(18.0, f32::from(p.percent()), tint, icon(glyph, 10.0).color(tint)))
-        .child(text(p.label()).font(style.features("'tnum' 1")).color(tint).a11y_hidden())
+    let (key, glyph, tint, percent, label) = if p.running() {
+        ("pomodoro", if p.focus { &icons::TIMER } else { &icons::COFFEE }, color(p.focus), f32::from(p.percent()), format!("{}, {} left", if p.focus { "Focus" } else { "Break" }, p.label()))
+    } else if p.timer.ends.is_some() || p.timer.rung {
+        ("timer", &icons::TIMER, if p.timer.rung { accent::red() } else { accent::teal() }, p.timer.percent(), if p.timer.rung { "Timer done".into() } else { format!("Timer, {} left", p.timer.label()) })
+    } else {
+        ("stopwatch", &icons::TIMER, accent::indigo(), p.stopwatch.percent(), format!("Stopwatch, {}", p.stopwatch.label()))
+    };
+    row().key(key).role("img").label(label).gap(6.0).center_y()
+        .child(ring(18.0, percent, tint, icon(glyph, 10.0).color(tint)))
+        .child(text(p.live_label()).font(style.features("'tnum' 1")).color(tint).a11y_hidden())
+}
+
+/// A chip that picks one of the tab's clocks.
+fn clock_chip(s: &Island, clock: Clock, label: &str, tint: rune::Color) -> El {
+    chip(s, &format!("clock-{label}"), label, tint, s.pomodoro.clock == clock).role("button").label(label).focusable(true)
+        .checked(s.pomodoro.clock == clock).on_press(move |s: &mut Island| s.pomodoro.clock = clock)
+}
+
+/// The timer or the stopwatch: the live activity's ring, large, with its time inside.
+fn dial(s: &Island, key: &str, percent: f32, tint: rune::Color, label: String) -> El {
+    ring(104.0, percent, tint, text(label).key(format!("{key}-time")).font(s.cfg.font(22.0, 700.0).features("'tnum' 1")).color(tint))
+}
+
+fn timer_view(s: &Island) -> El {
+    let t = &s.pomodoro.timer;
+    let tint = if t.rung { accent::red() } else { accent::teal() };
+    let mut presets = row().key("timer-presets").gap(6.0);
+    for m in [1.0, 5.0, 10.0, 15.0, 30.0] {
+        presets = presets.child(chip(s, &format!("timer-{m}"), &format!("{m}m"), tint, t.length == m * 60.0)
+            .role("button").label(format!("{m} minutes")).focusable(true)
+            .on_press_tx(move |s: &mut Island, tx: &mut Tx| s.pomodoro.timer.set(m, tx.clock())));
+    }
+    row().key("timer").w_full().gap(18.0).center_y()
+        .child(dial(s, "timer", t.percent(), tint, t.label()))
+        .child(col().gap(12.0).child(presets).child(row().gap(10.0).center_y()
+            .child(tinted(s, "timer-start", if t.ends.is_some() { "Pause" } else { "Start" }, tint)
+                .on_press_tx(|s: &mut Island, tx: &mut Tx| s.pomodoro.timer.toggle(tx.clock())))
+            .child(tool(s, "timer-reset", &icons::ROTATE_CCW, "Reset").on_press(|s: &mut Island| s.pomodoro.timer.reset()))))
+}
+
+fn stopwatch_view(s: &Island) -> El {
+    let w = &s.pomodoro.stopwatch;
+    let tint = accent::indigo();
+    row().key("stopwatch").w_full().gap(18.0).center_y()
+        .child(dial(s, "stopwatch", w.percent(), tint, w.label()))
+        .child(row().gap(10.0).center_y()
+            .child(tinted(s, "stopwatch-start", if w.since.is_some() { "Pause" } else { "Start" }, tint)
+                .on_press_tx(|s: &mut Island, tx: &mut Tx| s.pomodoro.stopwatch.toggle(tx.clock())))
+            .child(tool(s, "stopwatch-reset", &icons::ROTATE_CCW, "Reset").on_press(|s: &mut Island| s.pomodoro.stopwatch.reset())))
 }
 
 pub fn view(s: &Island) -> El {
+    let clocks = row().key("clocks").w_full().gap(6.0)
+        .child(clock_chip(s, Clock::Pomodoro, "Pomodoro", accent::orange()))
+        .child(clock_chip(s, Clock::Timer, "Timer", accent::teal()))
+        .child(clock_chip(s, Clock::Stopwatch, "Stopwatch", accent::indigo()));
+    let root = col().key("clock").w_full().h_full().px(20.0).pt(14.0).pb(14.0).gap(14.0).child(clocks);
+    match s.pomodoro.clock {
+        Clock::Pomodoro => root.child(pomodoro_view(s)),
+        Clock::Timer => root.child(timer_view(s)),
+        Clock::Stopwatch => root.child(stopwatch_view(s)),
+    }
+}
+
+fn pomodoro_view(s: &Island) -> El {
     let fg = s.cfg.text();
     let p = &s.pomodoro;
     let color = color(p.focus);
@@ -102,8 +254,7 @@ pub fn view(s: &Island) -> El {
         .child(tool(s, "pomodoro-skip", &icons::SKIP_FORWARD, "Skip").on_press_tx(|s: &mut Island, tx: &mut Tx| s.pomodoro.skip(tx.clock())))
         .child(el().grow(1.0))
         .child(text(p.label()).key("pomodoro-time").font(s.cfg.font(40.0, 700.0).lh(44.0).features("'tnum' 1")).color(color).a11y_hidden());
-    col().key("pomodoro").w_full().h_full().px(20.0).pt(16.0).pb(14.0).gap(14.0)
-        .child(header).child(ruler).child(controls)
+    col().key("pomodoro").w_full().gap(14.0).child(header).child(ruler).child(controls)
 }
 
 #[cfg(test)]
@@ -135,5 +286,28 @@ mod tests {
         p.skip(0.0);
         p.reset();
         assert!(p.rounds == 1 && p.focus && !p.running());
+    }
+
+    #[test]
+    fn the_timer_rings_once_and_the_stopwatch_keeps_its_pauses() {
+        let mut p = Pomodoro::default();
+        assert!(!p.active() && !p.tick_all(1.0));
+        p.timer.set(1.0, 0.0);
+        p.timer.toggle(0.0);
+        assert!(p.tick_all(30.0) && p.active() && p.live_label() == "0:30");
+        p.tick_all(61.0);
+        assert!(p.timer.rung && p.timer.ends.is_none() && p.live_label() == "Done" && p.active());
+        // Starting a rung timer starts it afresh.
+        p.timer.toggle(100.0);
+        assert!(!p.timer.rung && p.timer.left == 60.0);
+        p.timer.reset();
+        p.stopwatch.toggle(10.0);
+        p.tick_all(20.0);
+        p.stopwatch.toggle(25.0);
+        p.stopwatch.toggle(100.0);
+        p.tick_all(105.0);
+        assert_eq!((p.stopwatch.elapsed, p.live_label()), (20.0, "0:20".to_string()));
+        p.stopwatch.elapsed = 3723.0;
+        assert_eq!(p.stopwatch.label(), "1:02:03");
     }
 }
