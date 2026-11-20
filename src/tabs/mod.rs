@@ -81,6 +81,7 @@ pub fn entered(s: &mut Island) {
         Tab::T3 => s.t3_load(),
         Tab::Stremflix => s.stremflix_load(),
         Tab::Limits => s.limits_load(),
+        Tab::Calculator => s.calc_load(),
         Tab::Notes => s.nextcloud_sync(Kind::Notes),
         Tab::Tasks => s.nextcloud_sync(Kind::Tasks),
         Tab::Calendar => {

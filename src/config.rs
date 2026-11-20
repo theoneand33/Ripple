@@ -283,6 +283,8 @@ pub struct Config {
     pub pinned_notes: Vec<u64>,
     /// Clipboard texts pinned to the top; they outlive the history's limit and restarts.
     pub clipboard_pins: Vec<String>,
+    /// The Calculator's tape, (sum, answer), newest first.
+    pub calc_tape: Vec<(String, String)>,
     /// Files dropped on the Island, newest first.
     pub shelf: Vec<std::path::PathBuf>,
     pub ai_provider: String,
@@ -345,6 +347,7 @@ impl Default for Config {
             nextcloud: Nextcloud::default(),
             pinned_notes: Vec::new(),
             clipboard_pins: Vec::new(),
+            calc_tape: Vec::new(),
             shelf: Vec::new(),
             ai_provider: "groq".into(),
             ai_model: PROVIDERS[0].model.into(),

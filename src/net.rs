@@ -1,4 +1,4 @@
-//! Ripple's own HTTP calls: weather, the AI assistant's stream and images by URL.
+//! Ripple's own HTTP calls: weather, exchange rates, the AI assistant's stream and images by URL.
 //! Blocking; callers run them off the UI thread.
 
 use std::io::{BufRead, BufReader};
@@ -79,6 +79,18 @@ fn weather_from(geocoding: &str, forecast: &str, location: &str, unit: &str) -> 
         code: current["weather_code"].as_u64(),
         days,
     })
+}
+
+/// Units of each currency per US dollar, by upper-case code, from Frankfurter (ECB reference
+/// rates, no API key).
+pub fn rates() -> Option<std::collections::HashMap<String, f64>> { rates_from("https://api.frankfurter.dev/v1") }
+
+fn rates_from(base: &str) -> Option<std::collections::HashMap<String, f64>> {
+    let data = get_json(agent().get(format!("{base}/latest")).query("base", "USD"))?;
+    let mut rates: std::collections::HashMap<String, f64> = data["rates"].as_object()?.iter()
+        .filter_map(|(code, rate)| Some((code.to_ascii_uppercase(), rate.as_f64().filter(|r| *r > 0.0)?))).collect();
+    rates.insert("USD".into(), 1.0);
+    Some(rates)
 }
 
 const SYSTEM_PROMPT: &str = "You are Ripple, a sleek and helpful desktop AI assistant. Your goal is to provide accurate, concise, and beautifully formatted answers that fit well in a compact desktop widget. \n- For general inquiries: Keep it to 2-4 sentences.\n- For complex or code-related questions: Provide detailed answers with Markdown code blocks, but stay as efficient as possible.\n- Use Markdown for bolding, lists, and headers to make information easy to scan.";
@@ -241,6 +253,18 @@ mod tests {
         assert_eq!(weather_from(&base, &base, "Paris, France", "c"), Some(Weather { temp: Some(18), code: Some(61), days: vec![tomorrow] }), "a day missing a figure is left out");
         assert_eq!(weather_from(&base, &base, "1.5, -2", "f"), Some(Weather { temp: Some(70), code: Some(2), days: vec![] }));
         assert_eq!(weather_from(&base, &base, "Nowhere", "c"), None);
+    }
+
+    #[test]
+    fn rates_come_per_dollar_with_the_dollar_itself() {
+        use crate::testserver::{json, serve};
+        let base = serve(|r| match r.path.as_str() {
+            "/v1/latest?base=USD" => json(200, json!({ "amount": 1.0, "base": "USD", "rates": { "EUR": 0.9, "JPY": 150.5, "BAD": -1 } })),
+            _ => json(404, json!({})),
+        });
+        let rates = rates_from(&format!("{base}/v1")).unwrap();
+        assert_eq!((rates["EUR"], rates["USD"], rates.len()), (0.9, 1.0, 3));
+        assert_eq!(rates_from(&format!("{base}/nope")), None);
     }
 
     #[test]

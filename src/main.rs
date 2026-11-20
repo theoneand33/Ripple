@@ -157,7 +157,7 @@ fn island_spec() -> AppSpec<Island> {
             ("calculator", |s| {
                 s.mode = Mode::Large;
                 s.set_tab(Tab::Calculator);
-                s.calc.tape = vec![("1299 * 0.8".into(), "1039.2".into()), ("(12 + 30) / 7".into(), "6".into())];
+                s.cfg.calc_tape = vec![("5 km to mi".into(), "3.106856 mi".into()), ("1299 * 0.8".into(), "1039.2".into()), ("(12 + 30) / 7".into(), "6".into())];
                 s.calc.input.replace_text("1039.2 + 15%4");
             }),
             ("notes", |s| {
