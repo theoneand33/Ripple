@@ -70,6 +70,7 @@ pub struct Settings {
     nc_password: TextEdit,
     nc_list: TextEdit,
     nc_calendar: TextEdit,
+    calendar_feeds: TextEdit,
     nc_shelf: TextEdit,
     sure_url: TextEdit,
     sure_key: TextEdit,
@@ -103,6 +104,7 @@ impl Settings {
             nc_password: TextEdit::new("").secure(),
             nc_list: edit(&cfg.nextcloud.list),
             nc_calendar: edit(&cfg.nextcloud.calendar),
+            calendar_feeds: edit(&cfg.calendar_feeds.join("\n")),
             nc_shelf: edit(&cfg.nextcloud.shelf_folder),
             sure_url: edit(&cfg.sure_url),
             sure_key: TextEdit::new("").secure(),
@@ -458,6 +460,14 @@ fn panel(s: &Settings, k: &Kit, layer: &mut Vec<El>, tab: Tab) -> Vec<El> {
                     .binds(|s| &mut s.nc_shelf, |c, v| c.nextcloud.shelf_folder = v.trim().into()).build(k));
             }
             sections.push(section(s, "nextcloud", "Nextcloud", rows));
+            if tab == Tab::Calendar {
+                sections.push(section(s, "calendar-feeds", "Calendar links", vec![
+                    text("ICS links from Google Calendar (Secret address in iCal format), Outlook (Publish a calendar) or iCloud (Public Calendar), one per line. Their events show read-only.").font(cfg.font(12.0, 400.0)).color(fg.alpha(0.6)).wrap(),
+                    TextArea::new(&s.calendar_feeds).width(None).label("Calendar links").placeholder("https://calendar.google.com/calendar/ical/…/basic.ics").rows(3)
+                        .on_edit(|s: &mut Settings| &mut s.calendar_feeds)
+                        .on_change(|s: &mut Settings, _| { let v = s.calendar_feeds.text.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_string).collect(); s.save(|c| c.calendar_feeds = v) }).build(k),
+                ]));
+            }
         }
         Tab::Stocks => {
             let label = |t: &str| text(t.to_string()).font(cfg.font(14.0, 500.0)).color(fg.alpha(0.8)).mt(10.0);

@@ -126,6 +126,7 @@ fn load(s: &mut Island, tab: Tab) {
             (s.calendar.offset, s.calendar.day) = (0, None);
             if s.calendar.editing.take().is_some() { s.calendar.event.clear() }
             s.nextcloud_sync(Kind::Events);
+            s.calendar_feeds_load();
         }
         Tab::Shelf => s.nextcloud_shelf_sync(),
         Tab::Plugins => s.plugins.scan(),

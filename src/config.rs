@@ -396,6 +396,8 @@ pub struct Config {
     pub notes: Vec<Item>,
     /// Calendar events; each one's text is `YYYY-MM-DD title` (`nextcloud::event_day`).
     pub events: Vec<Item>,
+    /// Calendar: ICS links (Google, Outlook, iCloud) shown read-only beside the events.
+    pub calendar_feeds: Vec<String>,
     pub nextcloud: Nextcloud,
     /// Notes pinned to the top of the list, by key.
     pub pinned_notes: Vec<u64>,
@@ -481,6 +483,7 @@ impl Default for Config {
             habits: Vec::new(),
             notes: Vec::new(),
             events: Vec::new(),
+            calendar_feeds: Vec::new(),
             nextcloud: Nextcloud::default(),
             pinned_notes: Vec::new(),
             clipboard_pins: Vec::new(),
