@@ -68,7 +68,7 @@ pub const TOOLS: [(&str, TextTool); 10] = [
     ("Title", |t| Ok(title_case(t))),
     ("Base64", |t| { use base64::Engine; Ok(base64::engine::general_purpose::STANDARD.encode(t)) }),
     ("From Base64", |t| from_base64(t.trim(), false)),
-    ("JSON", |t| serde_json::from_str::<serde_json::Value>(t).ok().and_then(|v| serde_json::to_string_pretty(&v).ok()).ok_or_else(|| "Not JSON".into())),
+    ("JSON", pretty_json),
     ("URL encode", |t| Ok(crate::net::percent_encode(t))),
     ("URL decode", |t| Ok(crate::net::percent_decode(&t.replace('+', " ")))),
     ("JWT", jwt),
@@ -98,8 +98,39 @@ fn from_base64(t: &str, url: bool) -> Result<String, String> {
 fn jwt(t: &str) -> Result<String, String> {
     let parts: Vec<&str> = t.trim().split('.').collect();
     let [header, claims, _] = parts[..] else { return Err("Not a JWT".into()) };
-    let json = |p: &str| -> Result<serde_json::Value, String> { serde_json::from_str(&from_base64(p, true)?).map_err(|_| "Not a JWT".into()) };
-    serde_json::to_string_pretty(&serde_json::json!({ "header": json(header)?, "claims": json(claims)? })).map_err(|e| e.to_string())
+    let (header, claims) = (from_base64(header, true)?, from_base64(claims, true)?);
+    pretty_json(&format!(r#"{{"header":{header},"claims":{claims}}}"#)).map_err(|_| "Not a JWT".into())
+}
+
+/// JSON indented by two spaces, its keys and numbers exactly as written: checked, not re-encoded,
+/// which would sort the keys and round big numbers.
+fn pretty_json(t: &str) -> Result<String, String> {
+    serde_json::from_str::<serde::de::IgnoredAny>(t).map_err(|_| "Not JSON")?;
+    let (mut out, mut depth, mut in_str, mut escaped) = (String::new(), 0, false, false);
+    let line = |out: &mut String, depth: usize| { out.push('\n'); out.push_str(&"  ".repeat(depth)) };
+    let mut chars = t.trim().chars().peekable();
+    while let Some(c) = chars.next() {
+        if in_str {
+            out.push(c);
+            (escaped, in_str) = (!escaped && c == '\\', escaped || c != '"');
+            continue;
+        }
+        match c {
+            '"' => { in_str = true; out.push(c) }
+            '{' | '[' => {
+                while chars.next_if(|c| c.is_whitespace()).is_some() {}
+                out.push(c);
+                // An empty one stays on its line.
+                match chars.next_if(|c| matches!(c, '}' | ']')) { Some(end) => out.push(end), None => { depth += 1; line(&mut out, depth) } }
+            }
+            '}' | ']' => { depth -= 1; line(&mut out, depth); out.push(c) }
+            ',' => { out.push(c); line(&mut out, depth) }
+            ':' => out.push_str(": "),
+            c if c.is_whitespace() => {}
+            c => out.push(c),
+        }
+    }
+    Ok(out)
 }
 
 /// Unix seconds (or milliseconds, past the year 5138) as the date and time on this clock.
@@ -159,8 +190,10 @@ impl Island {
         match (TOOLS[tool].1)(&source) {
             Ok(out) => {
                 tx.copy(out.clone());
-                c.push(Content::Text(out));
-                (c.tool_error, c.copied) = (None, Some((c.pinned(), tx.clock() + 2.0)));
+                c.push(Content::Text(out.clone()));
+                // Where the copy now sits: below the pins, or a pinned text it matches.
+                let at = c.items.iter().position(|i| matches!(&i.content, Content::Text(t) if *t == out)).unwrap_or(0);
+                (c.tool_error, c.copied) = (None, Some((at, tx.clock() + 2.0)));
             }
             Err(e) => c.tool_error = Some(format!("{}: {e}", TOOLS[tool].0)),
         }
@@ -356,6 +389,8 @@ mod tests {
         assert!(run("From Base64", "@@").is_err());
         assert_eq!(run("JSON", r#"{"a":[1]}"#).unwrap(), "{\n  \"a\": [\n    1\n  ]\n}");
         assert!(run("JSON", "{").is_err());
+        assert_eq!(run("JSON", r#" {"b":1,"a":12345678901234567890123,"s":"x,\\\"{y}","e":{},"l":[ ]} "#).unwrap(),
+            "{\n  \"b\": 1,\n  \"a\": 12345678901234567890123,\n  \"s\": \"x,\\\\\\\"{y}\",\n  \"e\": {},\n  \"l\": []\n}", "keys, numbers and strings as written");
         assert_eq!(run("URL encode", "a b&c").unwrap(), "a%20b%26c");
         assert_eq!(run("URL decode", "a+b%26c").unwrap(), "a b&c");
         // {"alg":"none"}.{"sub":"me"}.
