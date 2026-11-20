@@ -70,7 +70,7 @@ pub const TOOLS: [(&str, TextTool); 10] = [
     ("From Base64", |t| from_base64(t.trim(), false)),
     ("JSON", pretty_json),
     ("URL encode", |t| Ok(crate::net::percent_encode(t))),
-    ("URL decode", |t| Ok(crate::net::percent_decode(&t.replace('+', " ")))),
+    ("URL decode", |t| String::from_utf8(crate::net::percent_decode_bytes(&t.replace('+', " "))).map_err(|_| "it doesn't decode to UTF-8 text".into())),
     ("JWT", jwt),
     ("Unix time", unix_time),
 ];
@@ -190,6 +190,7 @@ impl Island {
         let c = &mut self.clipboard;
         let Some(source) = c.tool_source().map(str::to_string) else { c.tool_error = Some("Copy some text first".into()); return };
         match (TOOLS[tool].1)(&source) {
+            Ok(out) if out.is_empty() => c.tool_error = Some(format!("{}: the result is empty", TOOLS[tool].0)),
             Ok(out) => {
                 tx.copy(out.clone());
                 c.push(Content::Text(out.clone()));
@@ -396,6 +397,7 @@ mod tests {
             "{\n  \"b\": 1,\n  \"a\": 12345678901234567890123,\n  \"s\": \"x,\\\\\\\"{y}\",\n  \"e\": {},\n  \"l\": []\n}", "keys, numbers and strings as written");
         assert_eq!(run("URL encode", "a b&c").unwrap(), "a%20b%26c");
         assert_eq!(run("URL decode", "a+b%26c").unwrap(), "a b&c");
+        assert!(run("URL decode", "caf%E9").is_err(), "Latin-1 isn't UTF-8");
         // {"alg":"none"}.{"sub":"me"}.
         let claims = run("JWT", "eyJhbGciOiJub25lIn0.eyJzdWIiOiJtZSJ9.").unwrap();
         assert!(claims.contains(r#""sub": "me""#) && claims.contains(r#""alg": "none""#), "{claims}");
