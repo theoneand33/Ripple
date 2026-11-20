@@ -155,7 +155,10 @@ fn agent_process() -> Option<(u32, u64)> {
 
 /// Whether each session's agent still runs; one with no recorded process counts as running.
 fn running(sessions: &[Session]) -> Vec<bool> {
-    let pids: Vec<sysinfo::Pid> = sessions.iter().filter(|s| s.pid != 0).map(|s| sysinfo::Pid::from_u32(s.pid)).collect();
+    let mut pids: Vec<sysinfo::Pid> = sessions.iter().filter(|s| s.pid != 0).map(|s| sysinfo::Pid::from_u32(s.pid)).collect();
+    // Once each: sysinfo takes a pid listed twice for a process that died between the two.
+    pids.sort();
+    pids.dedup();
     let mut sys = sysinfo::System::new();
     if !pids.is_empty() { refresh(&mut sys, &pids) }
     // A second's slack: start times are rounded.
