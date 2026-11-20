@@ -462,7 +462,7 @@ pub fn bluetooth_connected() -> bool {
     }
     #[cfg(windows)]
     // A paired device keeps status OK while away; DEVPKEY_Device_IsConnected says whether it is linked now.
-    { powershell("$ids = @(Get-PnpDevice -Class Bluetooth -PresentOnly -ErrorAction SilentlyContinue | Where-Object { $_.InstanceId -match '^BTHENUM\\DEV_' } | ForEach-Object { $_.InstanceId }); if ($ids.Count -eq 0) { 'false' } else { @(Get-PnpDeviceProperty -InstanceId $ids -KeyName '{83DA6326-97A6-4088-9453-A1923F573B29} 15' -ErrorAction SilentlyContinue | Where-Object { $_.Data -eq $true }).Count -gt 0 }").eq_ignore_ascii_case("true") }
+    { powershell("$ids = @(Get-PnpDevice -Class Bluetooth -PresentOnly -ErrorAction SilentlyContinue | Where-Object { $_.InstanceId -like 'BTHENUM\\DEV_*' } | ForEach-Object { $_.InstanceId }); if ($ids.Count -eq 0) { 'false' } else { @(Get-PnpDeviceProperty -InstanceId $ids -KeyName '{83DA6326-97A6-4088-9453-A1923F573B29} 15' -ErrorAction SilentlyContinue | Where-Object { $_.Data -eq $true }).Count -gt 0 }").eq_ignore_ascii_case("true") }
 }
 
 pub fn camera_in_use() -> bool {
