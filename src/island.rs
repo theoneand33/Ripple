@@ -936,6 +936,17 @@ impl Island {
         if self.mode != Mode::Large { self.set_mode(Mode::Quick) }
     }
 
+    /// Once a second: alerts that `ripple notify` queued; several at once share one.
+    pub fn notifications(&mut self, now: f64) {
+        let Some(dir) = self.store.dir() else { return };
+        let texts = crate::notify::take(&dir);
+        match texts.len() {
+            0 => {}
+            1 => self.remind(texts[0].clone(), now),
+            n => self.remind(format!("{n} alerts"), now),
+        }
+    }
+
     pub fn set_battery(&mut self, battery: Option<(u8, bool)>, tx: &mut Tx) -> bool {
         let (percent, charging) = battery.map_or((None, false), |(p, c)| (Some(p), c));
         if (percent, charging) == (self.percent, self.charging) { return false }

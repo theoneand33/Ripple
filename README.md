@@ -53,6 +53,8 @@ You can reorder and hide tabs in Settings.
 
 Ripple alerts you when a charger connects or the battery runs low, when a Bluetooth device connects or disconnects, and when an app starts using your camera or microphone.
 
+Scripts can raise their own alert: `ripple notify "Build passed"`.
+
 ### Settings
 
 Settings open in their own window from the gear button on the Island. Changes apply to the Island right away.
