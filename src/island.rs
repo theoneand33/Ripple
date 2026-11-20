@@ -790,6 +790,14 @@ impl Island {
         if !self.focused && matches!(self.me, Some(Host::Window(_))) { self.prior = platform::focused_window() }
         self.close_at = None;
         self.set_mode(Mode::Large);
+        // GNOME Wayland: ask Window Calls for the focused window first, or it would name the Island.
+        #[cfg(target_os = "linux")]
+        if !self.focused && self.prior.is_none() && let Some(me @ Host::Window(_)) = self.me.clone() {
+            return me.spawn(platform::gnome_focused_window, move |s, w| {
+                if w.is_some() { s.prior = w }
+                if s.mode == Mode::Large && let Some(me) = &s.me { me.take_focus(token) }
+            });
+        }
         if let Some(me) = &self.me { me.take_focus(token) }
     }
 
