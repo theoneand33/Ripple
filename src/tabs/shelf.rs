@@ -79,7 +79,7 @@ fn file_name(path: &Path) -> String {
 /// Renames within the same folder; never over an existing file.
 fn rename(path: &Path, name: &str) -> io::Result<PathBuf> {
     let bad = |m: &str| io::Error::new(io::ErrorKind::InvalidInput, m.to_string());
-    if name.is_empty() || name == "." || name == ".." || name.contains(['/', '\\']) { return Err(bad("That name isn't valid")) }
+    if name.is_empty() || name == "." || name == ".." || name.contains(['/', '\\', ':']) { return Err(bad("That name isn't valid")) }
     let new = path.with_file_name(name);
     if new == path { return Ok(new) }
     // A case-only rename on a case-insensitive disk finds the file itself.
@@ -100,6 +100,7 @@ fn is_zip(path: &Path) -> bool {
 
 /// Zips a file or a folder next to itself.
 fn compress(src: &Path) -> io::Result<PathBuf> {
+    if src.symlink_metadata()?.file_type().is_symlink() { return Err(io::Error::other("Can't compress a link")) }
     let dir = src.parent().unwrap_or(Path::new("."));
     let out = free(dir, &file_name(src), ".zip");
     let mut zip = zip::ZipWriter::new(std::fs::OpenOptions::new().write(true).create_new(true).open(&out)?);
@@ -262,7 +263,7 @@ mod tests {
 
         let a = dir.join("docs/a.txt");
         assert!(rename(&a, "b/c.txt").is_err());
-        assert!(rename(&a, "").is_err());
+        assert!(rename(&a, "").is_err() && rename(&a, "C:x").is_err());
         assert!(rename(&a, "sub").is_err(), "never over an existing entry");
         assert_eq!(rename(&a, "a.txt").unwrap(), a);
         assert_eq!(rename(&a, "c.txt").unwrap(), dir.join("docs/c.txt"));
