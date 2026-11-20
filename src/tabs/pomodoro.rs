@@ -76,6 +76,13 @@ pub fn live(p: &Pomodoro, style: TextStyle) -> El {
         .child(text(p.label()).font(style.features("'tnum' 1")).color(tint).a11y_hidden())
 }
 
+/// The ring alone, for the bubble beside the compact Island while music has the Island.
+pub fn bubble(p: &Pomodoro, size: f32) -> El {
+    let (glyph, tint) = (if p.focus { &icons::TIMER } else { &icons::COFFEE }, color(p.focus));
+    el().role("img").label(format!("{}, {} left", if p.focus { "Focus" } else { "Break" }, p.label()))
+        .child(ring(size, f32::from(p.percent()), tint, icon(glyph, size / 2.0).color(tint)))
+}
+
 pub fn view(s: &Island) -> El {
     let fg = s.cfg.text();
     let p = &s.pomodoro;
