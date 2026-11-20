@@ -539,8 +539,11 @@ fn page(s: &Settings, k: &Kit, layer: &mut Vec<El>, page: Page) -> Vec<El> {
         Page::Appearance => {
             let mut style = vec![
                 toggle(s, k, "Notch mode", cfg.notch_mode, |c| c.notch_mode = !c.notch_mode),
-                setting(s, "Theme", choice(s, k, layer, "theme", "Theme", &THEMES.map(|t| (t.0, t.1)), &cfg.theme, |c, v| c.set_theme(v))),
             ];
+            // The Day and Night pickers replace it: a manual pick would be reverted within a second.
+            if !cfg.auto_theme {
+                style.push(setting(s, "Theme", choice(s, k, layer, "theme", "Theme", &THEMES.map(|t| (t.0, t.1)), &cfg.theme, |c, v| c.set_theme(v))));
+            }
             style.push(toggle(s, k, "Switch theme at sunrise and sunset", cfg.auto_theme, |c| c.auto_theme = !c.auto_theme));
             if cfg.auto_theme {
                 let themes = THEMES.map(|t| (t.0, t.1));
