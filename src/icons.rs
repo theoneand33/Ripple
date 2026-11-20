@@ -120,6 +120,7 @@ pub fn tab(tab: Tab) -> &'static Icon {
         Tab::Search => &SEARCH,
         Tab::Workflows => &ZAP,
         Tab::Overview => &SUN,
+        Tab::Weather => &CLOUD_SUN,
         Tab::Assistant => &MIC,
         Tab::Clipboard => &LIST,
         Tab::Tasks => &CHECK,

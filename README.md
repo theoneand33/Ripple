@@ -29,7 +29,7 @@ https://github.com/user-attachments/assets/a7b9ed8a-97b5-4603-bad7-6f4c4bef1f5d
 
 - Browser Search sends queries to Google, DuckDuckGo, Brave Search, Bing, or Startpage. Pick the engine in Settings.
 - Workflows & QA opens a saved set of URLs with one click and keeps quick-access apps.
-- Overview shows the time, weather, and battery. While music plays, it also shows the current track with playback controls. Long titles scroll with soft blurred edges, and the track stays on screen for 3 seconds after you pause.
+- Overview shows the time, weather, and battery. Weather shows the current conditions and a five-day forecast. While music plays, it also shows the current track with playback controls. Long titles scroll with soft blurred edges, and the track stays on screen for 3 seconds after you pause.
 - AI Assistant answers questions using Groq.
 - Clipboard keeps your clipboard history.
 - Tasks is a simple to-do list. It can sync with Nextcloud Tasks (CalDAV); ticking a task marks it done there.

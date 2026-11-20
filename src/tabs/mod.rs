@@ -16,6 +16,7 @@ mod shelf;
 mod stremflix;
 mod t3;
 mod tasks;
+mod weather;
 mod workflows;
 
 pub use assistant::Assistant;
@@ -40,6 +41,7 @@ pub fn view(s: &Island, layer: &mut Vec<El>) -> El {
         Tab::Search => search::view(s),
         Tab::Workflows => workflows::view(s),
         Tab::Overview => overview::view(s),
+        Tab::Weather => weather::view(s),
         Tab::Assistant => assistant::view(s),
         Tab::Clipboard => clipboard::view(s),
         Tab::Tasks => tasks::view(s),
@@ -67,6 +69,7 @@ pub fn size(tab: Tab) -> (f32, f32) {
         Tab::Pomodoro => (440.0, 190.0),
         Tab::Calendar => (560.0, 280.0),
         Tab::Overview | Tab::Assistant | Tab::Clipboard => (420.0, 230.0),
+        Tab::Weather => (420.0, 190.0),
     }
 }
 

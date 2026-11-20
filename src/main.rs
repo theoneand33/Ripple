@@ -97,6 +97,14 @@ fn island_spec() -> AppSpec<Island> {
             ("brightness", |s| { let tx = &mut rune::Tx::default(); s.set_levels(None, Some(40), tx); s.set_levels(None, Some(85), tx); }),
             ("caps-lock", |s| { s.set_caps_lock(true); }),
             ("large", |s| s.mode = Mode::Large),
+            ("weather-empty", |s| { s.mode = Mode::Large; s.set_tab(Tab::Weather) }),
+            ("weather", |s| {
+                s.mode = Mode::Large;
+                s.set_tab(Tab::Weather);
+                s.cfg.location = "Paris".into();
+                let day = |date, code, high, low| net::Day { date, code: Some(code), high, low };
+                s.weather = net::Weather { temp: Some(12), code: Some(3), days: vec![day((2026, 1, 2), 3, 13, 4), day((2026, 1, 3), 61, 9, 5), day((2026, 1, 4), 0, 15, 6), day((2026, 1, 5), 71, 2, -3), day((2026, 1, 6), 95, 11, 7)] };
+            }),
             ("search", |s| { s.mode = Mode::Large; s.set_tab(Tab::Search) }),
             ("workflows", |s| { s.mode = Mode::Large; s.set_tab(Tab::Workflows) }),
             ("assistant", |s| { s.mode = Mode::Large; s.set_tab(Tab::Assistant); s.ai.asked = true; s.ai.answer = Some("**Rust** is a systems language.\n\n```rust\nfn main() {}\n```".into()) }),

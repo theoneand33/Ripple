@@ -22,6 +22,17 @@ pub struct Weather {
     pub temp: Option<i32>,
     /// The WMO weather code, for `icons::weather`.
     pub code: Option<u64>,
+    /// The next days' forecast, from tomorrow.
+    pub days: Vec<Day>,
+}
+
+/// One day's forecast: its date, WMO code, and rounded high and low.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Day {
+    pub date: (i32, u32, u32),
+    pub code: Option<u64>,
+    pub high: i32,
+    pub low: i32,
 }
 
 /// The current weather from Open-Meteo, which needs no API key.
@@ -51,11 +62,22 @@ fn weather_from(geocoding: &str, forecast: &str, location: &str, unit: &str) -> 
     let data = get_json(agent().get(format!("{forecast}/v1/forecast"))
         .query("latitude", lat.to_string()).query("longitude", lon.to_string())
         .query("current", "temperature_2m,weather_code")
+        .query("daily", "weather_code,temperature_2m_max,temperature_2m_min")
+        .query("forecast_days", "6")
+        .query("timezone", "auto")
         .query("temperature_unit", if unit == "f" { "fahrenheit" } else { "celsius" }))?;
-    let current = &data["current"];
+    let (current, daily) = (&data["current"], &data["daily"]);
+    let at = |field: &str, i: usize| daily[field][i].as_f64().map(|t| t.round() as i32);
+    // Today is the first day; the forecast starts tomorrow.
+    let days = daily["time"].as_array().into_iter().flatten().enumerate().skip(1).filter_map(|(i, date)| {
+        let mut ymd = date.as_str()?.splitn(3, '-').map(str::parse::<u32>);
+        let date = (ymd.next()?.ok()? as i32, ymd.next()?.ok()?, ymd.next()?.ok()?);
+        Some(Day { date, code: daily["weather_code"][i].as_u64(), high: at("temperature_2m_max", i)?, low: at("temperature_2m_min", i)? })
+    }).take(5).collect();
     Some(Weather {
         temp: current["temperature_2m"].as_f64().map(|t| t.round() as i32),
         code: current["weather_code"].as_u64(),
+        days,
     })
 }
 
@@ -209,13 +231,15 @@ mod tests {
             "/v1/search?name=Paris&count=1" => json(200, json!({ "results": [{ "latitude": 48.85, "longitude": 2.35 }] })),
             "/v1/search?name=Nowhere&count=1" => json(200, json!({})),
             p if p.starts_with("/v1/forecast?latitude=48.85&longitude=2.35&") && p.contains("temperature_unit=celsius") =>
-                json(200, json!({ "current": { "temperature_2m": 17.6, "weather_code": 61 } })),
+                json(200, json!({ "current": { "temperature_2m": 17.6, "weather_code": 61 },
+                    "daily": { "time": ["2026-11-20", "2026-11-21", "2026-11-22"], "weather_code": [61, 3, null], "temperature_2m_max": [18.2, 12.6, 9.0], "temperature_2m_min": [10.0, 4.4, null] } })),
             p if p.starts_with("/v1/forecast?latitude=1.5&longitude=-2&") && p.contains("temperature_unit=fahrenheit") =>
                 json(200, json!({ "current": { "temperature_2m": 70.2, "weather_code": 2 } })),
             _ => json(404, json!({})),
         });
-        assert_eq!(weather_from(&base, &base, "Paris, France", "c"), Some(Weather { temp: Some(18), code: Some(61) }));
-        assert_eq!(weather_from(&base, &base, "1.5, -2", "f"), Some(Weather { temp: Some(70), code: Some(2) }));
+        let tomorrow = Day { date: (2026, 11, 21), code: Some(3), high: 13, low: 4 };
+        assert_eq!(weather_from(&base, &base, "Paris, France", "c"), Some(Weather { temp: Some(18), code: Some(61), days: vec![tomorrow] }), "a day missing a figure is left out");
+        assert_eq!(weather_from(&base, &base, "1.5, -2", "f"), Some(Weather { temp: Some(70), code: Some(2), days: vec![] }));
         assert_eq!(weather_from(&base, &base, "Nowhere", "c"), None);
     }
 
