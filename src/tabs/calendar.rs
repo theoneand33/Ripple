@@ -35,7 +35,8 @@ pub fn meeting_link(title: &str) -> (Option<String>, String) {
 
 /// A link's host, for the Join button's label: `https://user@host:443/path` gives `host:443`.
 pub fn link_host(link: &str) -> &str {
-    let authority = link.split_once("://").map_or(link, |l| l.1).split(['/', '?', '#']).next().unwrap_or("");
+    // Browsers read `\` as `/` in an https link, so it ends the host too.
+    let authority = link.split_once("://").map_or(link, |l| l.1).split(['/', '\\', '?', '#']).next().unwrap_or("");
     authority.rsplit('@').next().unwrap_or(authority)
 }
 
@@ -260,6 +261,7 @@ mod tests {
         assert_eq!((http[0].1.as_str(), http[0].2.as_deref()), ("Sync http://meet.example.com/y", None), "no Join for http");
         assert_eq!(super::link_host("https://meet.example.com/abc?x=1"), "meet.example.com");
         assert_eq!(super::link_host("https://meet.example.com@evil.example"), "evil.example");
+        assert_eq!(super::link_host("https://evil.example\\@trusted.example"), "evil.example", "a backslash ends the host, as browsers read it");
     }
 
     #[test]
