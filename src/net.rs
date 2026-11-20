@@ -24,6 +24,14 @@ pub struct Weather {
     pub code: Option<u64>,
     /// The next days' forecast, from tomorrow.
     pub days: Vec<Day>,
+    /// Rain or snow starting within the next hours while it isn't falling now: the hour it starts
+    /// (Unix seconds), and whether it is snow.
+    pub precip: Option<(i64, bool)>,
+}
+
+/// Whether a WMO code is rain (false) or snow (true); None for neither.
+pub fn precip_kind(code: u64) -> Option<bool> {
+    match code { 51..=67 | 80..=82 | 95..=99 => Some(false), 71..=77 | 85 | 86 => Some(true), _ => None }
 }
 
 /// One day's forecast: its date, WMO code, and rounded high and low.
@@ -63,6 +71,8 @@ fn weather_from(geocoding: &str, forecast: &str, location: &str, unit: &str) -> 
         .query("latitude", lat.to_string()).query("longitude", lon.to_string())
         .query("current", "temperature_2m,weather_code")
         .query("daily", "weather_code,temperature_2m_max,temperature_2m_min")
+        .query("hourly", "weather_code")
+        .query("forecast_hours", "3")
         .query("forecast_days", "6")
         .query("timezone", "auto")
         .query("temperature_unit", if unit == "f" { "fahrenheit" } else { "celsius" }))?;
@@ -74,10 +84,23 @@ fn weather_from(geocoding: &str, forecast: &str, location: &str, unit: &str) -> 
         let date = (ymd.next()?.ok()? as i32, ymd.next()?.ok()?, ymd.next()?.ok()?);
         Some(Day { date, code: daily["weather_code"][i].as_u64(), high: at("temperature_2m_max", i)?, low: at("temperature_2m_min", i)? })
     }).take(5).collect();
+    // `2026-11-20T07:00` on the location's clock, as Unix seconds.
+    let unix = |t: &str| -> Option<i64> {
+        let (date, time) = t.split_once('T')?;
+        let mut d = date.splitn(3, '-').map(str::parse::<u32>);
+        let day = crate::date::days_from_civil(d.next()?.ok()? as i32, d.next()?.ok()?, d.next()?.ok()?);
+        let (h, m) = time.split_once(':')?;
+        Some(day * 86_400 + i64::from(h.parse::<u32>().ok()? * 3600 + m.get(..2)?.parse::<u32>().ok()? * 60) - data["utc_offset_seconds"].as_i64()?)
+    };
+    let hourly = &data["hourly"];
+    let falling = current["weather_code"].as_u64().and_then(precip_kind).is_some();
+    let precip = hourly["time"].as_array().into_iter().flatten().enumerate().filter(|_| !falling)
+        .find_map(|(i, t)| Some((unix(t.as_str()?)?, precip_kind(hourly["weather_code"][i].as_u64()?)?)));
     Some(Weather {
         temp: current["temperature_2m"].as_f64().map(|t| t.round() as i32),
         code: current["weather_code"].as_u64(),
         days,
+        precip,
     })
 }
 
@@ -245,13 +268,15 @@ mod tests {
             p if p.starts_with("/v1/forecast?latitude=48.85&longitude=2.35&") && p.contains("temperature_unit=celsius") =>
                 json(200, json!({ "current": { "temperature_2m": 17.6, "weather_code": 61 },
                     "daily": { "time": ["2026-11-20", "2026-11-21", "2026-11-22"], "weather_code": [61, 3, null], "temperature_2m_max": [18.2, 12.6, 9.0], "temperature_2m_min": [10.0, 4.4, null] } })),
-            p if p.starts_with("/v1/forecast?latitude=1.5&longitude=-2&") && p.contains("temperature_unit=fahrenheit") =>
-                json(200, json!({ "current": { "temperature_2m": 70.2, "weather_code": 2 } })),
+            p if p.starts_with("/v1/forecast?latitude=1.5&longitude=-2&") && p.contains("temperature_unit=fahrenheit") && p.contains("hourly=weather_code") =>
+                json(200, json!({ "current": { "temperature_2m": 70.2, "weather_code": 2 }, "utc_offset_seconds": -7200,
+                    "hourly": { "time": ["2026-11-20T10:00", "2026-11-20T11:00", "2026-11-20T12:00"], "weather_code": [2, 73, 61] } })),
             _ => json(404, json!({})),
         });
         let tomorrow = Day { date: (2026, 11, 21), code: Some(3), high: 13, low: 4 };
-        assert_eq!(weather_from(&base, &base, "Paris, France", "c"), Some(Weather { temp: Some(18), code: Some(61), days: vec![tomorrow] }), "a day missing a figure is left out");
-        assert_eq!(weather_from(&base, &base, "1.5, -2", "f"), Some(Weather { temp: Some(70), code: Some(2), days: vec![] }));
+        assert_eq!(weather_from(&base, &base, "Paris, France", "c"), Some(Weather { temp: Some(18), code: Some(61), days: vec![tomorrow], precip: None }), "a day missing a figure is left out");
+        let snow_at = crate::date::days_from_civil(2026, 11, 20) * 86_400 + 13 * 3600;
+        assert_eq!(weather_from(&base, &base, "1.5, -2", "f"), Some(Weather { temp: Some(70), code: Some(2), days: vec![], precip: Some((snow_at, true)) }), "the first rain or snow hour");
         assert_eq!(weather_from(&base, &base, "Nowhere", "c"), None);
     }
 

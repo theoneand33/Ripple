@@ -258,6 +258,8 @@ pub struct Island {
     bluetooth_alert_until: Option<f64>,
     /// The task that fell due, and until when its reminder shows.
     pub reminder: Option<(String, f64)>,
+    /// The hour of rain or snow already alerted (Unix seconds).
+    rain_alerted: Option<i64>,
     /// The minute task reminders were last checked, as `YYYY-MM-DDTHH:MM`; empty until the first.
     pub task_mark: String,
     capture: Option<(Alert, f64)>,
@@ -380,6 +382,7 @@ impl Island {
             bluetooth_alert_until: None,
             reminder: None,
             task_mark: String::new(),
+            rain_alerted: None,
             capture: None,
             capture_queue: Vec::new(),
             paused_until: None,
@@ -936,6 +939,23 @@ impl Island {
         if self.mode != Mode::Large { self.set_mode(Mode::Quick) }
     }
 
+    /// "Rain at 2:00": when the coming rain or snow starts, on the user's clock.
+    pub fn precip_label(&self) -> String {
+        let Some((at, snow)) = self.weather.precip else { return String::new() };
+        let t = LocalTime::at(at * 1000);
+        let hour = if self.cfg.hour12 { (t.hour + 11) % 12 + 1 } else { t.hour };
+        format!("{} at {hour}:{:02}", if snow { "Snow" } else { "Rain" }, t.minute)
+    }
+
+    /// Once a second: an alert once rain or snow is due within the hour; Large waits for compact.
+    pub fn rain_alert(&mut self, now: f64) {
+        if rune::is_headless() || !self.cfg.rain_alerts || self.mode == Mode::Large { return }
+        let Some((at, _)) = self.weather.precip else { return };
+        if !rain_due(at, crate::date::now_secs(), self.rain_alerted) { return }
+        self.rain_alerted = Some(at);
+        self.remind(self.precip_label(), now);
+    }
+
     pub fn set_battery(&mut self, battery: Option<(u8, bool)>, tx: &mut Tx) -> bool {
         let (percent, charging) = battery.map_or((None, false), |(p, c)| (Some(p), c));
         if (percent, charging) == (self.percent, self.charging) { return false }
@@ -1239,6 +1259,9 @@ impl Island {
         self.passthrough.set_window(window);
     }
 }
+
+/// Rain starting at `at` is due an alert at `now` (Unix seconds): within the hour, and not alerted yet.
+fn rain_due(at: i64, now: i64, alerted: Option<i64>) -> bool { (1..=3600).contains(&(at - now)) && alerted != Some(at) }
 
 /// Fetches an image (blocking) and hands it, loaded, to `put` on the UI thread.
 /// `foreign` images come from other apps or hosts: raster only, since Rune bounds neither SVGZ
@@ -1590,6 +1613,17 @@ mod tests {
 
     fn island(cfg: Config) -> Island {
         Island::new(Store::memory(cfg), Vec::new())
+    }
+
+    #[test]
+    fn rain_alerts_come_once_within_the_hour_before() {
+        assert!(!rain_due(10_000, 10_000 - 3601, None), "too early");
+        assert!(rain_due(10_000, 10_000 - 3600, None));
+        assert!(!rain_due(10_000, 10_000 - 1800, Some(10_000)), "once");
+        assert!(!rain_due(10_000, 10_000, None), "already started");
+        let mut s = island(Config { hour12: false, ..Config::default() });
+        s.weather.precip = Some((0, true));
+        assert!(s.precip_label().starts_with("Snow at "));
     }
 
     #[test]

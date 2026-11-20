@@ -313,6 +313,7 @@ fn panel(s: &Settings, k: &Kit, layer: &mut Vec<El>, tab: Tab) -> Vec<El> {
                 setting(s, "Location", TextInput::new(&s.location).label("Location").placeholder("City, ST, Country").width(Some(200.0))
                     .binds(|s| &mut s.location, |c, v| c.location = v.into()).build(k)),
                 setting(s, "Unit", choice(s, k, layer, "unit", "Unit", &[("f", "Fahrenheit (°F)"), ("c", "Celsius (°C)")], &cfg.weather_unit, |c, v| c.weather_unit = v.into())),
+                toggle(s, k, "Alert before rain or snow", cfg.rain_alerts, |c| c.rain_alerts = !c.rain_alerts),
             ]));
         }
         Tab::Workflows => {

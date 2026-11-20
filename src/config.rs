@@ -348,6 +348,8 @@ pub struct Config {
     pub hour12: bool,
     pub weather_unit: String,
     pub location: String,
+    /// An alert about an hour before rain or snow starts at the location.
+    pub rain_alerts: bool,
     pub theme: String,
     pub bg_color: String,
     pub text_color: String,
@@ -432,6 +434,7 @@ impl Default for Config {
             hour12: true,
             weather_unit: "f".into(),
             location: String::new(),
+            rain_alerts: true,
             theme: "none".into(),
             bg_color: "#000000".into(),
             text_color: "#FFFFFF".into(),

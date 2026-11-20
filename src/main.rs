@@ -104,7 +104,7 @@ fn island_spec() -> AppSpec<Island> {
                 s.set_tab(Tab::Weather);
                 s.cfg.location = "Paris".into();
                 let day = |date, code, high, low| net::Day { date, code: Some(code), high, low };
-                s.weather = net::Weather { temp: Some(12), code: Some(3), days: vec![day((2026, 1, 2), 3, 13, 4), day((2026, 1, 3), 61, 9, 5), day((2026, 1, 4), 0, 15, 6), day((2026, 1, 5), 71, 2, -3), day((2026, 1, 6), 95, 11, 7)] };
+                s.weather = net::Weather { temp: Some(12), code: Some(3), days: vec![day((2026, 1, 2), 3, 13, 4), day((2026, 1, 3), 61, 9, 5), day((2026, 1, 4), 0, 15, 6), day((2026, 1, 5), 71, 2, -3), day((2026, 1, 6), 95, 11, 7)], precip: None };
             }),
             ("search", |s| { s.mode = Mode::Large; s.set_tab(Tab::Search) }),
             ("search-results", |s| {
@@ -141,6 +141,7 @@ fn island_spec() -> AppSpec<Island> {
                 s.task.replace_text("Ship v0.5");
             }),
             ("reminder", |s| s.remind("Ship v0.5 release notes".into(), 0.0)),
+            ("rain-alert", |s| { s.weather.precip = Some((date::now_secs() + 3000, false)); s.remind(s.precip_label(), 0.0) }),
             ("tasks-sync-error", |s| {
                 s.mode = Mode::Large;
                 s.set_tab(Tab::Tasks);
