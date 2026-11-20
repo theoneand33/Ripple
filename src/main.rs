@@ -104,7 +104,7 @@ fn island_spec() -> AppSpec<Island> {
                 s.set_tab(Tab::Weather);
                 s.cfg.location = "Paris".into();
                 let day = |date, code, high, low| net::Day { date, code: Some(code), high, low };
-                s.weather = net::Weather { temp: Some(12), code: Some(3), days: vec![day((2026, 1, 2), 3, 13, 4), day((2026, 1, 3), 61, 9, 5), day((2026, 1, 4), 0, 15, 6), day((2026, 1, 5), 71, 2, -3), day((2026, 1, 6), 95, 11, 7)] };
+                s.weather = net::Weather { temp: Some(12), code: Some(3), days: vec![day((2026, 1, 2), 3, 13, 4), day((2026, 1, 3), 61, 9, 5), day((2026, 1, 4), 0, 15, 6), day((2026, 1, 5), 71, 2, -3), day((2026, 1, 6), 95, 11, 7)], precip: None };
             }),
             ("search", |s| { s.mode = Mode::Large; s.set_tab(Tab::Search) }),
             ("search-results", |s| {
@@ -141,6 +141,7 @@ fn island_spec() -> AppSpec<Island> {
                 s.task.replace_text("Ship v0.5");
             }),
             ("reminder", |s| s.remind("Ship v0.5 release notes".into(), 0.0)),
+            ("rain-alert", |s| { s.weather.precip = Some((date::now_secs() + 3000, false)); s.remind(s.precip_label(), 0.0) }),
             ("break-reminder", |s| s.remind("Look away 20s".into(), 0.0)),
             ("tasks-sync-error", |s| {
                 s.mode = Mode::Large;
@@ -154,6 +155,12 @@ fn island_spec() -> AppSpec<Island> {
                 s.mode = Mode::Large;
                 s.set_tab(Tab::Calendar);
                 s.cfg.events = ["2026-01-01 New Year's brunch", "2026-01-01 09:30 Standup", "2026-01-15 Dentist"].map(config::Item::new).into();
+            }),
+            ("calendar-feed", |s| {
+                s.mode = Mode::Large;
+                s.set_tab(Tab::Calendar);
+                s.cfg.events = vec![config::Item::new("2026-01-01 09:30 Standup")];
+                s.calendar.feed_events = vec!["2026-01-01 12:00 Lunch (Google)".into(), "2026-01-01 Public holiday".into()];
             }),
             ("calendar-edit", |s| {
                 s.mode = Mode::Large;
@@ -335,6 +342,16 @@ fn island_spec() -> AppSpec<Island> {
                 s.set_tab(Tab::Overview);
                 s.cfg.dashboard = [config::Widget::Clock, config::Widget::Water].map(config::Tile::new).into();
                 (s.cfg.water_day, s.cfg.water_count) = (date::days_from_civil(s.today.0, s.today.1, s.today.2), 3);
+            }),
+            ("overview-contributions", |s| {
+                s.mode = Mode::Large;
+                s.set_tab(Tab::Overview);
+                s.cfg.dashboard = [config::Widget::Contributions].map(config::Tile::new).into();
+                (s.cfg.github_user, s.cfg.leetcode_user) = ("octocat".into(), "ana".into());
+                let today = date::days_from_civil(s.today.0, s.today.1, s.today.2);
+                let graph = |seed: i64| (0..365).filter(|d| (d * seed) % 7 < 3 || *d < 6).map(|d| (today - d, ((d * seed) % 4 + 1) as u8)).collect::<Vec<_>>();
+                s.contributions.github = Some(("octocat".into(), Ok(graph(5))));
+                s.contributions.leetcode = Some(("ana".into(), Ok(graph(3))));
             }),
             ("overview-quote", |s| { s.mode = Mode::Large; s.set_tab(Tab::Overview); s.cfg.dashboard = [config::Widget::Quote, config::Widget::Clock].map(config::Tile::new).into() }),
             ("overview-day", |s| {
