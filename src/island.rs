@@ -1228,8 +1228,10 @@ impl Island {
             let cfg = store.get();
             // No location: clear the weather so no icon shows and no request is sent.
             let w = if cfg.location.trim().is_empty() { Some(Weather::default()) } else { crate::net::weather(&cfg.location, &cfg.weather_unit) };
-            if let Some(w) = w {
-                me.update_if(move |s, _| s.weather != w && { s.weather = w; true });
+            match w {
+                Some(w) => me.update_if(move |s, _| s.weather != w && { s.weather = w; true }),
+                // The sun times may be another place's (the location changed): the themes stop following them.
+                None => me.update(|s, _| s.weather.sun = None),
             }
             if kicked.recv_timeout(std::time::Duration::from_secs(600)) == Err(std::sync::mpsc::RecvTimeoutError::Disconnected) { break }
         });
