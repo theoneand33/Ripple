@@ -515,25 +515,29 @@ pub fn microphone_in_use() -> bool {
     { output("pactl", &["list", "short", "source-outputs"]).is_some_and(|o| !o.is_empty()) }
     #[cfg(target_os = "macos")]
     {
-        // shortcut: the default input device only; walk every input device if a second mic goes unnoticed.
         #[repr(C)]
         struct Address { selector: u32, scope: u32, element: u32 }
         #[link(name = "CoreAudio", kind = "framework")]
         unsafe extern "C" {
+            fn AudioObjectGetPropertyDataSize(object: u32, address: *const Address, qualifier_size: u32, qualifier: *const std::ffi::c_void, size: *mut u32) -> i32;
             fn AudioObjectGetPropertyData(object: u32, address: *const Address, qualifier_size: u32, qualifier: *const std::ffi::c_void, size: *mut u32, data: *mut std::ffi::c_void) -> i32;
         }
-        // 'dIn ' kAudioHardwarePropertyDefaultInputDevice, 'gone' kAudioDevicePropertyDeviceIsRunningSomewhere,
-        // 'glob' global scope.
-        // shortcut: "running somewhere" is device-wide, so a headset that is the default input and only plays music
-        // lights the dot; a missed recording is worse than that, so it isn't narrowed to the input scope, which may not be accepted.
-        let read = |object: u32, selector: &[u8; 4], scope: &[u8; 4]| {
-            let (mut value, mut size) = (0u32, 4u32);
-            // SAFETY: both properties are a UInt32, and `size` says so.
-            let status = unsafe { AudioObjectGetPropertyData(object, &Address { selector: u32::from_be_bytes(*selector), scope: u32::from_be_bytes(*scope), element: 0 }, 0, std::ptr::null(), &mut size, (&raw mut value).cast()) };
-            (status == 0).then_some(value)
-        };
-        // 1 is kAudioObjectSystemObject; 0 is kAudioObjectUnknown (no input device).
-        read(1, b"dIn ", b"glob").filter(|&d| d != 0).and_then(|d| read(d, b"gone", b"glob")).is_some_and(|r| r != 0)
+        // 'dev#' kAudioHardwarePropertyDevices, 'stm#' kAudioDevicePropertyStreams, 'gone' kAudioDevicePropertyDeviceIsRunningSomewhere;
+        // scopes 'glob' (global) and 'inpt' (input). 1 is kAudioObjectSystemObject.
+        let at = |selector: &[u8; 4], scope: &[u8; 4]| Address { selector: u32::from_be_bytes(*selector), scope: u32::from_be_bytes(*scope), element: 0 };
+        // SAFETY (both closures): a size query, and a read into a buffer of the size it gave.
+        let size_of = |object: u32, a: &Address| { let mut n = 0u32; (unsafe { AudioObjectGetPropertyDataSize(object, a, 0, std::ptr::null(), &mut n) } == 0).then_some(n) };
+        let running = |device: u32| { let (mut v, mut n) = (0u32, 4u32); unsafe { AudioObjectGetPropertyData(device, &at(b"gone", b"glob"), 0, std::ptr::null(), &mut n, (&raw mut v).cast()) == 0 && v != 0 } };
+        let devices = at(b"dev#", b"glob");
+        let Some(mut n) = size_of(1, &devices) else { return false };
+        let mut ids = vec![0u32; n as usize / 4];
+        // SAFETY: `ids` holds `n` bytes; `n` is updated to the bytes written.
+        if unsafe { AudioObjectGetPropertyData(1, &devices, 0, std::ptr::null(), &mut n, ids.as_mut_ptr().cast()) } != 0 { return false }
+        ids.truncate(n as usize / 4);
+        // Any device that has input streams: an app may record from a mic that isn't the system default.
+        // shortcut: "running somewhere" is device-wide, so a headset playing music, or a loopback driver carrying audio,
+        // lights the dot; a missed recording is worse, so it is read at global scope too (the input scope may be refused).
+        ids.iter().any(|&d| size_of(d, &at(b"stm#", b"inpt")).is_some_and(|n| n > 0) && running(d))
     }
     #[cfg(windows)]
     { capability_in_use("microphone") }
