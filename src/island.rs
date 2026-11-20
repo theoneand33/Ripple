@@ -1672,9 +1672,10 @@ fn glance(s: &Island, fg: Color) -> El {
     let right = match alert {
         Some(alert) if s.joinable() => row().key("label").gap(8.0).center_y()
             .child(text(s.alert_label(alert)).font(style).color(color))
+            // The button shows the host: a shared event's link is someone else's, so the user sees where it goes.
             .child(el().key("join").role("button").label(format!("Join {}", tabs::link_host(s.reminder_link.as_deref().unwrap_or("")))).focusable(true).h(26.0).px(12.0).center()
                 .radius(cfg.radius(13.0)).fill(accent::green()).hover(accent::green().alpha(0.8)).press_scale(0.96)
-                .child(text("Join").font(cfg.font(13.0, 700.0)).color(Color::BLACK).a11y_hidden())
+                .child(text(tabs::link_host(s.reminder_link.as_deref().unwrap_or(""))).font(cfg.font(12.0, 700.0)).color(Color::BLACK).max_w(130.0).truncate().a11y_hidden())
                 .on_press(Island::join)),
         Some(alert) => text(s.alert_label(alert)).key("label").font(style).color(color),
         // A running Pomodoro is a live activity: its ring and time left take the right side.
