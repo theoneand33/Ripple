@@ -1274,6 +1274,8 @@ fn count_breaks(left: &mut [Option<f64>; 2], on: [bool; 2], elapsed: f64, paused
         if !on[i] { left[i] = None; continue }
         let l = left[i].get_or_insert(BREAKS[i]);
         if paused { continue }
+        // A gap of over a minute (sleep, a suspended app) was a break itself: start again.
+        if elapsed > 60.0 { *l = BREAKS[i]; continue }
         *l -= elapsed;
         if *l <= 0.0 && due.is_none() { *l = BREAKS[i]; due = Some(i) }
     }
@@ -1635,13 +1637,18 @@ mod tests {
     #[test]
     fn breaks_fall_due_on_their_period_and_pause_while_full_screen() {
         let mut left = [None; 2];
+        // `secs` one-second ticks, as the Island counts; the first break that falls due.
+        let run = |left: &mut [Option<f64>; 2], secs: u32, paused: bool| (0..secs).find_map(|_| count_breaks(left, [true, true], 1.0, paused));
         assert_eq!(count_breaks(&mut left, [true, true], 0.0, false), None);
-        assert_eq!(count_breaks(&mut left, [true, true], 1199.0, false), None);
-        assert_eq!(count_breaks(&mut left, [true, true], 600.0, true), None, "paused");
-        assert_eq!(count_breaks(&mut left, [true, true], 1.0, false), Some(0));
+        assert_eq!(run(&mut left, 1199, false), None);
+        assert_eq!(run(&mut left, 600, true), None, "paused");
+        assert_eq!(run(&mut left, 1, false), Some(0));
         assert_eq!(left[0], Some(BREAKS[0]), "starts again");
-        assert_eq!(count_breaks(&mut left, [true, true], 2400.0, false), Some(0));
+        assert_eq!(run(&mut left, 2400, false), Some(0));
+        assert_eq!(run(&mut left, 1200, false), Some(0), "both fall due at the hour: the eye break first");
         assert_eq!(count_breaks(&mut left, [true, true], 0.0, false), Some(1), "the hourly one comes next");
+        assert_eq!(count_breaks(&mut left, [true, true], 3600.0, false), None, "waking from sleep starts both again");
+        assert_eq!(left, [Some(BREAKS[0]), Some(BREAKS[1])]);
         assert_eq!(count_breaks(&mut left, [false, false], 5000.0, false), None);
         assert_eq!(left, [None, None]);
     }
