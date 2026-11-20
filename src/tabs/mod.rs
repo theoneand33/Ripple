@@ -5,6 +5,7 @@ mod assistant;
 mod calculator;
 mod calendar;
 mod clipboard;
+mod habits;
 mod limits;
 mod monitor;
 mod notes;
@@ -58,6 +59,7 @@ fn panel(s: &Island, tab: Tab, layer: &mut Vec<El>) -> El {
         Tab::Plugins => plugins::view(s),
         Tab::Pomodoro => pomodoro::view(s),
         Tab::Calculator => calculator::view(s),
+        Tab::Habits => habits::view(s),
     }
 }
 
@@ -69,6 +71,7 @@ pub const fn size(tab: Tab) -> (f32, f32) {
         Tab::Notes | Tab::Stremflix | Tab::Limits => (520.0, 290.0),
         Tab::Shelf | Tab::System => (520.0, 230.0),
         Tab::Tasks | Tab::T3 | Tab::Plugins | Tab::Calculator => (420.0, 290.0),
+        Tab::Habits => (520.0, 290.0),
         Tab::Pomodoro => (440.0, 190.0),
         Tab::Calendar => (560.0, 280.0),
         Tab::Overview => (560.0, 320.0),

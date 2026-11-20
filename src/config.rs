@@ -42,6 +42,7 @@ tabs! {
     Limits = 14,
     Pomodoro = 16,
     Calculator = 17,
+    Habits = 18,
     Plugins = 15,
 }
 
@@ -65,6 +66,7 @@ impl Tab {
             Tab::Plugins => "Plugins",
             Tab::Pomodoro => "Pomodoro",
             Tab::Calculator => "Calculator",
+            Tab::Habits => "Habits",
         }
     }
 }
@@ -200,6 +202,13 @@ pub struct QuickApp {
 pub struct Workflow {
     pub name: String,
     pub urls: Vec<String>,
+}
+
+/// A daily habit and the days it was done, as days since 1970-01-01, oldest first.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Habit {
+    pub name: String,
+    pub done: Vec<i64>,
 }
 
 /// One T3 server (local or remote); `token` comes from `t3 auth session issue` on that machine.
@@ -347,6 +356,7 @@ pub struct Config {
     pub quick_apps: Vec<QuickApp>,
     pub workflows: Vec<Workflow>,
     pub tasks: Vec<Item>,
+    pub habits: Vec<Habit>,
     /// Each note's first line is its title.
     pub notes: Vec<Item>,
     /// Calendar events; each one's text is `YYYY-MM-DD title` (`nextcloud::event_day`).
@@ -411,6 +421,7 @@ impl Default for Config {
             quick_apps: ["Notes", "Spotify", "Calculator", "Terminal"].map(app).into(),
             workflows: Vec::new(),
             tasks: Vec::new(),
+            habits: Vec::new(),
             notes: Vec::new(),
             events: Vec::new(),
             nextcloud: Nextcloud::default(),
@@ -626,7 +637,7 @@ mod tests {
     fn saved_orders_drop_retired_tabs_and_gain_new_ones() {
         use Tab::*;
         let cfg = serde_json::from_str::<Config>(r#"{"tab_order": [7, 2, 3, 0], "hidden_tabs": [3, 0], "default_tab": 7}"#).unwrap().normalized();
-        assert_eq!(cfg.tab_order, [Overview, Search, Workflows, Assistant, Clipboard, Tasks, T3, Notes, Stremflix, Shelf, System, Calendar, Limits, Pomodoro, Calculator, Plugins]);
+        assert_eq!(cfg.tab_order, [Overview, Search, Workflows, Assistant, Clipboard, Tasks, T3, Notes, Stremflix, Shelf, System, Calendar, Limits, Pomodoro, Calculator, Habits, Plugins]);
         assert_eq!((cfg.hidden_tabs.as_slice(), cfg.default_tab), ([Search].as_slice(), Overview));
     }
 

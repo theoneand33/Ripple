@@ -122,6 +122,16 @@ fn island_spec() -> AppSpec<Island> {
                 s.set_tab(Tab::Calendar);
                 s.cfg.events = ["2026-01-01 New Year's brunch", "2026-01-01 09:30 Standup", "2026-01-15 Dentist"].map(config::Item::new).into();
             }),
+            ("habits", |s| {
+                s.mode = Mode::Large;
+                s.set_tab(Tab::Habits);
+                let today = date::days_from_civil(s.today.0, s.today.1, s.today.2);
+                s.cfg.habits = vec![
+                    config::Habit { name: "Read 20 pages".into(), done: (0..5).map(|i| today - i).collect() },
+                    config::Habit { name: "Stretch".into(), done: vec![today - 6, today - 3, today - 1] },
+                    config::Habit { name: "No sugar".into(), done: Vec::new() },
+                ];
+            }),
             ("t3", |s| { s.mode = Mode::Large; s.set_tab(Tab::T3) }),
             ("pomodoro", |s| { s.mode = Mode::Large; s.set_tab(Tab::Pomodoro); s.pomodoro.left = 18.0 * 60.0 + 42.0; s.pomodoro.rounds = 2 }),
             // Ends on the app clock, which starts near zero in a headless render.

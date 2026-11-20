@@ -265,6 +265,7 @@ pub struct Island {
     pub calc: tabs::Calculator,
     pub shelf: tabs::Shelf,
     pub task: TextEdit,
+    pub habit: TextEdit,
     pub calendar: tabs::Calendar,
     pub notes: tabs::Notes,
     /// Nextcloud sync of Notes, Tasks and events, by `nextcloud::Kind`.
@@ -377,6 +378,7 @@ impl Island {
             calc: tabs::Calculator::default(),
             shelf: tabs::Shelf::default(),
             task: TextEdit::default(),
+            habit: TextEdit::default(),
             calendar: tabs::Calendar::default(),
             notes: tabs::Notes::new(&cfg),
             nextcloud: Default::default(),
