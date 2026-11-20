@@ -335,8 +335,8 @@ impl Island {
     /// Once a minute: a reminder for the tasks that fell due and haven't had one, including those
     /// that fell due while Ripple wasn't running. Several at once share one reminder.
     pub fn task_reminders(&mut self, now: f64) {
-        // Large mode draws no alerts: the reminder waits until the Island is compact again.
-        if rune::is_headless() || self.mode == crate::island::Mode::Large { return }
+        // An open Large draws no alerts and another reminder isn't replaced: the reminder waits. Resting in Large (Large standby) doesn't count.
+        if rune::is_headless() || self.large_open() || self.reminder.is_some() { return }
         let t = LocalTime::at(crate::date::now_ms());
         let mark = format!("{:04}-{:02}-{:02}T{:02}:{:02}", t.year, t.month, t.day, t.hour, t.minute);
         if std::mem::replace(&mut self.task_mark, mark.clone()) == mark { return }
