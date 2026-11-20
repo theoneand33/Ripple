@@ -708,13 +708,14 @@ impl Island {
 
     /// Dropped files go on top of the Shelf; one already there moves up.
     pub fn drop_files(&mut self, files: &[std::path::PathBuf], _: &mut Tx) {
+        let names: Vec<_> = files.iter().filter_map(|f| f.file_name().map(|n| n.to_string_lossy().into_owned())).collect();
         self.save(|c| {
             c.shelf.retain(|f| !files.contains(f));
             c.shelf.splice(0..0, files.iter().cloned());
             // A name dropped anew is a new file, not one Nextcloud since removed.
-            let names: Vec<_> = files.iter().filter_map(|f| f.file_name().map(|n| n.to_string_lossy().into_owned())).collect();
             c.nextcloud.shelf_synced.retain(|e| !names.iter().any(|n| e.rsplit('/').next() == Some(n.as_str())));
         });
+        if self.shelf_sync.running { self.shelf_sync.dropped.extend(names) }
         self.nextcloud_shelf_sync();
         self.dropping = false;
         self.desktop_drag = false;

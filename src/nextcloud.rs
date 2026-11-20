@@ -66,6 +66,8 @@ pub fn restore(c: &mut Config, kind: Kind, at: usize, item: Item, syncing: bool)
 pub struct SyncState {
     pub running: bool,
     again: bool,
+    /// Shelf only: names dropped while a sync ran.
+    pub dropped: Vec<String>,
     pub error: Option<String>,
 }
 
@@ -189,17 +191,21 @@ impl Island {
         let current = self.cfg.nextcloud.account() == account;
         if current { self.shelf_sync.error = out.error }
         let changed = self.shelf_sync.again;
+        // Dropped while it ran: new files whose names this run's record would wrongly mark as synced.
+        let dropped = std::mem::take(&mut self.shelf_sync.dropped);
         if current && let Some(mut both) = out.both {
             self.save(|c| {
                 adopt(c, account);
                 if changed {
                     // The Shelf changed while it ran, so a file it found gone may have been dropped
-                    // again: it stays on, and the rerun decides. Its name stays known unless the drop forgot it.
+                    // again: it stays on, and the rerun decides.
                     for f in &out.gone {
                         let Some(name) = f.file_name().map(|n| n.to_string_lossy().into_owned()) else { continue };
-                        if c.nextcloud.shelf_synced.contains(&format!("{folder}/{name}")) { both.push(name) }
+                        both.push(name);
                     }
-                } else {
+                }
+                both.retain(|n| !dropped.contains(n));
+                if !changed {
                     c.shelf.retain(|f| !out.gone.contains(f));
                 }
                 for f in out.downloaded { if !c.shelf.contains(&f) { c.shelf.push(f) } }
@@ -687,7 +693,7 @@ fn shelf(c: &Client, folder: &str, files: &[PathBuf], base: &[String], cache: &P
         if !ok(status) { skipped.get_or_insert(format!("Couldn't upload {name}: {}", failed(status))); continue }
         both.push(name.clone());
     }
-    for name in listed.iter().filter(|n| !here(n) && !base.contains(n)) {
+    for name in listed.iter().filter(|n| !here(n) && !base.contains(n) && savable(n)) {
         let mut res = c.transfer("GET", &format!("{url}{}", percent_encode(name)), ())?;
         let status = res.status().as_u16();
         if matches!(status, 401 | 403) { return Err(failed(status)) }
@@ -713,17 +719,22 @@ fn same_bytes(mut a: impl std::io::Read, mut b: impl std::io::Read) -> bool {
     }
 }
 
-/// The files (not folders) a PROPFIND of a folder lists, by name, with their sizes. A name that
-/// could leave the cache folder, or that Windows takes as a device or a stream, is left out.
+/// Whether a name from Nextcloud is safe to download as: not one that could leave the cache folder,
+/// nor one Windows takes as a device or a stream.
+fn savable(name: &str) -> bool {
+    let stem = name.split('.').next().unwrap_or_default().trim_end().to_ascii_uppercase();
+    let device = matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL") || (stem.len() == 4 && (stem.starts_with("COM") || stem.starts_with("LPT")) && stem.as_bytes()[3].is_ascii_digit());
+    Path::new(name).file_name() == Some(name.as_ref()) && !name.contains(['/', '\\', ':']) && !device
+}
+
+/// The files (not folders) a PROPFIND of a folder lists, by name, with their sizes.
 fn folder_files(xml: &str) -> Vec<(String, Option<u64>)> {
     elements(xml, "response").into_iter().filter_map(|r| {
         let href = unescape(elements(r, "href").first()?);
         if href.ends_with('/') { return None }
         let name = percent_decode(href.rsplit('/').next()?);
         let size = elements(r, "getcontentlength").first().and_then(|s| s.trim().parse().ok());
-        let stem = name.split('.').next().unwrap_or_default().trim_end().to_ascii_uppercase();
-        let device = matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL") || (stem.len() == 4 && (stem.starts_with("COM") || stem.starts_with("LPT")) && stem.as_bytes()[3].is_ascii_digit());
-        (Path::new(&name).file_name() == Some(name.as_ref()) && !name.contains(['/', '\\', ':']) && !device).then_some((name, size))
+        Some((name, size))
     }).collect()
 }
 
@@ -1031,8 +1042,8 @@ mod tests {
         let out = sync_shelf(&nc, "Ripple Shelf", &[tmp.join("old.txt")], &["old.txt".into(), "x.txt".into(), "gone.txt".into()], &cache);
         assert_eq!(out.error.as_deref(), Some("Nextcloud refused the user or app password"));
         assert_eq!((out.both.unwrap(), out.gone), (vec!["x.txt".to_string(), "old.txt".into()], Vec::new()));
-        let names = ["a%3Ab", "nul.txt", "COM1", "con", "COM", "console.log", "%2E%2E"].map(|n| format!("<d:response><d:href>/d/{n}</d:href></d:response>")).concat();
-        assert_eq!(folder_files(&names), [("COM".to_string(), None), ("console.log".into(), None)], "devices, streams and '..' are left out");
+        let names = ["a:b", "nul.txt", "COM1", "con", "COM", "console.log", "..", "../x"];
+        assert_eq!(names.map(savable), [false, false, false, false, true, true, false, false], "devices, streams and '..' aren't downloaded");
         let folder = |f: &str| Nextcloud { shelf_folder: f.into(), ..Nextcloud::default() }.shelf_folder();
         assert_eq!([folder(""), folder(".."), folder(" /./ "), folder("/A/../ B /")], ["Ripple Shelf", "Ripple Shelf", "Ripple Shelf", "A/B"]);
         assert_eq!([in_folder("A/x", "A"), in_folder("A/B/x", "A"), in_folder("AB/x", "A")], [Some("x"), None, None]);
