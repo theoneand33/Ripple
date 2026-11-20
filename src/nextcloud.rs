@@ -188,12 +188,20 @@ impl Island {
         self.shelf_sync.running = false;
         let current = self.cfg.nextcloud.account() == account;
         if current { self.shelf_sync.error = out.error }
-        // The Shelf changed while it ran: the queued rerun works from the Shelf as it is now, so a
-        // file dropped meanwhile isn't taken off again by this run's older view.
-        if current && !self.shelf_sync.again && let Some(both) = out.both {
+        let changed = self.shelf_sync.again;
+        if current && let Some(mut both) = out.both {
             self.save(|c| {
                 adopt(c, account);
-                c.shelf.retain(|f| !out.gone.contains(f));
+                if changed {
+                    // The Shelf changed while it ran, so a file it found gone may have been dropped
+                    // again: it stays on, and the rerun decides. Its name stays known unless the drop forgot it.
+                    for f in &out.gone {
+                        let Some(name) = f.file_name().map(|n| n.to_string_lossy().into_owned()) else { continue };
+                        if c.nextcloud.shelf_synced.contains(&format!("{folder}/{name}")) { both.push(name) }
+                    }
+                } else {
+                    c.shelf.retain(|f| !out.gone.contains(f));
+                }
                 for f in out.downloaded { if !c.shelf.contains(&f) { c.shelf.push(f) } }
                 c.nextcloud.shelf_synced.retain(|e| in_folder(e, folder).is_none());
                 c.nextcloud.shelf_synced.extend(both.into_iter().map(|n| format!("{folder}/{n}")));
@@ -641,12 +649,20 @@ fn shelf(c: &Client, folder: &str, files: &[PathBuf], base: &[String], cache: &P
         if !local.iter().any(|(n, _)| *n == name) { local.push((name, f)) }
     }
     let here = |name: &String| local.iter().any(|(n, _)| n == name);
-    // A name met for the first time on both sides, with other sizes, is two files: neither is
-    // taken for the other, so removing one never deletes the other.
-    let clash = |name: &String| !base.contains(name) && local.iter().find(|(n, _)| n == name).is_some_and(|(_, path)| {
-        let theirs = sizes.iter().find(|(n, _)| n == name).and_then(|(_, size)| *size);
-        theirs != std::fs::metadata(path).ok().filter(|m| m.is_file()).map(|m| m.len())
-    });
+    // A name met for the first time on both sides is one file only if the bytes match. Otherwise
+    // it is two: neither is taken for the other, so removing one never deletes the other.
+    let mut clashes = Vec::new();
+    for (name, path) in &local {
+        let Some((_, theirs)) = sizes.iter().find(|(n, _)| n == name).filter(|_| !base.contains(name)) else { continue };
+        let mine = std::fs::metadata(path).ok().filter(|m| m.is_file()).map(|m| m.len());
+        let same = theirs.is_some() && *theirs == mine && {
+            let mut res = c.transfer("GET", &format!("{url}{}", percent_encode(name)), ())?;
+            if matches!(res.status().as_u16(), 401 | 403) { return Err(failed(res.status().as_u16())) }
+            ok(res.status().as_u16()) && std::fs::File::open(path).is_ok_and(|f| same_bytes(res.body_mut().as_reader(), f))
+        };
+        if !same { clashes.push(name.clone()) }
+    }
+    let clash = |name: &String| clashes.contains(name);
     let removed_here: Vec<&String> = listed.iter().filter(|n| !here(n) && base.contains(n)).collect();
     // One file that fails (too big, a name this OS can't save) doesn't hold up the rest; its error still shows.
     let mut skipped = None;
@@ -687,6 +703,16 @@ fn shelf(c: &Client, folder: &str, files: &[PathBuf], base: &[String], cache: &P
         both.push(name.clone());
     }
     Ok(skipped)
+}
+
+/// Whether two readers hold the same bytes, read a piece at a time.
+fn same_bytes(mut a: impl std::io::Read, mut b: impl std::io::Read) -> bool {
+    let (mut x, mut y) = ([0u8; 8192], [0u8; 8192]);
+    loop {
+        let Ok(n) = a.read(&mut x) else { return false };
+        if n == 0 { return b.read(&mut y[..1]).is_ok_and(|m| m == 0) }
+        if b.read_exact(&mut y[..n]).is_err() || x[..n] != y[..n] { return false }
+    }
 }
 
 /// The files (not folders) a PROPFIND of a folder lists, by name, with their sizes. A name that
@@ -962,9 +988,11 @@ mod tests {
             let res = |status, body: &str| Response { status, headers: vec![], body: body.into() };
             let file = |name: &str, size: u64| format!("<d:response><d:href>{dir}{name}</d:href><d:propstat><d:prop><d:getcontentlength>{size}</d:getcontentlength></d:prop></d:propstat></d:response>");
             match (r.method.as_str(), r.path.as_str()) {
-                ("PROPFIND", p) if p == dir => res(207, &format!("<d:multistatus xmlns:d=\"DAV:\"><d:response><d:href>{dir}</d:href></d:response>{}{}{}{}{}{}{}{}<d:response><d:href>{dir}sub/</d:href></d:response></d:multistatus>", file("kept.txt", 8), file("their%20file.txt", 5), file("dropped.txt", 1), file("%2E%2E%2Fevil", 1), file("clash.txt", 99), file("a%3Ab", 1), file("nul.txt", 1), file("COM1", 1))),
+                ("PROPFIND", p) if p == dir => res(207, &format!("<d:multistatus xmlns:d=\"DAV:\"><d:response><d:href>{dir}</d:href></d:response>{}{}{}{}{}{}{}{}{}{}<d:response><d:href>{dir}sub/</d:href></d:response></d:multistatus>", file("kept.txt", 8), file("their%20file.txt", 5), file("dropped.txt", 1), file("%2E%2E%2Fevil", 1), file("clash.txt", 99), file("a%3Ab", 1), file("nul.txt", 1), file("COM1", 1), file("twin.txt", 8), file("same.txt", 8))),
                 ("PROPFIND", _) => res(404, ""),
                 ("GET", p) if p == format!("{dir}their%20file.txt") => res(200, "hello"),
+                ("GET", p) if p == format!("{dir}twin.txt") => res(200, "twin.txt"),
+                ("GET", p) if p == format!("{dir}same.txt") => res(200, "SAME.TXT"),
                 ("PUT", p) if p.ends_with("big.txt") => res(507, ""),
                 ("PUT" | "DELETE" | "MKCOL", _) => res(201, ""),
                 _ => res(500, ""),
@@ -974,15 +1002,16 @@ mod tests {
         let tmp = std::env::temp_dir().join(format!("ripple-shelf-{}", std::process::id()));
         let cache = tmp.join("cache");
         std::fs::create_dir_all(&tmp).unwrap();
-        let names = ["big.txt", "kept.txt", "mine.txt", "old.txt", "clash.txt"];
+        let names = ["big.txt", "kept.txt", "mine.txt", "old.txt", "clash.txt", "twin.txt", "same.txt"];
         for name in names { std::fs::write(tmp.join(name), name).unwrap() }
         // The server has no room for big.txt: it's skipped, and the rest still syncs. Its clash.txt
-        // is another file: neither is taken for the other, so it's neither uploaded nor in `both`.
+        // and same.txt (same size, other bytes) are other files: neither is uploaded nor in `both`.
+        // twin.txt has the same bytes there, so it is that file.
         let files = names.map(|n| tmp.join(n));
         // dropped.txt left the Shelf here and old.txt left Nextcloud since the last sync.
         let out = sync_shelf(&nc, "Ripple Shelf", &files, &["dropped.txt".into(), "old.txt".into(), "kept.txt".into()], &cache);
         assert_eq!(out.error.as_deref(), Some("Couldn't upload big.txt: Nextcloud answered 507"));
-        assert_eq!(out.both.unwrap(), ["kept.txt", "mine.txt", "their file.txt"]);
+        assert_eq!(out.both.unwrap(), ["kept.txt", "twin.txt", "mine.txt", "their file.txt"]);
         assert_eq!(out.gone, [tmp.join("old.txt")]);
         assert_eq!(out.downloaded, [cache.join("their file.txt")]);
         assert_eq!(std::fs::read_to_string(cache.join("their file.txt")).unwrap(), "hello");
