@@ -959,7 +959,8 @@ impl Island {
         let elapsed = now - std::mem::replace(&mut self.break_tick, now);
         if rune::is_headless() { return }
         let on = [self.cfg.eye_breaks, self.cfg.hourly_breaks];
-        let paused = self.fullscreen || self.large_open();
+        // While another reminder shows, the break waits rather than replace it.
+        let paused = self.fullscreen || self.large_open() || self.reminder.is_some();
         if let Some(i) = count_breaks(&mut self.break_left, on, elapsed, paused) {
             self.remind(["Look away 20s", "Take a break"][i].into(), now);
         }
