@@ -329,6 +329,8 @@ pub struct Config {
     pub standby: bool,
     pub large_standby: bool,
     pub hide_inactive: bool,
+    /// While an app is full screen: "none" (no change), "standby" (rest in Quick), "hidden" (hide when inactive), "still" (standby off).
+    pub fullscreen: String,
     /// Wayland layer-shell: sit over panels (KDE Plasma) instead of below them.
     pub overlap_panels: bool,
     pub show_info_idle: bool,
@@ -406,6 +408,7 @@ impl Default for Config {
             standby: true,
             large_standby: false,
             hide_inactive: false,
+            fullscreen: "none".into(),
             overlap_panels: false,
             show_info_idle: false,
             hour12: true,

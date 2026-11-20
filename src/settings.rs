@@ -563,6 +563,9 @@ fn page(s: &Settings, k: &Kit, layer: &mut Vec<El>, page: Page) -> Vec<El> {
                 toggle(s, k, "Low battery alerts", cfg.battery_alerts, |c| c.battery_alerts = !c.battery_alerts),
                 toggle(s, k, "Standby mode", cfg.standby, |c| c.standby = !c.standby),
                 toggle(s, k, "Large standby mode", cfg.large_standby, |c| c.large_standby = !c.large_standby),
+                setting(s, "When an app is full screen", choice(s, k, layer, "fullscreen", "When an app is full screen",
+                    &[("none", "No change"), ("standby", "Standby mode"), ("hidden", "Hidden mode"), ("still", "Standby mode off")],
+                    &cfg.fullscreen, |c, v| c.fullscreen = v.into())),
                 toggle(s, k, "Show info when idle", cfg.show_info_idle, |c| c.show_info_idle = !c.show_info_idle),
             ]));
         }
