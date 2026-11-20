@@ -50,6 +50,7 @@ pub struct Settings {
     bg_image: TextEdit,
     location: TextEdit,
     ai_model: TextEdit,
+    ai_url: TextEdit,
     api_key: TextEdit,
     new_app: TextEdit,
     /// The suggestion picked for `new_app`, with its own launch target.
@@ -85,6 +86,7 @@ impl Settings {
             bg_image: edit(&cfg.bg_image),
             location: edit(&cfg.location),
             ai_model: edit(&cfg.ai_model),
+            ai_url: edit(&cfg.ai_url),
             api_key: TextEdit::new("").secure(),
             new_app: edit(""),
             picked_app: None,
@@ -293,7 +295,7 @@ fn drag_tab(s: &mut Settings, from: usize, d: &mut Drag, tx: &mut Tx) {
 fn has_panel(tab: Tab) -> bool {
     match tab {
         Tab::Search | Tab::Workflows | Tab::Overview | Tab::Weather | Tab::Assistant | Tab::T3 | Tab::Limits | Tab::Tasks | Tab::Notes | Tab::Calendar | Tab::Shelf | Tab::Stocks => true,
-        Tab::Clipboard | Tab::Stremflix | Tab::System | Tab::Plugins | Tab::Pomodoro | Tab::Calculator | Tab::Habits => false,
+        Tab::Clipboard | Tab::Stremflix | Tab::System | Tab::Plugins | Tab::Pomodoro | Tab::Calculator | Tab::Habits | Tab::Clocks => false,
     }
 }
 
@@ -384,8 +386,9 @@ fn panel(s: &Settings, k: &Kit, layer: &mut Vec<El>, tab: Tab) -> Vec<El> {
                         .on_choose(move |s: &mut Settings, label: &str, _: &mut Tx| {
                             s.open = None;
                             let Some(provider) = PROVIDERS.iter().find(|p| p.label == label) else { return };
-                            s.save(|c| { c.ai_provider = provider.id.into(); c.ai_model = provider.model.into() });
+                            s.save(|c| { c.ai_provider = provider.id.into(); c.ai_model = provider.model.into(); c.ai_url.clear() });
                             s.ai_model.replace_text(provider.model);
+                            s.ai_url.clear();
                         })
                         .build(k, layer)
                 }),
@@ -394,8 +397,12 @@ fn panel(s: &Settings, k: &Kit, layer: &mut Vec<El>, tab: Tab) -> Vec<El> {
                     .child(TextInput::new(&s.ai_model).width(None).label("AI model").placeholder(cfg.provider().model)
                         .binds(|s| &mut s.ai_model, |c, v| c.ai_model = v.into()).build(k)),
                 col().w_full().gap(6.0)
+                    .child(text("Base URL").font(cfg.font(14.0, 500.0)).color(fg.alpha(0.85)))
+                    .child(TextInput::new(&s.ai_url).width(None).label("Base URL").placeholder(cfg.provider().url)
+                        .binds(|s| &mut s.ai_url, |c, v| c.ai_url = v.trim().into()).build(k)),
+                col().w_full().gap(6.0)
                     .child(text("API key").font(cfg.font(14.0, 500.0)).color(fg.alpha(0.85)))
-                    .child(TextInput::new(&s.api_key).width(None).label("API key").secure().placeholder(cfg.provider().key_hint)
+                    .child(TextInput::new(&s.api_key).width(None).label("API key").secure().placeholder(match cfg.provider().key_hint { "" => "Not needed", hint => hint })
                         .binds(|s| &mut s.api_key, |c, v| c.api_key = v.into()).build(k)),
             ]));
         }
@@ -474,7 +481,7 @@ fn panel(s: &Settings, k: &Kit, layer: &mut Vec<El>, tab: Tab) -> Vec<El> {
                     .binds(|s| &mut s.sure_key, |c, v| c.sure_key = v.trim().into()).build(k),
             ]));
         }
-        Tab::Clipboard | Tab::Stremflix | Tab::System | Tab::Plugins | Tab::Pomodoro | Tab::Calculator | Tab::Habits => {}
+        Tab::Clipboard | Tab::Stremflix | Tab::System | Tab::Plugins | Tab::Pomodoro | Tab::Calculator | Tab::Habits | Tab::Clocks => {}
     }
     sections
 }
@@ -594,6 +601,10 @@ fn page(s: &Settings, k: &Kit, layer: &mut Vec<El>, page: Page) -> Vec<El> {
                     &cfg.fullscreen, |c, v| c.fullscreen = v.into())),
                 toggle(s, k, "Show info when idle", cfg.show_info_idle, |c| c.show_info_idle = !c.show_info_idle),
             ]));
+            sections.push(section(s, "breaks", "Break reminders (paused while an app is full screen)", vec![
+                toggle(s, k, "20-20-20 eye break", cfg.eye_breaks, |c| c.eye_breaks = !c.eye_breaks),
+                toggle(s, k, "Hourly break", cfg.hourly_breaks, |c| c.hourly_breaks = !c.hourly_breaks),
+            ]));
         }
     }
     sections
@@ -688,7 +699,7 @@ mod tests {
         rt.pointer_up(x, y + 100.0);
         rt.frame(1.0 / 60.0);
         use Tab::*;
-        assert_eq!(store.get().tab_order, [Overview, Workflows, Assistant, Search, Clipboard, Tasks, T3, Notes, Stremflix, Shelf, System, Calendar, Limits, Pomodoro, Calculator, Habits, Stocks, Plugins, Weather]);
+        assert_eq!(store.get().tab_order, [Overview, Workflows, Assistant, Search, Clipboard, Tasks, T3, Notes, Stremflix, Shelf, System, Calendar, Limits, Pomodoro, Calculator, Habits, Stocks, Clocks, Plugins, Weather]);
     }
 
     #[test]
