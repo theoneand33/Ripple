@@ -153,7 +153,7 @@ pub fn reloaded(s: &mut Island, old: &Config) {
     if shows(s, Tab::T3) && old.t3_devices != s.cfg.t3_devices { s.t3_load() }
     // Settings saves each keystroke; the generation drops the answers to keys typed over.
     if (old.sure_url != s.cfg.sure_url || old.sure_key != s.cfg.sure_key) && !s.cfg.sure_key.is_empty() {
-        s.stocks.portfolio = None;
+        (s.stocks.portfolio, s.stocks.generation) = (None, s.stocks.generation + 1);
         if shows(s, Tab::Stocks) { s.stocks_load() }
     }
 }

@@ -19,8 +19,8 @@ pub struct Stocks {
     /// Each ticker's quote over `range`, or why it couldn't load.
     pub quotes: HashMap<String, Result<Quote, String>>,
     pub add: TextEdit,
-    /// Bumped on every load, so an earlier answer is dropped.
-    generation: u64,
+    /// Bumped on every load and Sure account change, so an earlier answer is dropped.
+    pub(super) generation: u64,
 }
 
 impl Island {
