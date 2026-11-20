@@ -38,6 +38,7 @@ Ripple is a Dynamic Island-style bar for Windows, Linux, and macOS. It is one Ru
   cargo run -- --window settings --size 520x2600 --snap settings.png
   ```
 
+- For a very small change, such as a typo, a string, a constant, or a few lines with no new logic, run only `cargo check` (about 1s). Skip `cargo build` and `cargo test` (6s to 2 min each) and let CI run them.
 - Then push and read the CI results.
 - When you add a view or a state that needs a visual check, add a scene to `scenes` in `src/main.rs`. CI renders every scene `--list-scenes` prints and uploads the PNGs as the `smoke-*` artifacts.
 - To add a tab, add it to `Tab` in `src/config.rs` with a new number, then follow the compiler: every `match` on `Tab` needs an arm.
