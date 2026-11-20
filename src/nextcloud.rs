@@ -529,12 +529,14 @@ fn ics_value(at: i64, all_day: bool) -> String {
 fn edited_event(ics: &str, text: &str) -> Option<String> {
     let old = event(ics)?;
     let ((oday, otitle), (day, title)) = (event_day(&old)?, event_day(text)?);
-    let ((otime, osummary), (time, summary)) = (leading_time(otitle), leading_time(title));
+    let ((mut otime, mut osummary), (mut time, mut summary)) = (leading_time(otitle), leading_time(title));
+    let start = property(ics, "VEVENT", "DTSTART")?;
+    let old_start = ics_time(&start.1)?;
+    // An all-day event whose title starts with a time: that time is its title's, not its start.
+    if old_start.1.is_none() && otime.is_some() && otime == time { (otime, osummary, time, summary) = (None, otitle, None, title) }
     let (mut drop, mut add) = (Vec::new(), Vec::new());
     if osummary != summary { drop.push("SUMMARY"); add.push(format!("SUMMARY:{}", escape_text(summary))) }
     if (oday, otime) != (day, time) {
-        let start = property(ics, "VEVENT", "DTSTART")?;
-        let old_start = ics_time(&start.1)?;
         // DTEND, or DURATION's days and hours; an all-day event without either lasts a day.
         let length = property(ics, "VEVENT", "DTEND").and_then(|(_, v)| Some(minutes(ics_time(&v)?) - minutes(old_start)))
             .or_else(|| property(ics, "VEVENT", "DURATION").and_then(|(_, v)| duration(&v)))
@@ -1182,6 +1184,9 @@ mod tests {
         let moved_utc = edited_event(utc, "2026-11-20 09:00 Call").unwrap();
         assert_eq!(event(&moved_utc).as_deref(), Some("2026-11-20 09:00 Call"), "{moved_utc}");
         assert!(moved_utc.lines().filter(|l| l.starts_with("DTSTART:") || l.starts_with("DTEND:")).all(|l| l.ends_with('Z')), "a UTC event stays UTC: {moved_utc}");
+        let meeting = "BEGIN:VEVENT\r\nDTSTART;VALUE=DATE:20261119\r\nDTEND;VALUE=DATE:20261120\r\nSUMMARY:10:00 Meeting\r\nEND:VEVENT\r\n";
+        let moved_meeting = edited_event(meeting, "2026-11-20 10:00 Meeting").unwrap();
+        assert!(moved_meeting.contains("DTSTART;VALUE=DATE:20261120\r\nDTEND;VALUE=DATE:20261121\r\n") && moved_meeting.contains("SUMMARY:10:00 Meeting"), "{moved_meeting}");
         let trip = "BEGIN:VEVENT\r\nDTSTART;VALUE=DATE:20261101\r\nDURATION:P3D\r\nSUMMARY:Trip\r\nEND:VEVENT\r\n";
         assert!(edited_event(trip, "2026-11-10 Trip").unwrap().contains("DTSTART;VALUE=DATE:20261110\r\nDTEND;VALUE=DATE:20261113\r\n"), "a moved event keeps its length");
         let todo = "BEGIN:VCALENDAR\r\nBEGIN:VTODO\r\nSUMMARY:Rent\r\nRRULE:FREQ=MONTHLY;BYMONTHDAY=1\r\nDESCRIPTION:Landlord\r\nEND:VTODO\r\nEND:VCALENDAR\r\n";

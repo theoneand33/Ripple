@@ -61,8 +61,8 @@ impl Task {
         let mut title = Vec::new();
         for (i, word) in text.split_whitespace().enumerate() {
             if i == 0 && is_bangs(word) { task.priority = word.len() as u8; continue }
-            // `Display` escapes a title that starts with bangs.
-            if let Some(bangs) = word.strip_prefix('\\').filter(|w| title.is_empty() && is_bangs(w)) { title.push(bangs); continue }
+            // `Display` escapes title words that would read as settings.
+            if let Some(word) = word.strip_prefix('\\').filter(|w| setting(w, title.is_empty())) { title.push(word); continue }
             if let Some(due) = word.strip_prefix("due:").and_then(|v| parse_due(v, today)) { task.due = Some(due); continue }
             if let Some(every) = word.strip_prefix("every:").and_then(Every::parse) { task.every = Some(every); continue }
             title.push(word);
@@ -97,9 +97,12 @@ impl Task {
 impl std::fmt::Display for Task {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if self.priority > 0 { write!(f, "{} ", "!".repeat(self.priority.into()))? }
-        // A title that starts with `!` would read back as a priority.
-        if self.title.split_whitespace().next().is_some_and(is_bangs) { f.write_str("\\")? }
-        f.write_str(&self.title)?;
+        // Title words that would read back as settings (`!`, `due:…`, `every:…`) are escaped.
+        for (i, word) in self.title.split_whitespace().enumerate() {
+            if i > 0 { f.write_str(" ")? }
+            if setting(word, i == 0) { f.write_str("\\")? }
+            f.write_str(word)?;
+        }
         if let Some(((y, m, d), time)) = self.due {
             write!(f, " due:{y:04}-{m:02}-{d:02}")?;
             if let Some((h, min)) = time { write!(f, "T{h:02}:{min:02}")? }
@@ -111,6 +114,13 @@ impl std::fmt::Display for Task {
 
 /// `!`, `!!` or `!!!`: a priority, when a task's text starts with it.
 fn is_bangs(word: &str) -> bool { (1..=3).contains(&word.len()) && word.bytes().all(|b| b == b'!') }
+
+/// A word `parse` reads as a setting rather than title: bangs (first only), a due day, a repeat.
+fn setting(word: &str, first: bool) -> bool {
+    (first && is_bangs(word))
+        || word.strip_prefix("due:").is_some_and(|v| parse_due(v, (1970, 1, 1)).is_some())
+        || word.strip_prefix("every:").is_some_and(|v| Every::parse(v).is_some())
+}
 
 /// `2026-11-25`, `today` or `tomorrow`, then optionally `T17:00` or `@17:00`.
 fn parse_due(v: &str, today: Date) -> Option<(Date, Option<(u32, u32)>)> {
@@ -163,7 +173,8 @@ fn add_task(s: &mut Island, _: &mut Tx) {
     // Priority comes from its control only, so leading bangs stay in the title.
     let typed = s.task.text.trim();
     let typed = if typed.split_whitespace().next().is_some_and(is_bangs) { format!("\\{typed}") } else { typed.to_string() };
-    let mut task = Task::parse(&typed, s.today);
+    // An edit's field holds the title as it is, which may itself contain such words.
+    let mut task = if d.editing.is_some() { Task { title: s.task.text.split_whitespace().collect::<Vec<_>>().join(" "), ..Task::default() } } else { Task::parse(&typed, s.today) };
     if d.priority > 0 { task.priority = d.priority }
     if let Some(day) = d.due { task.due = Some((day, d.time)) }
     if d.every.is_some() { task.every = d.every }
@@ -347,7 +358,7 @@ mod tests {
         assert_eq!(Task::parse(&t.to_string(), today), t, "the written form reads back the same");
         assert_eq!(Task::parse("!!!! loud due:2026-02-30 every:year", today).title, "!!!! loud due:2026-02-30 every:year", "what isn't valid stays in the title");
         assert_eq!(Task::parse("Buy milk due:2026-12-01", today).due_key().as_deref(), Some("2026-12-01T09:00"));
-        for title in ["! call mom", "!", "!!! now"] {
+        for title in ["! call mom", "!", "!!! now", "Read every:week article", "Call due:2026-01-05 mum", "due:today"] {
             for priority in [0, 2] {
                 let t = Task { priority, title: title.into(), ..Task::default() };
                 assert_eq!(Task::parse(&t.to_string(), today), t, "{t}");
@@ -392,6 +403,11 @@ mod tests {
         s.task.replace_text("Call Bob back");
         super::add_task(&mut s, &mut rune::Tx::default());
         assert_eq!(s.cfg.tasks[1].text, "Call Bob back due:2026-01-02", "an edit of a task gone meanwhile is kept as a new one");
+        let read = s.cfg.tasks[1].key;
+        super::start_edit(&mut s, read);
+        s.task.replace_text("Read every:week article");
+        super::add_task(&mut s, &mut rune::Tx::default());
+        assert_eq!(Task::parse(&s.cfg.tasks[1].text, s.today).title, "Read every:week article", "an edit's title is taken as typed");
         s.task.replace_text("! call mom");
         super::add_task(&mut s, &mut rune::Tx::default());
         assert_eq!(Task::parse(&s.cfg.tasks.last().unwrap().text, s.today), Task { title: "! call mom".into(), ..Task::default() });
