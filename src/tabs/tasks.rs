@@ -21,11 +21,13 @@ pub enum Every {
     Day,
     Week,
     Month,
+    /// A Nextcloud rule Ripple can't follow (an interval, set days, yearly): left as it is there.
+    Custom,
 }
 
 impl Every {
     pub fn name(self) -> &'static str {
-        match self { Every::Day => "day", Every::Week => "week", Every::Month => "month" }
+        match self { Every::Day => "day", Every::Week => "week", Every::Month => "month", Every::Custom => "custom" }
     }
 
     fn parse(s: &str) -> Option<Every> {
@@ -33,6 +35,7 @@ impl Every {
             "day" | "daily" => Some(Every::Day),
             "week" | "weekly" => Some(Every::Week),
             "month" | "monthly" => Some(Every::Month),
+            "custom" => Some(Every::Custom),
             _ => None,
         }
     }
@@ -88,7 +91,9 @@ impl Task {
             Every::Day => shift_days(from, n.into()),
             Every::Week => shift_days(from, i64::from(n) * 7),
             Every::Month => { let (y, m) = crate::date::shift_month(from.0, from.1, n); (y, m, from.2.min(days_in(y, m))) }
+            Every::Custom => from,
         };
+        if every == Every::Custom { return None }
         let day = (1..).map(nth).find(|day| *day >= today)?;
         Some(Task { due: Some((day, time)), ..self.clone() })
     }
@@ -210,6 +215,12 @@ fn step_time((h, m): (u32, u32), by: i32) -> (u32, u32) {
 /// By key, not index: a sync may have removed a task above it since the list was drawn. A
 /// recurring task comes back as a new one, due next time; Nextcloud marks this one done.
 fn tick(s: &mut Island, key: u64) {
+    // Done here, a rule only Nextcloud follows would end or come back wrong.
+    let custom = s.cfg.tasks.iter().find(|t| t.key == key).is_some_and(|t| Task::parse(&t.text, s.today).every == Some(Every::Custom));
+    if custom && s.cfg.nextcloud.enabled() {
+        s.nextcloud[Kind::Tasks as usize].error = Some("This task repeats by a rule only Nextcloud follows: tick it there".into());
+        return;
+    }
     if s.task_draft.editing == Some(key) { reset_draft(s) }
     let today = s.today;
     s.save(|c| {
@@ -277,7 +288,10 @@ pub fn view(s: &Island) -> El {
         if task.due.is_some() {
             meta = meta.child(text(due_label(&task, s.today)).font(s.cfg.font(12.0, 600.0)).color(if overdue { accent::red() } else { muted }));
         }
-        if let Some(every) = task.every { meta = meta.child(text(format!("↻ every {}", every.name())).font(s.cfg.font(12.0, 500.0)).color(muted)) }
+        if let Some(every) = task.every {
+            let label = if every == Every::Custom { "↻ repeats (set in Nextcloud)".to_string() } else { format!("↻ every {}", every.name()) };
+            meta = meta.child(text(label).font(s.cfg.font(12.0, 500.0)).color(muted));
+        }
         let mut body = col().key("edit").role("button").label(format!("Edit {}", task.title)).focusable(true).grow(1.0).min_w(0.0).gap(2.0)
             .on_press(move |s: &mut Island| start_edit(s, key))
             .child(text(&task.title).font(s.cfg.font(14.0, 500.0)).color(fg).wrap_anywhere());
@@ -339,9 +353,9 @@ fn controls(s: &Island) -> El {
             toggle(s, "task-at", &time, accent::teal(), d.time.is_some(), |s| s.task_draft.time = if s.task_draft.time.is_some() { None } else { Some((9, 0)) }),
             d.time.is_some(), |s, by| if let Some(t) = s.task_draft.time { s.task_draft.time = Some(step_time(t, by)) }));
     }
-    let every = match d.every { None => "Repeat", Some(Every::Day) => "Daily", Some(Every::Week) => "Weekly", Some(Every::Month) => "Monthly" };
+    let every = match d.every { None => "Repeat", Some(Every::Day) => "Daily", Some(Every::Week) => "Weekly", Some(Every::Month) => "Monthly", Some(Every::Custom) => "Custom" };
     row_.child(toggle(s, "task-repeat", every, accent::indigo(), d.every.is_some(), |s| {
-        s.task_draft.every = match s.task_draft.every { None => Some(Every::Day), Some(Every::Day) => Some(Every::Week), Some(Every::Week) => Some(Every::Month), Some(Every::Month) => None };
+        s.task_draft.every = match s.task_draft.every { None => Some(Every::Day), Some(Every::Day) => Some(Every::Week), Some(Every::Week) => Some(Every::Month), Some(Every::Month) | Some(Every::Custom) => None };
     }))
 }
 
@@ -424,6 +438,19 @@ mod tests {
         assert_eq!(super::due_reminders(&tasks, &reminded, "2026-01-02T18:00", (2026, 1, 2)).len(), 1);
         let moved = vec![Item { text: "Missed yesterday due:2026-01-02T11:00".into(), ..tasks[0].clone() }];
         assert_eq!(super::due_reminders(&moved, &reminded, "2026-01-02T12:00", (2026, 1, 2)).len(), 1, "a new due time reminds again");
+    }
+
+    #[test]
+    fn a_custom_repeat_is_ticked_in_nextcloud_not_here() {
+        use crate::config::{Config, Item, Nextcloud, Store};
+        use crate::island::Island;
+        let nextcloud = Nextcloud { url: "https://cloud.example.com".into(), user: "me".into(), ..Nextcloud::default() };
+        let mut s = Island::new(Store::memory(Config { tasks: vec![Item::new("Bins due:2026-01-01 every:custom")], nextcloud, ..Config::default() }), Vec::new());
+        let key = s.cfg.tasks[0].key;
+        super::tick(&mut s, key);
+        assert_eq!(s.cfg.tasks.len(), 1);
+        assert!(s.nextcloud[crate::nextcloud::Kind::Tasks as usize].error.is_some());
+        assert_eq!(Task::parse("Bins every:custom", (2026, 1, 1)).next((2026, 1, 1)), None);
     }
 
     #[test]

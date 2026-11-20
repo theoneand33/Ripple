@@ -537,6 +537,8 @@ fn edited_event(ics: &str, text: &str) -> Option<String> {
     let (mut drop, mut add) = (Vec::new(), Vec::new());
     if osummary != summary { drop.push("SUMMARY"); add.push(format!("SUMMARY:{}", escape_text(summary))) }
     if (oday, otime) != (day, time) {
+        // Ripple shows a series once, on its first day: moving that would move every occurrence.
+        if property(ics, "VEVENT", "RRULE").is_some() || property(ics, "VEVENT", "RECURRENCE-ID").is_some() { return None }
         // DTEND, or DURATION's days and hours; an all-day event without either lasts a day.
         let length = property(ics, "VEVENT", "DTEND").and_then(|(_, v)| Some(minutes(ics_time(&v)?) - minutes(old_start)))
             .or_else(|| property(ics, "VEVENT", "DURATION").and_then(|(_, v)| duration(&v)))
@@ -714,17 +716,29 @@ fn open_task(ics: &str) -> Option<String> {
             // 1-4 high, 5 medium, 6-9 low; 0 none (RFC 5545 3.8.1.9).
             "PRIORITY" => task.priority = match value.trim().parse::<u8>() { Ok(1..=4) => 3, Ok(5) => 2, Ok(6..=9) => 1, _ => 0 },
             "DUE" => task.due = ics_time(value),
-            "RRULE" => task.every = value.split(';').find_map(|p| match p.trim().to_ascii_uppercase().as_str() {
-                "FREQ=DAILY" => Some(Every::Day),
-                "FREQ=WEEKLY" => Some(Every::Week),
-                "FREQ=MONTHLY" => Some(Every::Month),
-                _ => None,
-            }),
+            "RRULE" => task.every = Some(simple_rule(value).unwrap_or(Every::Custom)),
             _ => {}
         }
     }
     task.title = summary.filter(|_| open)?;
     Some(task.to_string())
+}
+
+/// A repeat rule as Ripple's daily, weekly or monthly, when it is only that (plus a week start or
+/// an interval of 1); anything more is `Every::Custom`, which Ripple leaves to Nextcloud.
+fn simple_rule(rule: &str) -> Option<Every> {
+    let mut every = None;
+    for part in rule.split(';').map(|p| p.trim().to_ascii_uppercase()) {
+        match part.as_str() {
+            "FREQ=DAILY" => every = Some(Every::Day),
+            "FREQ=WEEKLY" => every = Some(Every::Week),
+            "FREQ=MONTHLY" => every = Some(Every::Month),
+            "INTERVAL=1" | "" => {}
+            p if p.starts_with("WKST=") => {}
+            _ => return None,
+        }
+    }
+    every
 }
 
 /// A DATE or DATE-TIME value: its day, and its time on this clock. UTC moves to this clock; a
@@ -772,7 +786,8 @@ fn new_task(uid: &str, text: &str, stamp: &str) -> String {
         Some(((y, m, d), Some((h, min)))) => extra += &format!("DUE:{y:04}{m:02}{d:02}T{h:02}{min:02}00\r\n"),
         None => {}
     }
-    if let Some(every) = task.every { extra += &format!("RRULE:FREQ={}\r\n", match every { Every::Day => "DAILY", Every::Week => "WEEKLY", Every::Month => "MONTHLY" }) }
+    let freq = match task.every { Some(Every::Day) => Some("DAILY"), Some(Every::Week) => Some("WEEKLY"), Some(Every::Month) => Some("MONTHLY"), Some(Every::Custom) | None => None };
+    if let Some(freq) = freq { extra += &format!("RRULE:FREQ={freq}\r\n") }
     format!("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Ripple//EN\r\nBEGIN:VTODO\r\nUID:{uid}\r\nDTSTAMP:{stamp}\r\nCREATED:{stamp}\r\nSUMMARY:{summary}\r\n{extra}STATUS:NEEDS-ACTION\r\nEND:VTODO\r\nEND:VCALENDAR\r\n")
 }
 
@@ -969,12 +984,19 @@ fn sync_events(c: &Client, want: &str, items: &[Item], pending: &[String], out: 
     let listed = list_objects(c, &calendar, &query, event)?;
     // An event before the listed window stays here only: uploaded, the next listing would miss it and drop it.
     let listable = |(y, m, d): (i32, u32, u32)| format!("{y:04}{m:02}{d:02}").as_str() >= &since[..8];
-    upload_edits(c, items, out, |ics, text| edited_event(ics, text).filter(|_| event_day(text).is_some_and(|(day, _)| listable(day))))?;
+    let stranded = items.iter().any(|i| i.remote.as_ref().is_some_and(|r| r.text != i.text) && event_day(&i.text).is_some_and(|(day, _)| !listable(day)));
+    let refused = std::cell::Cell::new(false);
+    upload_edits(c, items, out, |ics, text| {
+        if !event_day(text).is_some_and(|(day, _)| listable(day)) { return None }
+        let body = edited_event(ics, text);
+        if body.is_none() { refused.set(true) }
+        body
+    })?;
     upload_new(c, items, &listed, out, |uid, text| event_day(text).filter(|(day, _)| listable(*day)).map(|(day, title)| new_event(uid, day, title, &stamp)))?;
     out.server = Some(list_objects(c, &calendar, &query, event)?);
     // Written there, the next listing would miss it and drop it here, so it isn't: say so.
-    let stranded = items.iter().any(|i| i.remote.as_ref().is_some_and(|r| r.text != i.text) && event_day(&i.text).is_some_and(|(day, _)| !listable(day)));
     if stranded { return Err("An event moved over a year back stays in Ripple only".into()) }
+    if refused.get() { return Err("A repeating event moves in Nextcloud only; Ripple renames it but doesn't move it".into()) }
     Ok(())
 }
 
@@ -1148,7 +1170,11 @@ mod tests {
         let written = new_task("u", rich, "20260101T000000Z");
         assert!(written.contains("PRIORITY:1\r\nDUE:20261201T093000\r\nRRULE:FREQ=MONTHLY\r\n") && written.contains("SUMMARY:Pay rent\r\n"));
         assert_eq!(open_task(&written).as_deref(), Some(rich));
-        assert_eq!(open_task("BEGIN:VTODO\r\nSUMMARY:Low\r\nPRIORITY:7\r\nRRULE:FREQ=WEEKLY;BYDAY=MO\r\nEND:VTODO").as_deref(), Some("! Low every:week"));
+        assert_eq!(open_task("BEGIN:VTODO\r\nSUMMARY:Low\r\nPRIORITY:7\r\nRRULE:FREQ=WEEKLY;WKST=MO;INTERVAL=1\r\nEND:VTODO").as_deref(), Some("! Low every:week"));
+        let fortnightly = "BEGIN:VCALENDAR\r\nBEGIN:VTODO\r\nSUMMARY:Bins\r\nRRULE:FREQ=WEEKLY;INTERVAL=2\r\nEND:VTODO\r\nEND:VCALENDAR\r\n";
+        assert_eq!(open_task(fortnightly).as_deref(), Some("Bins every:custom"), "a rule Ripple can't follow is left to Nextcloud");
+        assert!(edited_task(fortnightly, "Take the bins out every:custom").unwrap().contains("RRULE:FREQ=WEEKLY;INTERVAL=2"));
+        assert!(!new_task("u", "Bins every:custom", "").contains("RRULE"));
         assert_eq!(open_task("BEGIN:VTODO\r\nSUMMARY:Task\r\nBEGIN:VALARM\r\nSUMMARY:Alarm\r\nEND:VALARM\r\nEND:VTODO").as_deref(), Some("Task"));
     }
 
@@ -1187,13 +1213,16 @@ mod tests {
         let meeting = "BEGIN:VEVENT\r\nDTSTART;VALUE=DATE:20261119\r\nDTEND;VALUE=DATE:20261120\r\nSUMMARY:10:00 Meeting\r\nEND:VEVENT\r\n";
         let moved_meeting = edited_event(meeting, "2026-11-20 10:00 Meeting").unwrap();
         assert!(moved_meeting.contains("DTSTART;VALUE=DATE:20261120\r\nDTEND;VALUE=DATE:20261121\r\n") && moved_meeting.contains("SUMMARY:10:00 Meeting"), "{moved_meeting}");
+        let series = "BEGIN:VEVENT\r\nDTSTART;VALUE=DATE:20261119\r\nRRULE:FREQ=WEEKLY;BYDAY=TH\r\nSUMMARY:Gym\r\nEND:VEVENT\r\n";
+        assert_eq!(edited_event(series, "2026-11-20 Gym"), None, "a series isn't moved");
+        assert!(edited_event(series, "2026-11-19 Gym class").unwrap().contains("SUMMARY:Gym class"), "but it can be renamed");
         let trip = "BEGIN:VEVENT\r\nDTSTART;VALUE=DATE:20261101\r\nDURATION:P3D\r\nSUMMARY:Trip\r\nEND:VEVENT\r\n";
         assert!(edited_event(trip, "2026-11-10 Trip").unwrap().contains("DTSTART;VALUE=DATE:20261110\r\nDTEND;VALUE=DATE:20261113\r\n"), "a moved event keeps its length");
         let todo = "BEGIN:VCALENDAR\r\nBEGIN:VTODO\r\nSUMMARY:Rent\r\nRRULE:FREQ=MONTHLY;BYMONTHDAY=1\r\nDESCRIPTION:Landlord\r\nEND:VTODO\r\nEND:VCALENDAR\r\n";
-        let task = edited_task(todo, "!! Pay rent every:month").unwrap();
+        let task = edited_task(todo, "!! Pay rent every:custom").unwrap();
         assert!(task.contains("RRULE:FREQ=MONTHLY;BYMONTHDAY=1") && task.contains("DESCRIPTION:Landlord"), "an unchanged repeat keeps its rule");
         assert!(task.contains("SUMMARY:Pay rent\r\nPRIORITY:5\r\nEND:VTODO"));
-        assert_eq!(open_task(&task).as_deref(), Some("!! Pay rent every:month"));
+        assert_eq!(open_task(&task).as_deref(), Some("!! Pay rent every:custom"));
         assert_eq!((duration("P1DT2H30M"), duration("PT30M"), duration("P2W"), duration("1H")), (Some(1590), Some(30), Some(20_160), None));
         assert_eq!(ics_time("20261119T1500"), Some(((2026, 11, 19), Some((15, 0)))));
         assert_eq!((ics_time("2026111"), ics_time("20261119X")), (None, None));
