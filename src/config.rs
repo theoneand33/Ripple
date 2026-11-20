@@ -89,6 +89,67 @@ fn known_tab<'de, D: Deserializer<'de>>(d: D) -> Result<Tab, D::Error> {
     Ok(Tab::try_from(u8::deserialize(d)?).unwrap_or(Config::default().default_tab))
 }
 
+/// What an Overview tile shows: a widget made for the dashboard, or a tab's own panel.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Widget {
+    Clock,
+    Media,
+    Weather,
+    Battery,
+    /// Today's events and the tasks left.
+    Today,
+    Panel(Tab),
+}
+
+impl Widget {
+    pub const OWN: [Widget; 5] = [Widget::Clock, Widget::Media, Widget::Weather, Widget::Battery, Widget::Today];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Widget::Clock => "Clock",
+            Widget::Media => "Now Playing",
+            Widget::Weather => "Weather",
+            Widget::Battery => "Battery",
+            Widget::Today => "Today",
+            Widget::Panel(tab) => tab.name(),
+        }
+    }
+}
+
+/// One Overview tile: its widget and its size in grid cells.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct Tile {
+    pub widget: Widget,
+    /// Columns, of `Tile::COLS`.
+    pub w: u8,
+    /// Rows, up to `Tile::ROWS`.
+    pub h: u8,
+}
+
+impl Tile {
+    pub const COLS: u8 = 4;
+    pub const ROWS: u8 = 6;
+
+    /// Panels open full width and tall: they were drawn for the whole Island.
+    pub fn new(widget: Widget) -> Tile {
+        let (w, h) = match widget { Widget::Media => (4, 3), Widget::Panel(_) => (4, 4), _ => (2, 2) };
+        Tile { widget, w, h }
+    }
+
+    pub fn sized(self, w: i32, h: i32) -> Tile {
+        Tile { w: w.clamp(1, Tile::COLS.into()) as u8, h: h.clamp(1, Tile::ROWS.into()) as u8, ..self }
+    }
+}
+
+/// A saved dashboard, without the tiles this version can't read (a removed tab's panel).
+fn known_tiles<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<Tile>, D::Error> {
+    Ok(match serde_json::Value::deserialize(d)? {
+        serde_json::Value::Array(tiles) => tiles.into_iter().filter_map(|v| serde_json::from_value(v).ok()).collect(),
+        _ => Config::default().dashboard,
+    })
+}
+
 /// (value, label, Island colour, text colour). A theme is a preset for the two colours; they
 /// stay editable afterwards.
 pub const THEMES: [(&str, &str, &str, &str); 3] = [
@@ -238,6 +299,9 @@ pub struct Config {
     pub default_tab: Tab,
     /// Large Mode opens on the starred tab each time, not the last one used.
     pub open_default_tab: bool,
+    /// The Overview tab's tiles, in order.
+    #[serde(deserialize_with = "known_tiles")]
+    pub dashboard: Vec<Tile>,
     /// Seconds Large Mode stays open after the pointer leaves, once its tab was changed.
     pub tab_linger: f32,
     pub battery_alerts: bool,
@@ -307,6 +371,7 @@ impl Default for Config {
             hidden_tabs: vec![Tab::Stremflix],
             default_tab: Tab::Overview,
             open_default_tab: true,
+            dashboard: [Widget::Clock, Widget::Weather, Widget::Media, Widget::Today, Widget::Battery].map(Tile::new).into(),
             tab_linger: 1.0,
             battery_alerts: true,
             island_border: false,
@@ -364,6 +429,9 @@ impl Config {
         for t in Tab::ALL {
             if !self.tab_order.contains(&t) { self.tab_order.push(t) }
         }
+        let mut seen = Vec::new();
+        self.dashboard.retain(|t| t.widget != Widget::Panel(Tab::Overview) && !seen.contains(&t.widget) && { seen.push(t.widget); true });
+        for t in &mut self.dashboard { *t = t.sized(t.w.into(), t.h.into()) }
         if self.hidden_tabs.len() >= Tab::ALL.len() { self.hidden_tabs.clear() }
         self.island_x = self.island_x.clamp(0.0, 100.0);
         self.island_y = self.island_y.clamp(0.0, 1000.0);
@@ -548,6 +616,13 @@ mod tests {
         let cfg = serde_json::from_str::<Config>(r#"{"tab_order": [7, 2, 3, 0], "hidden_tabs": [3, 0], "default_tab": 7}"#).unwrap().normalized();
         assert_eq!(cfg.tab_order, [Overview, Search, Workflows, Assistant, Clipboard, Tasks, T3, Notes, Stremflix, Shelf, System, Calendar, Limits, Pomodoro, Calculator, Plugins]);
         assert_eq!((cfg.hidden_tabs.as_slice(), cfg.default_tab), ([Search].as_slice(), Overview));
+    }
+
+    #[test]
+    fn saved_dashboards_drop_unknown_and_repeated_tiles() {
+        let cfg = serde_json::from_str::<Config>(r#"{"dashboard": [{"widget": "clock", "w": 2, "h": 2}, {"widget": {"panel": 99}, "w": 4, "h": 4}, {"widget": {"panel": 6}, "w": 9, "h": 0}, {"widget": "clock", "w": 1, "h": 1}, {"widget": {"panel": 2}, "w": 4, "h": 4}, {"widget": "gone", "w": 1, "h": 1}]}"#).unwrap().normalized();
+        assert_eq!(cfg.dashboard, [Tile { widget: Widget::Clock, w: 2, h: 2 }, Tile { widget: Widget::Panel(Tab::Tasks), w: 4, h: 1 }]);
+        assert_eq!(serde_json::from_str::<Config>(r#"{"dashboard": null}"#).unwrap().dashboard, Config::default().dashboard);
     }
 
     #[test]

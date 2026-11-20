@@ -1,59 +1,281 @@
-//! Overview: the clock and date, or the playing track with its controls; weather and battery.
+//! Overview: a dashboard of tiles the user arranges. A tile is a widget made for it (clock,
+//! now playing, weather, battery, today) or another tab's panel. The pencil edits the layout.
 
-use rune::{El, Transition, col, el, icon, row, text};
+use rune::{Drag, El, Key, KeyEvent, Phase, Transition, Tx, col, el, icon, row, text};
 
-use super::accent;
+use super::{Scrolls, accent, card, empty, pill, ring, tool};
+use crate::config::{Tab, Tile, Widget};
 use crate::icons;
-use crate::island::{Island, control, cover, estimate_width, marquee, visualizer};
+use crate::island::{Island, SPRING, control, cover, estimate_width, marquee, visualizer};
+use crate::nextcloud::event_day;
 use crate::system::MediaCommand;
 
-pub fn view(s: &Island) -> El {
-    let (bg, fg) = (s.cfg.bg().alpha(1.0), s.cfg.text());
-    let muted = fg.alpha(0.6 * fg.a);
-    let weather = row().key("weather").absolute(24.0, 20.0).gap(4.0).center_y()
-        .child(icon(icons::weather(s.weather.code), 16.0).color(fg))
-        .child(text(s.weather.temp.map_or("??º".to_string(), |t| format!("{t}º"))).font(s.cfg.font(15.0, 500.0)).color(fg));
-    let mut root = el().key("overview").w_full().h_full();
-    if !s.cfg.location.trim().is_empty() { root = root.child(weather) }
-    if let Some(percent) = s.percent {
-        let mut battery = row().key("battery").pin(None, Some(20.0), Some(24.0), None).px(8.0).h(24.0).gap(2.0).center_y()
-            .radius(s.cfg.radius(8.0)).fill(if s.low_battery() { accent::low() } else { fg });
-        if s.charging { battery = battery.child(icon(&icons::ZAP, 14.0).color(bg)) }
-        root = root.child(battery.child(text(format!("{percent}%")).font(s.cfg.font(13.0, 500.0).features("'tnum' 1")).color(bg)));
-    }
-    let gear = el().key("open-settings").role("button").label("Open settings").focusable(true)
-        .size(28.0, 28.0).center().radius(s.cfg.radius(8.0)).hover(fg.alpha(0.1 * fg.a)).press(fg.alpha(0.2 * fg.a))
-        .child(icon(&icons::SETTINGS, 16.0).color(muted))
-        .on_press(|s: &mut Island| if let Some(settings) = &s.settings { settings.open() });
+const GAP: f32 = 10.0;
+/// The Overview's content width: the Island's, less its two `LARGE_EDGE`s.
+const WIDTH: f32 = super::size(Tab::Overview).0 - 24.0;
+/// One grid cell: a quarter of the width, and a row.
+const CELL: (f32, f32) = ((WIDTH - 3.0 * GAP) / Tile::COLS as f32, 52.0);
 
-    let Some(track) = &s.track else {
-        return root
-            .child(gear.pin(Some(14.0), None, None, Some(10.0)))
-            .child(
-                col().key("date").w_full().h_full().center().gap(8.0)
-                    .child(text(&s.time).key("time").font(s.cfg.font(52.0, 600.0).lh(52.0).features("'tnum' 1")).color(fg))
-                    .child(text(&s.date).font(s.cfg.font(15.0, 500.0)).color(muted)),
-            );
+/// `n` cells and the gaps between them.
+fn span(n: u8, cell: f32) -> f32 { n as f32 * cell + (n as f32 - 1.0) * GAP }
+
+/// Each tile's rect `[x, y, w, h]`: tiles fill a row left to right in order, and one that
+/// doesn't fit starts the next row, under the row's tallest tile.
+fn layout(tiles: &[Tile]) -> Vec<[f32; 4]> {
+    let (mut x, mut y, mut row_h, mut used) = (0.0, 0.0, 0.0_f32, 0);
+    tiles.iter().map(|t| {
+        if used > 0 && used + t.w > Tile::COLS { (x, y, row_h, used) = (0.0, y + row_h + GAP, 0.0, 0) }
+        let r = [x, y, span(t.w, CELL.0), span(t.h, CELL.1)];
+        (x, used, row_h) = (x + r[2] + GAP, used + t.w, row_h.max(r[3]));
+        r
+    }).collect()
+}
+
+/// A tile after its corner was dragged by `(dx, dy)`, snapped to whole cells.
+fn resized(t: Tile, dx: f32, dy: f32) -> Tile {
+    let cells = |n: u8, cell: f32, d: f32| ((span(n, cell) + d + GAP) / (cell + GAP)).round() as i32;
+    t.sized(cells(t.w, CELL.0, dx), cells(t.h, CELL.1, dy))
+}
+
+/// Where tile `i`, dragged by `(dx, dy)`, lands: the place of the tile under its centre, the
+/// end when it's past them all, or where it was.
+fn drop_at(rects: &[[f32; 4]], i: usize, dx: f32, dy: f32) -> usize {
+    let [x, y, w, h] = rects[i];
+    let (cx, cy) = (x + w / 2.0 + dx, y + h / 2.0 + dy);
+    if let Some(j) = rects.iter().position(|r| cx >= r[0] && cx < r[0] + r[2] && cy >= r[1] && cy < r[1] + r[3]) { return j }
+    if rects.iter().all(|r| cy >= r[1] + r[3]) { rects.len() - 1 } else { i }
+}
+
+/// Every widget the dashboard could hold: its own, then each tab but this one.
+fn all() -> impl Iterator<Item = Widget> {
+    Widget::OWN.into_iter().chain(Tab::ALL.into_iter().filter(|t| *t != Tab::Overview).map(Widget::Panel))
+}
+
+fn add(s: &mut Island, widget: Widget) {
+    s.save(|c| if !c.dashboard.iter().any(|t| t.widget == widget) { c.dashboard.push(Tile::new(widget)) });
+    if let Widget::Panel(tab) = widget { super::load(s, tab) }
+}
+
+fn move_tile(s: &mut Island, from: usize, to: usize) {
+    s.save(|c| if from < c.dashboard.len() && to < c.dashboard.len() { let t = c.dashboard.remove(from); c.dashboard.insert(to, t) });
+}
+
+fn resize(s: &mut Island, i: usize, dw: i32, dh: i32) {
+    s.save(|c| if let Some(t) = c.dashboard.get_mut(i) { *t = t.sized(t.w as i32 + dw, t.h as i32 + dh) });
+}
+
+/// Dragging a tile moves it; dragging its corner resizes it. Both land on release.
+fn drag(s: &mut Island, i: usize, corner: bool, d: &mut Drag, tx: &mut Tx) {
+    match d.phase {
+        Phase::Down => { tx.instant(); s.dashboard_drag = None }
+        Phase::Move => { tx.instant(); s.dashboard_drag = Some((i, d.dx, d.dy, corner)) }
+        Phase::Up => {
+            s.dashboard_drag = None;
+            if d.cancelled() || i >= s.cfg.dashboard.len() { return }
+            if corner {
+                let t = resized(s.cfg.dashboard[i], d.dx, d.dy);
+                s.save(|c| c.dashboard[i] = t);
+            } else {
+                let to = drop_at(&layout(&s.cfg.dashboard), i, d.dx, d.dy);
+                if to != i { move_tile(s, i, to) }
+            }
+        }
+    }
+}
+
+/// The keyboard's way to edit: arrows move a tile, Shift and arrows resize it.
+fn edit_key(s: &mut Island, i: usize, ev: &KeyEvent) -> bool {
+    let len = s.cfg.dashboard.len();
+    match (&ev.key, ev.mods.shift) {
+        // At the ends too: an arrow the tile let through would change tab.
+        (Key::Left, false) => if i > 0 { move_tile(s, i, i - 1) },
+        (Key::Right, false) => if i + 1 < len { move_tile(s, i, i + 1) },
+        (Key::Left, true) => resize(s, i, -1, 0),
+        (Key::Right, true) => resize(s, i, 1, 0),
+        (Key::Up, true) => resize(s, i, 0, -1),
+        (Key::Down, true) => resize(s, i, 0, 1),
+        _ => return false,
+    }
+    true
+}
+
+pub fn view(s: &Island, layer: &mut Vec<El>) -> El {
+    let fg = s.cfg.text();
+    let muted = fg.alpha(0.6 * fg.a);
+
+    let mut header = row().key("overview-header").w_full().h(28.0).gap(8.0).center_y();
+    // A Clock tile already shows them.
+    header = if s.cfg.dashboard.iter().any(|t| t.widget == Widget::Clock) { header.child(el().grow(1.0)) } else {
+        header.child(text(&s.time).key("time").font(s.cfg.font(15.0, 600.0).features("'tnum' 1")).color(fg))
+            .child(text(&s.date).font(s.cfg.font(13.0, 500.0)).color(muted).grow(1.0).min_w(0.0).truncate())
+    };
+    header = if s.dashboard_edit {
+        header.child(pill(s, "edit-done", "Done").on_press(|s: &mut Island| s.dashboard_edit = false))
+    } else {
+        header.child(tool(s, "edit-dashboard", &icons::PENCIL, "Edit dashboard").on_press(|s: &mut Island| s.dashboard_edit = true))
+            .child(tool(s, "open-settings", &icons::SETTINGS, "Open settings").on_press(|s: &mut Island| if let Some(settings) = &s.settings { settings.open() }))
     };
 
+    // A corner being dragged reflows the grid around the size it would land on.
+    let mut tiles = s.cfg.dashboard.clone();
+    let drag = s.dashboard_drag.filter(|d| d.0 < tiles.len());
+    if let Some((i, dx, dy, true)) = drag { tiles[i] = resized(tiles[i], dx, dy) }
+    let rects = layout(&tiles);
+    let target = drag.filter(|d| !d.3).map(|(i, dx, dy, _)| drop_at(&rects, i, dx, dy));
+    let height = rects.iter().map(|r| r[1] + r[3]).fold(0.0, f32::max);
+
+    let mut grid = el().key("dashboard").w_full().h(height);
+    for (i, (t, r)) in tiles.iter().zip(&rects).enumerate() {
+        let mut tile = tile(s, i, *t, *r, layer);
+        match drag {
+            Some((j, dx, dy, false)) if j == i => tile = tile.offset(dx, dy).raise().opacity(0.85),
+            _ if target == Some(i) => tile = tile.border(2.0, fg.alpha(0.6 * fg.a)),
+            _ => {}
+        }
+        grid = grid.child(tile);
+    }
+    let mut content = col().key("dashboard-content").w_full().gap(GAP);
+    content = if tiles.is_empty() && !s.dashboard_edit { content.child(empty(s, "No widgets yet: press the pencil to add some")) } else { content.child(grid) };
+    if s.dashboard_edit { content = content.child(picker(s)) }
+
+    col().key("overview").w_full().h_full().gap(10.0)
+        .child(header)
+        .child(col().key("dashboard-scroll").w_full().grow(1.0).min_h(0.0).scrolls().child(content))
+}
+
+fn tile(s: &Island, i: usize, t: Tile, [x, y, w, h]: [f32; 4], layer: &mut Vec<El>) -> El {
+    let (bg, fg) = (s.cfg.bg().alpha(1.0), s.cfg.text());
+    let radius = s.cfg.radius(18.0);
+    let body = match t.widget {
+        Widget::Clock => clock(s, w, h),
+        Widget::Media => media(s, w),
+        Widget::Weather => weather(s, h),
+        Widget::Battery => battery(s, h),
+        Widget::Today => today(s),
+        Widget::Panel(tab) => super::panel(s, tab, layer),
+    };
+    let name = t.widget.name();
+    let mut tile = el().key(format!("tile-{:?}", t.widget)).role("group").label(name).absolute(x, y).size(w, h)
+        .radius(radius).fill(card(fg)).clip_rounded(radius)
+        .motion(SPRING)
+        .transition(Transition::opacity())
+        .child(body);
+    if s.dashboard_edit {
+        let grip = el().key("resize").role("button").label(format!("Resize {name}")).pin(None, None, Some(4.0), Some(4.0))
+            .size(28.0, 28.0).center().radius(s.cfg.radius(14.0)).hover(fg.alpha(0.18 * fg.a))
+            .child(icon(&icons::MAXIMIZE, 14.0).color(fg.alpha(0.7 * fg.a)).a11y_hidden())
+            .on_drag(move |s: &mut Island, d: &mut Drag, tx| drag(s, i, true, d, tx));
+        // Covers the tile, so a press or drag edits the layout instead of reaching the panel under it.
+        tile = tile.child(el().key("tile-edit").role("button").label(format!("{name}: drag to move, arrows move, Shift and arrows resize"))
+            .focusable(true).pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0)).center()
+            .fill(bg.alpha(0.85)).on_press(|_: &mut Island| {})
+            .on_drag(move |s: &mut Island, d: &mut Drag, tx| drag(s, i, false, d, tx))
+            .on_key(move |s: &mut Island, ev: &KeyEvent, _: &mut Tx| edit_key(s, i, ev))
+            .child(text(name).font(s.cfg.font(13.0, 700.0)).color(fg).truncate().a11y_hidden())
+            .child(tool(s, "remove", &icons::X, &format!("Remove {name}")).pin(Some(4.0), Some(4.0), None, None)
+                .on_press(move |s: &mut Island| s.save(|c| if i < c.dashboard.len() { c.dashboard.remove(i); })))
+            .child(grip));
+    }
+    tile
+}
+
+/// The widgets not on the dashboard yet, to add.
+fn picker(s: &Island) -> El {
+    let fg = s.cfg.text();
+    let mut chips = row().key("add-chips").w_full().gap(6.0).flex_wrap();
+    for widget in all().filter(|w| !s.cfg.dashboard.iter().any(|t| t.widget == *w)) {
+        chips = chips.child(pill(s, &format!("add-{widget:?}"), &format!("+ {}", widget.name())).on_press(move |s: &mut Island| add(s, widget)));
+    }
+    col().key("add-widget").w_full().gap(8.0).pt(4.0)
+        .child(text("Add a widget").font(s.cfg.font(13.0, 700.0)).color(fg.alpha(0.6 * fg.a)))
+        .child(chips)
+}
+
+fn clock(s: &Island, w: f32, h: f32) -> El {
+    let fg = s.cfg.text();
+    let c = col().key("clock").w_full().h_full().center().gap(6.0)
+        .child(text(&s.time).font(s.cfg.font((h * 0.4).min(w * 0.2).clamp(18.0, 64.0), 600.0).features("'tnum' 1")).color(fg).single_line());
+    if h < CELL.1 * 2.0 { return c }
+    c.child(text(&s.date).font(s.cfg.font(13.0, 500.0)).color(fg.alpha(0.6 * fg.a)).single_line())
+}
+
+/// A one-row tile lays its widget out in a line.
+fn stack(key: &str, h: f32) -> El {
+    let c = if h < CELL.1 * 2.0 { row() } else { col() };
+    c.key(key).w_full().h_full().center().gap(6.0)
+}
+
+fn weather(s: &Island, h: f32) -> El {
+    let fg = s.cfg.text();
+    let place = s.cfg.location.trim();
+    let mut c = stack("weather", h);
+    if place.is_empty() {
+        return c.child(icon(&icons::CLOUD_SUN, 28.0).color(fg.alpha(0.5 * fg.a)))
+            .child(text("Set a location in Settings").font(s.cfg.font(12.0, 500.0)).color(fg.alpha(0.6 * fg.a)));
+    }
+    c = c.child(row().gap(8.0).center_y()
+        .child(icon(icons::weather(s.weather.code), 28.0).color(fg))
+        .child(text(s.weather.temp.map_or("??º".to_string(), |t| format!("{t}º"))).font(s.cfg.font(30.0, 600.0)).color(fg)));
+    c.child(text(place).font(s.cfg.font(12.0, 500.0)).color(fg.alpha(0.6 * fg.a)).truncate().max_w(220.0))
+}
+
+fn battery(s: &Island, h: f32) -> El {
+    let fg = s.cfg.text();
+    let c = stack("battery", h);
+    let Some(p) = s.percent else {
+        return c.child(icon(&icons::BATTERY, 28.0).color(fg.alpha(0.5 * fg.a)))
+            .child(text("No battery").font(s.cfg.font(12.0, 500.0)).color(fg.alpha(0.6 * fg.a)));
+    };
+    let tint = if s.low_battery() { accent::low() } else { accent::green() };
+    let glyph = if s.charging { &icons::ZAP } else { &icons::BATTERY };
+    c.child(ring(if h < CELL.1 * 2.0 { 32.0 } else { 52.0 }, p as f32, tint, icon(glyph, 18.0).color(tint)))
+        .child(text(format!("{p}%{}", if s.charging { " · Charging" } else { "" })).font(s.cfg.font(13.0, 600.0).features("'tnum' 1")).color(fg))
+}
+
+fn today(s: &Island) -> El {
+    let fg = s.cfg.text();
+    let muted = fg.alpha(0.6 * fg.a);
+    let events: Vec<&str> = s.cfg.events.iter().filter_map(|e| event_day(&e.text).filter(|(d, _)| *d == s.today).map(|(_, t)| t)).collect();
+    let mut c = col().key("today").w_full().h_full().padding(12.0).gap(4.0)
+        .child(text("Today").font(s.cfg.font(13.0, 700.0)).color(accent::red()));
+    if events.is_empty() { c = c.child(text("No events").font(s.cfg.font(13.0, 500.0)).color(muted)) }
+    for (i, e) in events.iter().take(2).enumerate() {
+        c = c.child(text(*e).key(format!("event-{i}")).font(s.cfg.font(13.0, 500.0)).color(fg).truncate());
+    }
+    if events.len() > 2 { c = c.child(text(format!("+{} more", events.len() - 2)).font(s.cfg.font(12.0, 500.0)).color(muted)) }
+    let tasks = s.cfg.tasks.len();
+    c.child(el().grow(1.0))
+        .child(text(match tasks { 0 => "No tasks left".to_string(), 1 => "1 task left".to_string(), n => format!("{n} tasks left") })
+            .font(s.cfg.font(12.0, 500.0)).color(muted))
+}
+
+/// Droppy's player: cover and title on top, the progress bar with both times, then the controls.
+fn media(s: &Island, w: f32) -> El {
+    let fg = s.cfg.text();
+    let muted = fg.alpha(0.6 * fg.a);
+    let Some(track) = &s.track else {
+        return col().key("media").w_full().h_full().center().gap(6.0)
+            .child(icon(&icons::MUSIC, 28.0).color(fg.alpha(0.5 * fg.a)))
+            .child(text("Nothing playing").font(s.cfg.font(12.0, 500.0)).color(muted));
+    };
     let name = if track.name.is_empty() { "Unknown Title" } else { &track.name };
     let artist = if track.artist.is_empty() { "Unknown Artist" } else { &track.artist };
-    let media = |key: &'static str, glyph: &'static rune::Icon, size: f32, command: MediaCommand, label: &str| {
+    let button = |key: &'static str, glyph: &'static rune::Icon, size: f32, command: MediaCommand, label: &str| {
         el().key(key).role("button").label(label).focusable(true)
             .padding(4.0).radius(s.cfg.radius(8.0)).hover(fg.alpha(0.1 * fg.a)).press(fg.alpha(0.2 * fg.a)).press_scale(0.97)
             .child(icon(glyph, size).color(fg))
             .on_press(move |s: &mut Island| control(s, command))
     };
-    // Droppy's player: cover and title on top, the progress bar with both times, then the controls.
-    const TITLE_W: f32 = 250.0;
-    let line = |key: &str, text: El, text_width: f32, height: f32| marquee(s, key, text, text_width, TITLE_W, 10.0).w(TITLE_W).h(height);
+    // The tile less its padding, the cover, the visualizer and the gaps between them.
+    let title_w = w - 24.0 - 56.0 - 25.0 - 24.0;
+    let line = |key: &str, text: El, text_width: f32, height: f32| marquee(s, key, text, text_width, title_w, 10.0).w(title_w).h(height);
     let head = row().key("track-head").w_full().gap(12.0).center_y()
         .child(cover(s, 56.0, 12.0, 24.0, 1.06))
         .child(col().key("details").grow(1.0).min_w(0.0)
             .child(line("track-name", text(name).font(s.cfg.font(17.0, 700.0)).color(fg).single_line(), estimate_width(name, 17.0), 22.0))
             .child(line("track-artist", text(artist).font(s.cfg.font(14.0, 500.0)).color(muted).single_line(), estimate_width(artist, 14.0), 18.0)))
         .child(visualizer(track.playing, accent::pink()));
-    let mut body = col().key(format!("track-{}-{}", track.name, track.artist)).pin(Some(20.0), Some(46.0), Some(20.0), None).gap(12.0)
+    let mut body = col().key(format!("track-{}-{}", track.name, track.artist)).w_full().h_full().padding(12.0).gap(10.0)
         .opacity(if track.playing { 1.0 } else { 0.5 })
         .transition(Transition::blur_replace())
         .child(head);
@@ -63,15 +285,46 @@ pub fn view(s: &Island) -> El {
         body = body.child(row().key("track-progress").role("progressbar").label(format!("{} of {}", clock(position), clock(length))).w_full().gap(10.0).center_y()
             .child(time(clock(position)).a11y_hidden())
             .child(el().grow(1.0).h(6.0).radius(3.0).fill(fg.alpha(0.15 * fg.a)).a11y_hidden()
-                .child(el().h_full().w_frac(position.min(length) as f32 / length as f32).radius(3.0).fill(fg.alpha(0.55 * fg.a))))
+                .child(el().h_full().w_frac(position.min(length) as f32 / length.max(1) as f32).radius(3.0).fill(fg.alpha(0.55 * fg.a))))
             .child(time(format!("−{}", clock(length.saturating_sub(position)))).a11y_hidden()));
     }
-    body = body.child(row().key("controls").w_full().gap(36.0).center()
-        .child(media("previous", &icons::SKIP_BACK, 22.0, MediaCommand::Previous, "Previous"))
-        .child(media("play-pause", if track.playing { &icons::PAUSE } else { &icons::PLAY }, 28.0, MediaCommand::PlayPause, if track.playing { "Pause" } else { "Play" }))
-        .child(media("next", &icons::SKIP_FORWARD, 22.0, MediaCommand::Next, "Next")));
-    root
-        .child(text(&s.time).key("time").pin(Some(0.0), Some(16.0), Some(0.0), None).align(rune::Align::Center).font(s.cfg.font(15.0, 600.0).features("'tnum' 1")).color(fg))
-        .child(gear.pin(None, None, Some(14.0), Some(10.0)))
-        .child(body)
+    body.child(el().grow(1.0)).child(row().key("controls").w_full().gap(36.0).center()
+        .child(button("previous", &icons::SKIP_BACK, 22.0, MediaCommand::Previous, "Previous"))
+        .child(button("play-pause", if track.playing { &icons::PAUSE } else { &icons::PLAY }, 28.0, MediaCommand::PlayPause, if track.playing { "Pause" } else { "Play" }))
+        .child(button("next", &icons::SKIP_FORWARD, 22.0, MediaCommand::Next, "Next")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tile(w: u8, h: u8) -> Tile { Tile { widget: Widget::Clock, w, h } }
+
+    #[test]
+    fn tiles_fill_rows_in_order() {
+        let r = layout(&[tile(2, 2), tile(1, 1), tile(2, 1), tile(4, 3)]);
+        assert_eq!((r[0][0], r[0][1]), (0.0, 0.0));
+        assert_eq!((r[1][0], r[1][1]), (span(2, CELL.0) + GAP, 0.0));
+        // Three columns used: the two-wide tile starts a row under the tallest one.
+        assert_eq!((r[2][0], r[2][1]), (0.0, span(2, CELL.1) + GAP));
+        assert_eq!(r[3][1], r[2][1] + span(1, CELL.1) + GAP);
+        assert_eq!(r[3][2], WIDTH);
+    }
+
+    #[test]
+    fn a_dragged_corner_snaps_to_cells_within_bounds() {
+        let t = tile(2, 2);
+        assert_eq!(resized(t, CELL.0 + GAP, 0.0), tile(3, 2));
+        assert_eq!(resized(t, 10.0, -20.0), t);
+        assert_eq!(resized(t, -1000.0, 1000.0), tile(1, Tile::ROWS));
+    }
+
+    #[test]
+    fn a_dragged_tile_lands_on_the_tile_under_its_centre() {
+        let r = layout(&[tile(2, 2), tile(2, 2), tile(4, 2)]);
+        assert_eq!(drop_at(&r, 0, r[1][0], 0.0), 1);
+        assert_eq!(drop_at(&r, 0, 0.0, r[2][1]), 2);
+        assert_eq!(drop_at(&r, 2, 0.0, 1000.0), 2);
+        assert_eq!(drop_at(&r, 1, 2.0, 2.0), 1);
+    }
 }
