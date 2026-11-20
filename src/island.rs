@@ -764,13 +764,14 @@ impl Island {
     }
 
     /// A drag starting anywhere on the desktop opens the Shelf, ready for the drop. When it ends
-    /// somewhere else, the Island rests.
+    /// it rests, even under the pointer, unless files are over the Island: then the drop or the
+    /// drag leaving decides.
     pub fn desktop_drag(&mut self, active: bool) {
         if active {
             if !self.visible_tabs().contains(&Tab::Shelf) { return }
             self.desktop_drag = true;
             self.open_shelf();
-        } else if std::mem::take(&mut self.desktop_drag) && !self.hovered && !self.dropping {
+        } else if std::mem::take(&mut self.desktop_drag) && !self.dropping {
             self.set_mode(Mode::Still);
         }
     }
@@ -1775,6 +1776,15 @@ mod tests {
         s.drop_hover(false, &mut Tx::default());
         assert_eq!(s.mode, Mode::Large);
         s.desktop_drag(false);
+        assert_eq!(s.mode, Mode::Still);
+        // Ending over the Island, even under the pointer, waits for the drop, then a leave rests it.
+        s.desktop_drag(true);
+        s.hover(true, &mut Tx::default());
+        s.drop_hover(true, &mut Tx::default());
+        s.desktop_drag(false);
+        assert_eq!(s.mode, Mode::Large);
+        s.hover(false, &mut Tx::default());
+        s.drop_hover(false, &mut Tx::default());
         assert_eq!(s.mode, Mode::Still);
         // A drop on the Shelf keeps it open after the drag ends.
         s.desktop_drag(true);
