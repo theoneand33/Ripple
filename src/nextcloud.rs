@@ -584,6 +584,8 @@ pub struct ShelfOutcome {
     gone: Vec<PathBuf>,
     /// Files new on Nextcloud, downloaded into the cache folder.
     downloaded: Vec<PathBuf>,
+    /// Names deleted on Nextcloud, as they left the Shelf here.
+    removed: Vec<String>,
     error: Option<String>,
 }
 
@@ -593,11 +595,23 @@ pub struct ShelfOutcome {
 pub fn sync_shelf(nc: &Nextcloud, folder: &str, files: &[PathBuf], base: &[String], cache: &Path) -> ShelfOutcome {
     let c = Client::new(nc);
     let mut out = ShelfOutcome::default();
-    out.error = shelf(&c, folder, files, base, cache, &mut out).err();
+    out.error = match shelf(&c, folder, files, base, cache, &mut out) {
+        Ok(skipped) => skipped,
+        // Stopped partway: what wasn't reached keeps its place in `base`, so the next sync still
+        // knows it was removed on one side.
+        Err(e) => {
+            let gone: Vec<_> = out.gone.iter().filter_map(|f| f.file_name().map(|n| n.to_string_lossy().into_owned())).collect();
+            if let Some(both) = &mut out.both {
+                for b in base { if !both.contains(b) && !out.removed.contains(b) && !gone.contains(b) { both.push(b.clone()) } }
+            }
+            Some(e)
+        }
+    };
     out
 }
 
-fn shelf(c: &Client, folder: &str, files: &[PathBuf], base: &[String], cache: &Path, out: &mut ShelfOutcome) -> Result<(), String> {
+/// Ok with a file that was skipped, or Err when the sync stopped partway.
+fn shelf(c: &Client, folder: &str, files: &[PathBuf], base: &[String], cache: &Path, out: &mut ShelfOutcome) -> Result<Option<String>, String> {
     let mut url = format!("{}/remote.php/dav/files/{}/", c.base, percent_encode(&c.user));
     let mut made = Vec::new();
     for part in folder.split('/').filter(|p| !matches!(*p, "" | "." | "..")) {
@@ -641,6 +655,7 @@ fn shelf(c: &Client, folder: &str, files: &[PathBuf], base: &[String], cache: &P
         // Still there, so still in `both`: the next sync tries again.
         if !ok(status) && status != 404 { skipped.get_or_insert(format!("Couldn't remove {name}: {}", failed(status))); continue }
         both.retain(|n| n != name);
+        out.removed.push(name.clone());
     }
     for (name, path) in &local {
         if listed.contains(name) {
@@ -669,7 +684,7 @@ fn shelf(c: &Client, folder: &str, files: &[PathBuf], base: &[String], cache: &P
         out.downloaded.push(path);
         both.push(name.clone());
     }
-    skipped.map_or(Ok(()), Err)
+    Ok(skipped)
 }
 
 /// The files (not folders) a PROPFIND of a folder lists, by name, with their sizes. A name that
@@ -975,6 +990,15 @@ mod tests {
         assert_eq!((out.error, out.both), (None, Some(Vec::new())));
         let made: Vec<_> = seen.lock().unwrap().iter().filter(|r| r.0 == "MKCOL").map(|r| r.1.clone()).collect();
         assert_eq!(made, ["/remote.php/dav/files/me/A/", "/remote.php/dav/files/me/A/B/"], "'..' is dropped, not followed");
+        // A delete refused partway stops the sync; old.txt, not yet reached, stays known as synced.
+        let base = serve(move |r| match r.method.as_str() {
+            "PROPFIND" => Response { status: 207, headers: vec![], body: format!("<d:multistatus xmlns:d=\"DAV:\"><d:response><d:href>{dir}x.txt</d:href></d:response></d:multistatus>") },
+            _ => Response { status: 401, headers: vec![], body: String::new() },
+        });
+        let nc = Nextcloud { url: base, user: "me".into(), password: "pw".into(), ..Nextcloud::default() };
+        let out = sync_shelf(&nc, "Ripple Shelf", &[tmp.join("old.txt")], &["old.txt".into(), "x.txt".into()], &cache);
+        assert_eq!(out.error.as_deref(), Some("Nextcloud refused the user or app password"));
+        assert_eq!((out.both.unwrap(), out.gone), (vec!["x.txt".to_string(), "old.txt".into()], Vec::new()));
         assert_eq!([in_folder("A/x", "A"), in_folder("A/B/x", "A"), in_folder("AB/x", "A")], [Some("x"), None, None]);
         std::fs::remove_dir_all(&tmp).ok();
     }
