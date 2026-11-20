@@ -21,18 +21,19 @@ impl Island {
         self.ai.generation += 1;
         let generation = self.ai.generation;
         let key = self.cfg.api_key.trim().to_string();
-        if key.is_empty() {
+        let provider = self.cfg.provider();
+        if key.is_empty() && !provider.key_hint.is_empty() {
             self.ai.answer = Some("Enter your API key in settings".into());
             return;
         }
         self.ai.answer = None;
         let Some(me) = self.me.clone() else { return };
-        let provider = self.cfg.provider();
+        let url = self.cfg.ai_url();
         let model = if self.cfg.ai_model.trim().is_empty() { provider.model.to_string() } else { self.cfg.ai_model.clone() };
         let question = self.ai.ask.text.clone();
         std::thread::spawn(move || {
             let stream = me.clone();
-            let result = crate::net::ask_ai(provider.url, &model, &key, &question, |delta| {
+            let result = crate::net::ask_ai(&url, &model, &key, &question, |delta| {
                 let delta = delta.to_string();
                 stream.update(move |s, _| if s.ai.generation == generation { s.ai.answer.get_or_insert_default().push_str(&delta) });
             });

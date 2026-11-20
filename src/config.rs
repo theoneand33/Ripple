@@ -170,12 +170,15 @@ pub struct Provider {
     pub label: &'static str,
     pub url: &'static str,
     pub model: &'static str,
+    /// Empty for a server that takes no key (Ollama, LM Studio).
     pub key_hint: &'static str,
 }
 
-pub const PROVIDERS: [Provider; 2] = [
+pub const PROVIDERS: [Provider; 4] = [
     Provider { id: "groq", label: "Groq", url: "https://api.groq.com/openai/v1", model: "llama-3.3-70b-versatile", key_hint: "gsk_..." },
     Provider { id: "openrouter", label: "OpenRouter", url: "https://openrouter.ai/api/v1", model: "meta-llama/llama-3.3-70b-instruct", key_hint: "sk-or-..." },
+    Provider { id: "ollama", label: "Ollama", url: "http://localhost:11434/v1", model: "llama3.2", key_hint: "" },
+    Provider { id: "lmstudio", label: "LM Studio", url: "http://localhost:1234/v1", model: "local-model", key_hint: "" },
 ];
 
 pub const SEARCH_ENGINES: [(&str, &str, &str); 5] = [
@@ -387,6 +390,8 @@ pub struct Config {
     pub shelf: Vec<std::path::PathBuf>,
     pub ai_provider: String,
     pub ai_model: String,
+    /// The provider's API base, for a server elsewhere; empty means the provider's own `url`.
+    pub ai_url: String,
     pub api_key: String,
     pub t3_devices: Vec<T3Device>,
     /// AI Limits: more Claude Code or Codex config folders, one per account.
@@ -459,6 +464,7 @@ impl Default for Config {
             shelf: Vec::new(),
             ai_provider: "groq".into(),
             ai_model: PROVIDERS[0].model.into(),
+            ai_url: String::new(),
             api_key: String::new(),
             t3_devices: Vec::new(),
             agent_dirs: Vec::new(),
@@ -544,6 +550,12 @@ impl Config {
 
     pub fn provider(&self) -> &'static Provider {
         PROVIDERS.iter().find(|p| p.id == self.ai_provider).unwrap_or(&PROVIDERS[0])
+    }
+
+    /// The chat completions base: the one set in Settings, else the provider's.
+    pub fn ai_url(&self) -> String {
+        let url = self.ai_url.trim().trim_end_matches('/');
+        if url.is_empty() { self.provider().url.into() } else { url.into() }
     }
 
     pub fn search_engine(&self) -> (&'static str, &'static str) {
@@ -727,6 +739,14 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(cfg, Config::default());
         assert!(backup.contains("keep me"));
+    }
+
+    #[test]
+    fn a_set_base_url_replaces_the_providers_own() {
+        let cfg = Config { ai_provider: "ollama".into(), ..Config::default() };
+        assert_eq!(cfg.ai_url(), "http://localhost:11434/v1");
+        assert!(cfg.provider().key_hint.is_empty(), "Ollama takes no key");
+        assert_eq!(Config { ai_url: " http://gpu-box:11434/v1/ ".into(), ..cfg }.ai_url(), "http://gpu-box:11434/v1");
     }
 
     #[test]

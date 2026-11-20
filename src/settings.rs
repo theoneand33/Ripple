@@ -50,6 +50,7 @@ pub struct Settings {
     bg_image: TextEdit,
     location: TextEdit,
     ai_model: TextEdit,
+    ai_url: TextEdit,
     api_key: TextEdit,
     new_app: TextEdit,
     /// The suggestion picked for `new_app`, with its own launch target.
@@ -84,6 +85,7 @@ impl Settings {
             bg_image: edit(&cfg.bg_image),
             location: edit(&cfg.location),
             ai_model: edit(&cfg.ai_model),
+            ai_url: edit(&cfg.ai_url),
             api_key: TextEdit::new("").secure(),
             new_app: edit(""),
             picked_app: None,
@@ -382,8 +384,9 @@ fn panel(s: &Settings, k: &Kit, layer: &mut Vec<El>, tab: Tab) -> Vec<El> {
                         .on_choose(move |s: &mut Settings, label: &str, _: &mut Tx| {
                             s.open = None;
                             let Some(provider) = PROVIDERS.iter().find(|p| p.label == label) else { return };
-                            s.save(|c| { c.ai_provider = provider.id.into(); c.ai_model = provider.model.into() });
+                            s.save(|c| { c.ai_provider = provider.id.into(); c.ai_model = provider.model.into(); c.ai_url.clear() });
                             s.ai_model.replace_text(provider.model);
+                            s.ai_url.clear();
                         })
                         .build(k, layer)
                 }),
@@ -392,8 +395,12 @@ fn panel(s: &Settings, k: &Kit, layer: &mut Vec<El>, tab: Tab) -> Vec<El> {
                     .child(TextInput::new(&s.ai_model).width(None).label("AI model").placeholder(cfg.provider().model)
                         .binds(|s| &mut s.ai_model, |c, v| c.ai_model = v.into()).build(k)),
                 col().w_full().gap(6.0)
+                    .child(text("Base URL").font(cfg.font(14.0, 500.0)).color(fg.alpha(0.85)))
+                    .child(TextInput::new(&s.ai_url).width(None).label("Base URL").placeholder(cfg.provider().url)
+                        .binds(|s| &mut s.ai_url, |c, v| c.ai_url = v.trim().into()).build(k)),
+                col().w_full().gap(6.0)
                     .child(text("API key").font(cfg.font(14.0, 500.0)).color(fg.alpha(0.85)))
-                    .child(TextInput::new(&s.api_key).width(None).label("API key").secure().placeholder(cfg.provider().key_hint)
+                    .child(TextInput::new(&s.api_key).width(None).label("API key").secure().placeholder(match cfg.provider().key_hint { "" => "Not needed", hint => hint })
                         .binds(|s| &mut s.api_key, |c, v| c.api_key = v.into()).build(k)),
             ]));
         }
