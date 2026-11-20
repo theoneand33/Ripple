@@ -204,10 +204,13 @@ pub fn natural_due(title: &str, today: Date, now: u32) -> (String, Option<(Date,
         if used == 0 && time.is_none() {
             (time, used) = match (clock_time(w), w, at(i + 1)) {
                 (Some(t), ..) => (Some(t), 1),
-                (None, "at" | "@", Some(next)) => match clock_time(next) {
-                    Some(t) => (Some(t), 2),
-                    // `at 5` means 5pm: the working day, not before dawn.
-                    None => match next.parse::<u32>() { Ok(h @ 1..=7) => (Some((h + 12, 0)), 2), Ok(h @ 8..=23) => (Some((h, 0)), 2), _ => (None, 0) },
+                (None, "at" | "@", Some(next)) => match at(i + 2).filter(|h| ["am", "pm"].contains(h)).and_then(|half| clock_time(&format!("{next}{half}"))) {
+                    Some(t) => (Some(t), 3),
+                    None => match clock_time(next) {
+                        Some(t) => (Some(t), 2),
+                        // `at 5` means 5pm: the working day, not before dawn.
+                        None => match next.parse::<u32>() { Ok(h @ 1..=7) => (Some((h + 12, 0)), 2), Ok(h @ 8..=23) => (Some((h, 0)), 2), _ => (None, 0) },
+                    },
                 },
                 (None, _, Some(half @ ("am" | "pm"))) => match clock_time(&format!("{w}{half}")) { Some(t) => (Some(t), 2), None => (None, 0) },
                 _ => (None, 0),
@@ -465,6 +468,8 @@ mod tests {
         assert_eq!(due("Review friday"), ("Review".into(), Some(((2026, 11, 27), None))), "today's weekday is next week's");
         assert_eq!(due("standup at 9:30"), ("standup".into(), Some(((2026, 11, 21), Some((9, 30))))), "passed today, so tomorrow");
         assert_eq!(due("Call mom at 5"), ("Call mom".into(), Some(((2026, 11, 20), Some((17, 0))))));
+        assert_eq!(due("Call Bob at 9 am"), ("Call Bob".into(), Some(((2026, 11, 21), Some((9, 0))))));
+        assert_eq!(due("Call mom at 9 pm"), ("Call mom".into(), Some(((2026, 11, 20), Some((21, 0))))));
         assert_eq!(due("Dinner tonight"), ("Dinner".into(), Some(((2026, 11, 20), Some((20, 0))))));
         assert_eq!(due("Lunch 12 pm today"), ("Lunch".into(), Some(((2026, 11, 20), Some((12, 0))))));
         assert_eq!(due("Renew passport in 2 weeks"), ("Renew passport".into(), Some(((2026, 12, 4), None))));
