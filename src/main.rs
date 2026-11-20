@@ -108,7 +108,16 @@ fn island_spec() -> AppSpec<Island> {
             ("search", |s| { s.mode = Mode::Large; s.set_tab(Tab::Search) }),
             ("workflows", |s| { s.mode = Mode::Large; s.set_tab(Tab::Workflows) }),
             ("assistant", |s| { s.mode = Mode::Large; s.set_tab(Tab::Assistant); s.ai.asked = true; s.ai.answer = Some("**Rust** is a systems language.\n\n```rust\nfn main() {}\n```".into()) }),
-            ("clipboard", |s| { s.mode = Mode::Large; s.set_tab(Tab::Clipboard); s.clipboard.push("Hello from Ripple"); }),
+            ("clipboard", |s| { s.mode = Mode::Large; s.set_tab(Tab::Clipboard); s.clipboard.push(tabs::Content::Text("Hello from Ripple".into())); }),
+            ("clipboard-pinned", |s| {
+                s.mode = Mode::Large;
+                s.set_tab(Tab::Clipboard);
+                // A 2×1 PNG header is enough for the row's size; its pixels stay blank headless.
+                let png = [&b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR"[..], &[0, 0, 7, 128, 0, 0, 4, 56]].concat();
+                for t in ["ssh deploy@10.0.0.4", "https://github.com/TopMyster/Ripple"] { s.clipboard.push(tabs::Content::Text(t.into())); }
+                s.clipboard.toggle_pin(0);
+                if let Some(image) = rune::ClipboardImage::from_png(png) { s.clipboard_image(image); }
+            }),
             ("tasks", |s| { s.mode = Mode::Large; s.set_tab(Tab::Tasks) }),
             ("tasks-sync-error", |s| {
                 s.mode = Mode::Large;

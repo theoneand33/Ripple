@@ -22,7 +22,7 @@ mod workflows;
 pub use assistant::Assistant;
 pub use calculator::Calculator;
 pub use calendar::Calendar;
-pub use clipboard::Clipboard;
+pub use clipboard::{Clipboard, Content};
 pub use limits::Limits;
 pub use notes::Notes;
 pub use pomodoro::{Clock, Pomodoro, live as pomodoro_live};
@@ -68,7 +68,8 @@ pub fn size(tab: Tab) -> (f32, f32) {
         Tab::Tasks | Tab::T3 | Tab::Plugins | Tab::Calculator => (420.0, 290.0),
         Tab::Pomodoro => (440.0, 236.0),
         Tab::Calendar => (560.0, 280.0),
-        Tab::Overview | Tab::Assistant | Tab::Clipboard => (420.0, 230.0),
+        Tab::Overview | Tab::Assistant => (420.0, 230.0),
+        Tab::Clipboard => (420.0, 290.0),
         Tab::Weather => (420.0, 190.0),
     }
 }

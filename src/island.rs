@@ -347,7 +347,7 @@ impl Island {
             expect_playing: None,
             search: TextEdit::default(),
             ai: tabs::Assistant::default(),
-            clipboard: tabs::Clipboard::default(),
+            clipboard: tabs::Clipboard::new(&cfg),
             pomodoro: tabs::Pomodoro::default(),
             calc: tabs::Calculator::default(),
             task: TextEdit::default(),

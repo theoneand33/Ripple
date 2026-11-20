@@ -31,7 +31,7 @@ https://github.com/user-attachments/assets/a7b9ed8a-97b5-4603-bad7-6f4c4bef1f5d
 - Workflows & QA opens a saved set of URLs with one click and keeps quick-access apps.
 - Overview shows the time, weather, and battery. Weather shows the current conditions and a five-day forecast. While music plays, it also shows the current track with playback controls. Long titles scroll with soft blurred edges, and the track stays on screen for 3 seconds after you pause.
 - AI Assistant answers questions using Groq.
-- Clipboard keeps your clipboard history.
+- Clipboard keeps your clipboard history, images included. Search it, and pin items with the star to keep them on top; pinned texts are kept across restarts.
 - Tasks is a simple to-do list. It can sync with Nextcloud Tasks (CalDAV); ticking a task marks it done there.
 - Calendar shows a month with today marked, and the picked day's events beside it. Page through months, and press Today to jump back. Events can sync with a Nextcloud calendar (CalDAV); a recurring or multi-day event shows on its first day only, and events that ended over a year ago drop out.
 - Notes keeps notes in a list beside an editor. A note's first line is its title. Pin a note with the star to keep it on top, and search to filter the list. Notes can sync with Nextcloud Notes. Set the account in the tab's settings page.
