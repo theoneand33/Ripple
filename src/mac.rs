@@ -234,3 +234,58 @@ pub fn activate_pid(pid: i32) {
         let _: objc2::runtime::Bool = msg_send![app, activateWithOptions: 0usize];
     }
 }
+
+// --- Download progress ---
+
+/// Calls `put` once a second with the share done (None: not known yet) of each download another
+/// app publishes for a file in `dir`: the NSProgress Finder draws on a downloading file.
+/// Runs for good: call it on a thread of its own.
+pub fn watch_progress(dir: &std::path::Path, put: impl Fn(Vec<Option<f64>>)) {
+    use block2::{Block, RcBlock};
+    use std::sync::{Arc, Mutex};
+    // Each published progress by address, with the block that drops it when it is unpublished.
+    type Live = Arc<Mutex<Vec<(usize, Retained<AnyObject>, RcBlock<dyn Fn()>)>>>;
+    let live: Live = Arc::default();
+    let handler = {
+        let live = live.clone();
+        RcBlock::new(move |progress: *mut AnyObject| -> *mut Block<dyn Fn()> {
+            // SAFETY: the system hands over a live NSProgress (or nil, skipped).
+            let Some(p) = (unsafe { Retained::retain(progress) }) else { return std::ptr::null_mut() };
+            let key = progress as usize;
+            let gone: RcBlock<dyn Fn()> = { let live = live.clone(); RcBlock::new(move || live.lock().unwrap_or_else(|e| e.into_inner()).retain(|e| e.0 != key)) };
+            // The caller copies the block it is given; ours stays alive in `live` until it runs.
+            let ptr = RcBlock::as_ptr(&gone);
+            live.lock().unwrap_or_else(|e| e.into_inner()).push((key, p, gone));
+            ptr
+        })
+    };
+    // SAFETY: a file URL for the folder; the subscriber token is kept for good, as the watch is.
+    let _token: *mut AnyObject = objc2::rc::autoreleasepool(|_| unsafe {
+        let url: *mut AnyObject = msg_send![class!(NSURL), fileURLWithPath: ns_string(&dir.to_string_lossy())];
+        let token: *mut AnyObject = msg_send![class!(NSProgress), addSubscriberForFileURL: url, withPublishingHandler: &*handler];
+        let _: *mut AnyObject = msg_send![token, retain];
+        token
+    });
+    loop {
+        let started = std::time::Instant::now();
+        // Publishing calls can arrive on this thread's run loop; run it for up to a second.
+        // SAFETY: this thread's own run loop; the pool drains the date.
+        objc2::rc::autoreleasepool(|_| unsafe {
+            let run_loop: *mut AnyObject = msg_send![class!(NSRunLoop), currentRunLoop];
+            let until: *mut AnyObject = msg_send![class!(NSDate), dateWithTimeIntervalSinceNow: 1.0f64];
+            let _: () = msg_send![run_loop, runUntilDate: until];
+        });
+        // A run loop with no sources returns at once: wait out the rest of the second.
+        std::thread::sleep(std::time::Duration::from_secs(1).saturating_sub(started.elapsed()));
+        // Read outside the lock, so an unpublish arriving meanwhile can't wait on it.
+        let progresses: Vec<Retained<AnyObject>> = live.lock().unwrap_or_else(|e| e.into_inner()).iter().map(|e| e.1.clone()).collect();
+        // SAFETY: NSProgress is thread-safe; these are plain property reads.
+        let fractions = progresses.iter().filter_map(|p| unsafe {
+            let ended: bool = msg_send![&**p, isFinished];
+            let cancelled: bool = msg_send![&**p, isCancelled];
+            let unknown: bool = msg_send![&**p, isIndeterminate];
+            (!ended && !cancelled).then(|| (!unknown).then(|| -> f64 { msg_send![&**p, fractionCompleted] }))
+        }).collect();
+        put(fractions);
+    }
+}

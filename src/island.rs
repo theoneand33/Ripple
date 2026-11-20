@@ -101,11 +101,14 @@ impl Alert {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Bubble {
     Pomodoro,
+    Download,
     CapsLock,
 }
 
 /// Room between the Island and a bubble, and between bubbles.
 const BUBBLE_GAP: f32 = 8.0;
+/// Seconds a finished download's tick shows.
+const DOWNLOAD_DONE: f64 = 3.0;
 
 /// The Island's own handle: its window, or on Wayland a layer-shell overlay, since Wayland
 /// lets no ordinary window place or raise itself.
@@ -324,6 +327,10 @@ pub struct Island {
     pub ai: tabs::Assistant,
     pub clipboard: tabs::Clipboard,
     pub pomodoro: tabs::Pomodoro,
+    /// Files downloading now; None while none is.
+    pub download: Option<crate::downloads::Progress>,
+    /// Until when a finished download shows its tick.
+    download_done: Option<f64>,
     pub calc: tabs::Calculator,
     pub shelf: tabs::Shelf,
     pub task: TextEdit,
@@ -455,6 +462,8 @@ impl Island {
             ai: tabs::Assistant::default(),
             clipboard: tabs::Clipboard::new(&cfg, store.dir().as_deref()),
             pomodoro: tabs::Pomodoro::default(),
+            download: None,
+            download_done: None,
             calc: tabs::Calculator::default(),
             shelf: tabs::Shelf::default(),
             task: TextEdit::default(),
@@ -546,7 +555,7 @@ impl Island {
     fn fullscreen_rule(&self) -> &str { if self.fullscreen { &self.cfg.fullscreen } else { "none" } }
 
     /// Hide when inactive: resting with no track to show.
-    pub fn hidden(&self) -> bool { self.hiding() && self.mode == Mode::Still && !self.shows_track() && !self.caps_lock && !self.pomodoro.active() }
+    pub fn hidden(&self) -> bool { self.hiding() && self.mode == Mode::Still && !self.shows_track() && !self.caps_lock && !self.pomodoro.active() && self.download.is_none() }
 
     pub fn alert(&self) -> Option<Alert> {
         // The level answers a key just pressed, so it goes over the rest.
@@ -557,7 +566,7 @@ impl Island {
         else if self.reminder.is_some() { Some(Alert::Reminder) }
         // A playing track goes over Caps Lock, which may stay on for good.
         // Beside another live activity, Caps Lock moves to a bubble.
-        else { self.capture.map(|c| c.0).or((self.caps_lock && !self.shows_track() && !self.pomodoro.active()).then_some(Alert::CapsLock)) }
+        else { self.capture.map(|c| c.0).or((self.caps_lock && !self.shows_track() && !self.pomodoro.active() && self.download.is_none()).then_some(Alert::CapsLock)) }
     }
 
     /// Live activities the compact Island has no room for, each in a circle of its own beside it:
@@ -567,7 +576,9 @@ impl Island {
         let track = self.shows_track();
         let mut kinds = Vec::new();
         if track && self.pomodoro.active() { kinds.push(Bubble::Pomodoro) }
-        if self.caps_lock && (track || self.pomodoro.active()) { kinds.push(Bubble::CapsLock) }
+        // The glance shows one live activity; a download beside a track or a clock takes a bubble.
+        if self.download.is_some() && (track || self.pomodoro.active()) { kinds.push(Bubble::Download) }
+        if self.caps_lock && (track || self.pomodoro.active() || self.download.is_some()) { kinds.push(Bubble::CapsLock) }
         let [x, y, w, h] = self.rect();
         let (mut right, mut left) = (x + w, x);
         kinds.into_iter().enumerate().map(|(i, kind)| {
@@ -642,6 +653,7 @@ impl Island {
         let (left, right) = match self.alert() {
             Some(alert) => (20.0, label(&self.alert_label(alert))),
             None if self.pomodoro.active() => (label(&self.time), 20.0 + label(&self.pomodoro.live_label())),
+            None if let Some(d) = &self.download => (label(&self.time), 20.0 + label(&d.label())),
             None => (label(&self.time), match self.weather.temp {
                 Some(temp) if !(self.cfg.standby && self.percent.is_some()) => 16.0 + label(&format!("{temp}º")),
                 _ if self.charging && self.percent.is_some() => 16.0 + percent(),
@@ -661,8 +673,9 @@ impl Island {
             _ if self.level.is_some() && !notch => 100.0, // just the ring
             _ if alerting => if notch { self.notch_glance_width() + if self.joinable() { 70.0 } else { 0.0 } } else if self.joinable() { 246.0 } else { 176.0 }, // fits icon + "Disconnected"
             _ if track => self.now_playing_width(),
-            _ if notch => if self.mode == Mode::Quick || self.cfg.show_info_idle || self.pomodoro.active() { self.notch_glance_width() } else { 210.0 },
+            _ if notch => if self.mode == Mode::Quick || self.cfg.show_info_idle || self.pomodoro.active() || self.download.is_some() { self.notch_glance_width() } else { 210.0 },
             _ if self.pomodoro.active() => (110.0 + estimate_width(&self.pomodoro.live_label(), 15.0)).ceil().max(168.0), // "23:59" + ring + "24:59"
+            _ if let Some(d) = &self.download => (110.0 + estimate_width(&d.label(), 15.0)).ceil().max(168.0),
             Mode::Quick | Mode::Still => 140.0, // fits "23:59" + weather/"100%"
         };
         if notch && track && !alerting && self.mode != Mode::Large { w = (w + 40.0).max(300.0) }
@@ -1184,6 +1197,23 @@ impl Island {
         true
     }
 
+    /// A download that ends nearly done stays a moment, full, with a tick.
+    pub fn set_download(&mut self, download: Option<crate::downloads::Progress>, tx: &mut Tx) -> bool {
+        if download.is_none() && self.download_done.is_some() { return false }
+        // Nearly done when it went, so not one that stalled or was dropped early.
+        // shortcut: a download cancelled past 90% still gets the tick; check the final file if users mind.
+        let finished = download.is_none() && self.download.is_some_and(|d| d.fraction.is_some_and(|f| f >= 0.9));
+        if finished {
+            self.download = self.download.map(|d| crate::downloads::Progress { fraction: Some(1.0), ..d });
+            let at = tx.clock() + DOWNLOAD_DONE;
+            self.download_done = Some(at);
+            tx.wake_at(at);
+            return true
+        }
+        if download.is_some() { self.download_done = None }
+        self.download != download && { self.download = download; true }
+    }
+
     /// Caps Lock's alert shows from the moment it goes on until it goes off; Large stays as it is.
     pub fn set_caps_lock(&mut self, on: bool) -> bool {
         if on == self.caps_lock { return false }
@@ -1263,7 +1293,7 @@ impl Island {
 
     /// Asks for a poll at the next deadline any timer holds.
     fn schedule(&self, tx: &mut Tx) {
-        let deadlines = [self.level.map(|l| l.1), self.battery_alert_until, self.charging_alert_until, self.bluetooth_alert_until, self.reminder.as_ref().map(|r| r.1), self.capture.map(|c| c.1), self.paused_until, tabs::deadline(self), self.intro_at, self.close_at];
+        let deadlines = [self.level.map(|l| l.1), self.battery_alert_until, self.charging_alert_until, self.bluetooth_alert_until, self.reminder.as_ref().map(|r| r.1), self.capture.map(|c| c.1), self.paused_until, self.download_done, tabs::deadline(self), self.intro_at, self.close_at];
         if let Some(due) = deadlines.into_iter().flatten().reduce(f64::min) { tx.wake_at(due) }
     }
 
@@ -1314,6 +1344,7 @@ impl Island {
         }
         changed |= self.leave(tx);
         changed |= due(&mut self.paused_until);
+        if due(&mut self.download_done) { self.download = None; changed = true }
         if due(&mut self.intro_at) {
             system::open_external("https://github.com/TopMyster/Ripple/blob/main/instructions.md");
             self.save(|c| c.new_user = false);
@@ -1414,6 +1445,8 @@ impl Island {
         every(250, move || { let on = system::caps_lock().unwrap_or(false); h.update_if(move |s, _| s.set_caps_lock(on)); });
         let h = me.clone();
         std::thread::spawn(move || system::watch_levels(|v, b| h.update_if(move |s, tx| s.set_levels(v, b, tx))));
+        let h = me.clone();
+        std::thread::spawn(move || crate::downloads::watch(|d| h.update_if(move |s, tx| s.set_download(d, tx))));
         let h = me.clone();
         every(5000, move || { let b = system::battery(); h.update_if(move |s, tx| s.set_battery(b, tx)); });
         let h = me.clone();
@@ -1620,10 +1653,11 @@ fn bubble(s: &Island, kind: Bubble, [x, y, w, h]: [f32; 4]) -> El {
     let fg = cfg.text();
     let (key, content) = match kind {
         Bubble::Pomodoro => ("bubble-pomodoro", tabs::pomodoro_bubble(&s.pomodoro, h * 0.6)),
+        Bubble::Download => ("bubble-download", s.download.map_or_else(el, |d| download_ring(s, d, h * 0.6))),
         Bubble::CapsLock => ("bubble-caps-lock", el().role("img").label("Caps Lock").child(icon(Alert::CapsLock.icon(), h * 0.45).color(fg).a11y_hidden())),
     };
     let enter = Transition::blur_replace();
-    el().key(key).role("button").label(match kind { Bubble::Pomodoro => "Pomodoro: open its tab", Bubble::CapsLock => "Caps Lock is on: open Ripple" }).hit().absolute(x, y).size(w, h).center()
+    el().key(key).role("button").label(match kind { Bubble::Pomodoro => "Pomodoro: open its tab", Bubble::Download => "Downloading: open Ripple", Bubble::CapsLock => "Caps Lock is on: open Ripple" }).hit().absolute(x, y).size(w, h).center()
         .fill(cfg.bg()).radius(cfg.radius(h / 2.0)).border(1.0, fg.alpha(0.12 * fg.a))
         .box_shadow(Shadow { x: 0.0, y: 0.0, blur: 24.0, spread: 0.0, color: Color::BLACK.alpha(0.12), inset: false })
         .motion(SPRING).transition(Transition { removal: Effect { opacity: 0.0, ..enter.insertion }, ..enter })
@@ -1699,6 +1733,9 @@ fn glance(s: &Island, fg: Color) -> El {
         Some(alert) => text(s.alert_label(alert)).key("label").font(style).color(color),
         // A running Pomodoro is a live activity: its ring and time left take the right side.
         None if s.pomodoro.active() => tabs::pomodoro_live(&s.pomodoro, style),
+        None if let Some(d) = s.download => row().key("download").gap(6.0).center_y()
+            .child(download_ring(s, d, 18.0))
+            .child(text(d.label()).font(style.features("'tnum' 1")).color(download_color(s)).a11y_hidden()),
         None if cfg.standby && s.percent.is_some() => battery(),
         None => match s.weather.temp {
             Some(temp) => row().key("weather").gap(2.0).center_y()
@@ -1710,10 +1747,21 @@ fn glance(s: &Island, fg: Color) -> El {
     let row = row().key(alert.map_or("glance", Alert::key)).w_full().h_full().px(pad).center_y()
         .transition(Transition::blur_replace());
     // Mini notch centers the time when there is nothing to show beside it.
-    if cfg.notch_mode && cfg.notch_mini && alert.is_none() && s.weather.temp.is_none() && s.percent.is_none() && !s.pomodoro.active() {
+    if cfg.notch_mode && cfg.notch_mini && alert.is_none() && s.weather.temp.is_none() && s.percent.is_none() && !s.pomodoro.active() && s.download.is_none() {
         return row.justify_center().child(left);
     }
     row.justify_between().child(left).child(right)
+}
+
+/// Blue while downloading; once done, the text colour (white on the default Island, readable on a light theme).
+fn download_color(s: &Island) -> Color { if s.download_done.is_some() { s.cfg.text() } else { accent::blue() } }
+
+/// A download's ring, filled to its share done, around a download arrow; a tick once it finishes.
+fn download_ring(s: &Island, d: crate::downloads::Progress, size: f32) -> El {
+    let (glyph, label) = if s.download_done.is_some() { (&icons::CHECK, "Download finished".to_string()) } else { (&icons::DOWNLOAD, format!("Downloading, {}", d.label())) };
+    let color = download_color(s);
+    el().role("img").label(label)
+        .child(tabs::ring(size, d.percent(), color, icon(glyph, size * 0.55).color(color)))
 }
 
 /// Privacy icons at the compact Island's right end while the camera or microphone is in use,
@@ -2143,6 +2191,32 @@ mod tests {
         s.set_over(2, true, &mut tx);
         assert_ne!(s.mode, Mode::Large);
         assert_eq!(s.bubbles().len(), 1);
+    }
+
+    #[test]
+    fn a_download_shows_in_the_glance_or_beside_a_track() {
+        let mut s = island(Config { hide_inactive: true, ..Config::default() });
+        let mut tx = Tx::default();
+        assert!(s.hidden());
+        assert!(s.set_download(Some(crate::downloads::Progress { fraction: Some(0.5), count: 1 }), &mut tx));
+        assert!(!s.set_download(s.download, &mut tx), "no change, no redraw");
+        assert!(s.set_download(None, &mut tx) && s.download.is_none(), "gone at half way: stalled or cancelled, no tick");
+        s.set_download(Some(crate::downloads::Progress { fraction: Some(0.95), count: 1 }), &mut tx);
+        assert!(!s.hidden(), "a download shows even when the Island hides");
+        assert!(s.bubbles().is_empty());
+        s.set_track(Some(Track { name: "Song".into(), playing: true, ..Default::default() }), &mut tx);
+        assert_eq!(s.bubbles().iter().map(|b| b.0).collect::<Vec<_>>(), [Bubble::Download]);
+        // Finished: it stays full, with its tick, until the moment is up.
+        assert!(s.set_download(None, &mut tx));
+        assert_eq!((s.download.map(|d| d.percent()), s.download_done.is_some()), (Some(100.0), true));
+        assert!(!s.set_download(None, &mut tx));
+        s.poll(DOWNLOAD_DONE + 1.0, &mut tx);
+        assert_eq!((s.download, s.download_done), (None, None));
+        assert!(s.bubbles().is_empty());
+        // A download with no known percent just goes.
+        s.set_download(Some(crate::downloads::Progress { fraction: None, count: 1 }), &mut tx);
+        s.set_download(None, &mut tx);
+        assert_eq!(s.download, None);
     }
 
     #[test]
