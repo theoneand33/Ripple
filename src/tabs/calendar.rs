@@ -39,8 +39,9 @@ fn add_event(s: &mut Island, _: &mut Tx) {
 }
 
 /// In place, keeping its Nextcloud link: the next sync writes the change over the event there.
+/// One gone since the edit began (deleted by a sync) is added afresh, so the edit isn't lost.
 fn edit_event(c: &mut crate::config::Config, key: u64, text: String) {
-    if let Some(e) = c.events.iter_mut().find(|e| e.key == key) { e.text = text }
+    match c.events.iter_mut().find(|e| e.key == key) { Some(e) => e.text = text, None => c.events.push(Item::new(text)) }
 }
 
 fn start_edit(s: &mut Island, key: u64) {

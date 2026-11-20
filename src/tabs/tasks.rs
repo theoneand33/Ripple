@@ -170,7 +170,8 @@ fn add_task(s: &mut Island, _: &mut Tx) {
     if task.title.is_empty() { return }
     let text = task.to_string();
     match s.task_draft.editing {
-        Some(key) => s.save(|c| if let Some(t) = c.tasks.iter_mut().find(|t| t.key == key) { t.text = text }),
+        // Gone since the edit began (done elsewhere, removed by a sync): saved as a new task, not lost.
+        Some(key) => s.save(|c| match c.tasks.iter_mut().find(|t| t.key == key) { Some(t) => t.text = text, None => c.tasks.push(Item::new(text)) }),
         None => s.save(|c| c.tasks.push(Item::new(text))),
     }
     reset_draft(s);
@@ -198,6 +199,7 @@ fn step_time((h, m): (u32, u32), by: i32) -> (u32, u32) {
 /// By key, not index: a sync may have removed a task above it since the list was drawn. A
 /// recurring task comes back as a new one, due next time; Nextcloud marks this one done.
 fn tick(s: &mut Island, key: u64) {
+    if s.task_draft.editing == Some(key) { reset_draft(s) }
     let today = s.today;
     s.save(|c| {
         if let Some((i, item)) = nextcloud::remove(c, Kind::Tasks, key)
@@ -384,9 +386,15 @@ mod tests {
         s.task.replace_text("Call Bob due:tomorrow");
         super::add_task(&mut s, &mut rune::Tx::default());
         assert_eq!(s.cfg.tasks[1].text, "Call Bob due:2026-01-02", "a typed relative day is saved as its date");
+        let bob = s.cfg.tasks[1].key;
+        super::start_edit(&mut s, bob);
+        s.cfg.tasks.retain(|t| t.key != bob);
+        s.task.replace_text("Call Bob back");
+        super::add_task(&mut s, &mut rune::Tx::default());
+        assert_eq!(s.cfg.tasks[1].text, "Call Bob back due:2026-01-02", "an edit of a task gone meanwhile is kept as a new one");
         s.task.replace_text("! call mom");
         super::add_task(&mut s, &mut rune::Tx::default());
-        assert_eq!(Task::parse(&s.cfg.tasks[2].text, s.today), Task { title: "! call mom".into(), ..Task::default() });
+        assert_eq!(Task::parse(&s.cfg.tasks.last().unwrap().text, s.today), Task { title: "! call mom".into(), ..Task::default() });
     }
 
     #[test]
