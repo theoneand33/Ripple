@@ -45,7 +45,7 @@ pub struct Day {
 
 /// The current weather from Open-Meteo, which needs no API key.
 pub fn weather(location: &str, unit: &str) -> Option<Weather> {
-    weather_from("https://geocoding-api.open-meteo.com", "https://api.open-meteo.com", location, unit)
+    weather_from("https://geocoding-api.open-meteo.com", "https://api.open-meteo.com", location, unit, crate::date::now_secs())
 }
 
 fn get_json(req: ureq::RequestBuilder<ureq::typestate::WithoutBody>) -> Option<Value> {
@@ -56,7 +56,7 @@ fn get_json(req: ureq::RequestBuilder<ureq::typestate::WithoutBody>) -> Option<V
 
 /// `location` is `lat,lon` or a place name; only the part before a comma is looked up
 /// ("Paris, France" finds Paris), as Open-Meteo's search takes one name.
-fn weather_from(geocoding: &str, forecast: &str, location: &str, unit: &str) -> Option<Weather> {
+fn weather_from(geocoding: &str, forecast: &str, location: &str, unit: &str, now: i64) -> Option<Weather> {
     let coords = location.split_once(',').and_then(|(a, b)| Some((a.trim().parse::<f64>().ok()?, b.trim().parse::<f64>().ok()?)));
     let (lat, lon) = match coords {
         Some(c) => c,
@@ -72,7 +72,8 @@ fn weather_from(geocoding: &str, forecast: &str, location: &str, unit: &str) -> 
         .query("current", "temperature_2m,weather_code")
         .query("daily", "weather_code,temperature_2m_max,temperature_2m_min")
         .query("hourly", "weather_code")
-        .query("forecast_hours", "3")
+        // Starts at the current hour, which has already begun; four hours always cover the next 60 minutes.
+        .query("forecast_hours", "4")
         .query("forecast_days", "6")
         .query("timezone", "auto")
         .query("temperature_unit", if unit == "f" { "fahrenheit" } else { "celsius" }))?;
@@ -95,7 +96,7 @@ fn weather_from(geocoding: &str, forecast: &str, location: &str, unit: &str) -> 
     let hourly = &data["hourly"];
     let falling = current["weather_code"].as_u64().and_then(precip_kind).is_some();
     let precip = hourly["time"].as_array().into_iter().flatten().enumerate().filter(|_| !falling)
-        .find_map(|(i, t)| Some((unix(t.as_str()?)?, precip_kind(hourly["weather_code"][i].as_u64()?)?)));
+        .find_map(|(i, t)| Some((unix(t.as_str()?)?, precip_kind(hourly["weather_code"][i].as_u64()?)?)).filter(|&(at, _)| at > now));
     Some(Weather {
         temp: current["temperature_2m"].as_f64().map(|t| t.round() as i32),
         code: current["weather_code"].as_u64(),
@@ -274,10 +275,12 @@ mod tests {
             _ => json(404, json!({})),
         });
         let tomorrow = Day { date: (2026, 11, 21), code: Some(3), high: 13, low: 4 };
-        assert_eq!(weather_from(&base, &base, "Paris, France", "c"), Some(Weather { temp: Some(18), code: Some(61), days: vec![tomorrow], precip: None }), "a day missing a figure is left out");
+        let now = crate::date::days_from_civil(2026, 11, 20) * 86_400 + 12 * 3600 + 1800;
+        assert_eq!(weather_from(&base, &base, "Paris, France", "c", now), Some(Weather { temp: Some(18), code: Some(61), days: vec![tomorrow], precip: None }), "a day missing a figure is left out");
         let snow_at = crate::date::days_from_civil(2026, 11, 20) * 86_400 + 13 * 3600;
-        assert_eq!(weather_from(&base, &base, "1.5, -2", "f"), Some(Weather { temp: Some(70), code: Some(2), days: vec![], precip: Some((snow_at, true)) }), "the first rain or snow hour");
-        assert_eq!(weather_from(&base, &base, "Nowhere", "c"), None);
+        assert_eq!(weather_from(&base, &base, "1.5, -2", "f", now), Some(Weather { temp: Some(70), code: Some(2), days: vec![], precip: Some((snow_at, true)) }), "the first rain or snow hour");
+        assert_eq!(weather_from(&base, &base, "1.5, -2", "f", snow_at + 1800).and_then(|w| w.precip), Some((snow_at + 3600, false)), "an hour already started is skipped");
+        assert_eq!(weather_from(&base, &base, "Nowhere", "c", now), None);
     }
 
     #[test]
