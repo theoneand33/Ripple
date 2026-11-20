@@ -936,15 +936,11 @@ impl Island {
         if self.mode != Mode::Large { self.set_mode(Mode::Quick) }
     }
 
-    /// Once a second: alerts that `ripple notify` queued; several at once share one.
+    /// Once a second: alerts that `ripple notify` queued; several at once, or while one shows, share one.
     pub fn notifications(&mut self, now: f64) {
         let Some(dir) = self.store.dir() else { return };
-        let texts = crate::notify::take(&dir);
-        match texts.len() {
-            0 => {}
-            1 => self.remind(texts[0].clone(), now),
-            n => self.remind(format!("{n} alerts"), now),
-        }
+        let showing = self.reminder.as_ref().filter(|r| now < r.1).map(|r| r.0.as_str());
+        if let Some(text) = crate::notify::merge(showing, crate::notify::take(&dir)) { self.remind(text, now) }
     }
 
     pub fn set_battery(&mut self, battery: Option<(u8, bool)>, tx: &mut Tx) -> bool {
