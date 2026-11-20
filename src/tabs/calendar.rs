@@ -38,12 +38,9 @@ fn add_event(s: &mut Island, _: &mut Tx) {
     s.nextcloud_sync(Kind::Events);
 }
 
-/// Sync only uploads new events, so a synced one is deleted there and uploads afresh.
-/// shortcut: that drops what Ripple doesn't read (description, alarms); PUT over the object if that matters.
+/// In place, keeping its Nextcloud link: the next sync writes the change over the event there.
 fn edit_event(c: &mut crate::config::Config, key: u64, text: String) {
-    let Some((i, old)) = nextcloud::remove(c, Kind::Events, key) else { return };
-    let item = if old.remote.is_none() { Item { text, ..old } } else { Item::new(text) };
-    c.events.insert(i, item);
+    if let Some(e) = c.events.iter_mut().find(|e| e.key == key) { e.text = text }
 }
 
 fn start_edit(s: &mut Island, key: u64) {
@@ -186,7 +183,7 @@ mod tests {
     use crate::island::Island;
 
     #[test]
-    fn an_edit_keeps_a_local_event_and_reuploads_a_synced_one() {
+    fn an_edit_changes_the_event_in_place() {
         let synced = Item { remote: Some(Remote { id: "/cal/a.ics".into(), etag: "1".into(), text: "2026-01-01 Old".into() }), ..Item::new("2026-01-01 Old") };
         let (local, synced_key) = (Item::new("2026-01-02 Mine"), synced.key);
         let local_key = local.key;
@@ -200,7 +197,7 @@ mod tests {
         super::start_edit(&mut s, synced_key);
         s.calendar.event.replace_text("New");
         super::add_event(&mut s, &mut rune::Tx::default());
-        assert_eq!((s.cfg.events[0].text.as_str(), s.cfg.events[0].remote.is_none()), ("2026-01-01 New", true));
-        assert_eq!(s.cfg.nextcloud.deleted_events, ["/cal/a.ics"]);
+        assert_eq!((s.cfg.events[0].text.as_str(), s.cfg.events[0].key), ("2026-01-01 New", synced_key));
+        assert!(s.cfg.events[0].remote.is_some() && s.cfg.nextcloud.deleted_events.is_empty(), "it keeps its link, so sync writes over it");
     }
 }
