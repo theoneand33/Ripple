@@ -189,7 +189,9 @@ fn island_spec() -> AppSpec<Island> {
                 s.set_tab(Tab::System);
                 s.percent = Some(57);
                 const GB: u64 = 1 << 30;
-                s.stats = Some(system::Stats { cpu: 7.0, mem_used: 29 * GB, mem_total: 48 * GB, disk_free: 810 * GB, disk_total: 990 * GB, down: 15_200, up: 3_100 });
+                s.stats = Some(system::Stats { cpu: 7.0, mem_used: 29 * GB, mem_total: 48 * GB, disk_free: 810 * GB, disk_total: 990 * GB, down: 15_200, up: 3_100,
+                    top_cpu: vec![("firefox".into(), 12.4), ("rust-analyzer".into(), 6.1), ("ripple".into(), 0.8)],
+                    top_mem: vec![("firefox".into(), 3 * GB + GB / 5), ("rust-analyzer".into(), 2 * GB), ("Slack".into(), 900 << 20)] });
             }),
             ("limits", |s| {
                 s.mode = Mode::Large;

@@ -1,4 +1,5 @@
-//! System: CPU, memory, storage, network and battery, as gauges.
+//! System: CPU, memory, storage, network and battery, as gauges, and the apps using the most
+//! CPU and memory.
 
 use rune::{El, col, el, icon, row, text};
 
@@ -9,7 +10,7 @@ use crate::island::Island;
 pub fn view(s: &Island) -> El {
     let fg = s.cfg.text();
     let muted = fg.alpha(0.55 * fg.a);
-    let st = s.stats.unwrap_or_default();
+    let st = s.stats.clone().unwrap_or_default();
     let ready = s.stats.is_some();
     let pct = |used: u64, total: u64| if total == 0 { 0.0 } else { used as f32 / total as f32 * 100.0 };
     // (key, title, icon, accent, ring percent or None, value, detail, high is good)
@@ -49,7 +50,21 @@ pub fn view(s: &Island) -> El {
         for i in 0..3 { line = line.child(tiles.next().unwrap_or_else(|| el().key(format!("monitor-gap-{i}")).w(0.0).grow(1.0).padding(10.0))) }
         root = root.child(line);
     }
-    root
+    let list = |key: &str, title: &str, tint: rune::Color, rows: Vec<(String, String)>| {
+        let mut list = col().key(key.to_string()).role("list").label(title.to_string()).w(0.0).grow(1.0).min_w(0.0).padding(10.0).gap(4.0)
+            .radius(s.cfg.radius(16.0)).fill(card(fg))
+            .child(text(title).font(s.cfg.font(13.0, 700.0)).color(tint));
+        if rows.is_empty() { list = list.child(text("—").font(s.cfg.font(12.0, 400.0)).color(muted)) }
+        for (i, (name, value)) in rows.into_iter().enumerate() {
+            list = list.child(row().key(format!("{key}-{i}")).role("listitem").label(format!("{name}: {value}")).w_full().gap(8.0).center_y()
+                .child(text(name).font(s.cfg.font(12.0, 500.0)).color(fg).grow(1.0).min_w(0.0).truncate().a11y_hidden())
+                .child(text(value).font(s.cfg.font(12.0, 600.0).features("'tnum' 1")).color(muted).a11y_hidden()));
+        }
+        list
+    };
+    root.child(row().key("monitor-top").w_full().gap(10.0)
+        .child(list("top-cpu", "Top CPU", accent::indigo(), st.top_cpu.iter().map(|(n, v)| (n.clone(), format!("{v:.1}%"))).collect()))
+        .child(list("top-memory", "Top memory", accent::teal(), st.top_mem.iter().map(|(n, v)| (n.clone(), bytes(*v))).collect())))
 }
 
 /// A ring lit clockwise from the top up to `percent`: green, orange, then red as load rises.

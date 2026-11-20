@@ -745,7 +745,11 @@ pub fn battery() -> Option<(u8, bool)> {
 
 // --- System monitor ---
 
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+/// Whether `Monitor::sample` reads processes too: only while the System tab shows, as reading
+/// every process costs more than the totals.
+pub static WANT_PROCESSES: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Stats {
     /// Percent of all cores.
     pub cpu: f32,
@@ -757,6 +761,21 @@ pub struct Stats {
     /// Bytes per second on the busiest interface.
     pub down: u64,
     pub up: u64,
+    /// The apps using the most CPU (percent of all cores) and memory (bytes), processes of the
+    /// same name added up; empty unless `WANT_PROCESSES`.
+    pub top_cpu: Vec<(String, f32)>,
+    pub top_mem: Vec<(String, u64)>,
+}
+
+/// The `n` largest of each name's summed values.
+fn top<T: Copy + PartialOrd + std::ops::Add<Output = T>>(values: impl Iterator<Item = (String, T)>, n: usize) -> Vec<(String, T)> {
+    let mut sums: Vec<(String, T)> = Vec::new();
+    for (name, v) in values {
+        match sums.iter_mut().find(|s| s.0 == name) { Some(s) => s.1 = s.1 + v, None => sums.push((name, v)) }
+    }
+    sums.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    sums.truncate(n);
+    sums
 }
 
 /// Keeps the previous sample: CPU load and network rates are deltas between two.
@@ -792,6 +811,16 @@ impl Monitor {
         // shortcut: two NICs busy at once (Wi-Fi and Ethernet) show only the busier; sum physical NICs if that matters.
         let nets = self.nets.list().iter().filter(|(name, _)| !(*name == "lo" || *name == "lo0" || name.contains("Loopback"))).map(|(_, n)| n);
         let (down, up) = nets.fold((0, 0), |(d, u), n| (d.max(n.received()), u.max(n.transmitted())));
+        let (mut top_cpu, mut top_mem) = (Vec::new(), Vec::new());
+        if WANT_PROCESSES.load(std::sync::atomic::Ordering::Relaxed) {
+            use sysinfo::{ProcessRefreshKind, ProcessesToUpdate};
+            self.sys.refresh_processes_specifics(ProcessesToUpdate::All, true, ProcessRefreshKind::nothing().with_cpu().with_memory());
+            let cores = self.sys.cpus().len().max(1) as f32;
+            let name = |p: &sysinfo::Process| { let n = p.name().to_string_lossy(); n.strip_suffix(".exe").unwrap_or(&n).to_string() };
+            let procs = self.sys.processes().values();
+            top_cpu = top(procs.clone().map(|p| (name(p), p.cpu_usage() / cores)), 3);
+            top_mem = top(procs.map(|p| (name(p), p.memory())), 3);
+        }
         Stats {
             cpu: self.sys.global_cpu_usage(),
             mem_used: self.sys.used_memory(),
@@ -800,6 +829,8 @@ impl Monitor {
             disk_total: disk.map_or(0, |d| d.total_space()),
             down: (down as f64 / secs) as u64,
             up: (up as f64 / secs) as u64,
+            top_cpu,
+            top_mem,
         }
     }
 }
@@ -1063,6 +1094,12 @@ Get-StartApps -EA SilentlyContinue | ForEach-Object {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn top_adds_up_processes_by_name_and_keeps_the_largest() {
+        let procs = [("a", 1.0), ("b", 5.0), ("a", 4.5), ("c", 0.5), ("d", 2.0)].map(|(n, v)| (n.to_string(), v));
+        assert_eq!(top(procs.into_iter(), 2), [("a".to_string(), 5.5), ("b".to_string(), 5.0)]);
+    }
 
     #[cfg(windows)]
     #[test]

@@ -65,7 +65,8 @@ pub fn size(tab: Tab) -> (f32, f32) {
         Tab::Search => (445.0, 160.0),
         Tab::Workflows => (520.0, 250.0),
         Tab::Notes | Tab::Stremflix | Tab::Limits => (520.0, 290.0),
-        Tab::Shelf | Tab::System => (520.0, 230.0),
+        Tab::Shelf => (520.0, 230.0),
+        Tab::System => (520.0, 342.0),
         Tab::Tasks | Tab::T3 | Tab::Plugins | Tab::Calculator => (420.0, 290.0),
         Tab::Pomodoro => (440.0, 236.0),
         Tab::Calendar => (560.0, 280.0),
@@ -101,6 +102,7 @@ pub fn each_second(s: &mut Island, now: f64) -> bool {
     let plugins = s.mode == Mode::Large && s.tab == Tab::Plugins && s.plugins.tick();
     s.notes_tick();
     s.task_reminders(now);
+    crate::system::WANT_PROCESSES.store(s.mode == Mode::Large && s.tab == Tab::System, std::sync::atomic::Ordering::Relaxed);
     s.pomodoro.tick_all(now) | plugins
 }
 
