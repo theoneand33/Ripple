@@ -942,10 +942,11 @@ impl Island {
     /// On the hour within the set hours, while the Water widget is on the Overview and today's
     /// glasses are short of the goal.
     pub fn water_reminders(&mut self, now: f64) {
-        if rune::is_headless() || !self.cfg.water_reminders || !self.cfg.dashboard.iter().any(|t| t.widget == crate::config::Widget::Water) { return }
+        if rune::is_headless() { return }
         let t = LocalTime::at(crate::date::now_ms());
         let mark = (crate::date::days_from_civil(t.year, t.month, t.day), t.hour);
-        if self.water_mark.replace(mark) == Some(mark) { return }
+        // Track the hour even while reminders are off, so turning them on or adding the widget mid-hour stays quiet.
+        if !hour_turned(&mut self.water_mark, mark) || !self.cfg.water_reminders || !self.cfg.dashboard.iter().any(|t| t.widget == crate::config::Widget::Water) { return }
         if water_due(&self.cfg, mark) { self.remind("Drink water".into(), now) }
     }
 
@@ -1251,6 +1252,11 @@ impl Island {
     pub fn set_window(&mut self, window: WindowHandle) {
         self.passthrough.set_window(window);
     }
+}
+
+/// Moves `last` to `mark`; true only when the hour changed since an earlier mark, so the first mark after launch just seeds it.
+fn hour_turned(last: &mut Option<(i64, u32)>, mark: (i64, u32)) -> bool {
+    last.replace(mark).is_some_and(|prev| prev != mark)
 }
 
 /// A water reminder is due at `(day, hour)`: within the set hours and short of the goal.
@@ -1617,6 +1623,16 @@ mod tests {
         assert!(!water_due(&cfg, (100, 8)) && !water_due(&cfg, (100, 21)), "outside 9 to 21");
         assert!(water_due(&cfg, (101, 12)), "a new day starts at 0");
         assert!(!water_due(&Config { water_count: 2, ..cfg }, (100, 12)), "the goal is met");
+    }
+
+    #[test]
+    fn water_reminders_wait_for_the_hour_to_change() {
+        let mut last = None;
+        assert!(!hour_turned(&mut last, (100, 15)), "launching mid-hour only seeds the mark");
+        assert!(!hour_turned(&mut last, (100, 15)), "the same hour stays quiet");
+        assert!(hour_turned(&mut last, (100, 16)), "the next hour reminds");
+        assert!(hour_turned(&mut last, (101, 16)), "a new day reminds");
+        assert_eq!(last, Some((101, 16)));
     }
 
     #[test]
