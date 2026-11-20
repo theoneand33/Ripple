@@ -147,6 +147,14 @@ fn island_spec() -> AppSpec<Island> {
                 ].map(config::Item::new).into();
                 s.open_note(0);
             }),
+            ("notes-pinned-search", |s| {
+                s.mode = Mode::Large;
+                s.set_tab(Tab::Notes);
+                s.cfg.notes = ["Groceries\nMilk, eggs", "Sprint board\nMN-214", "Merge checklist\nCI green", "Board games\nCatan"].map(config::Item::new).into();
+                s.cfg.pinned_notes = vec![s.cfg.notes[2].key];
+                s.notes.search.replace_text("c");
+                s.open_note(2);
+            }),
             ("stremflix", |s| {
                 s.mode = Mode::Large;
                 s.set_tab(Tab::Stremflix);

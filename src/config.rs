@@ -279,6 +279,8 @@ pub struct Config {
     /// Calendar events; each one's text is `YYYY-MM-DD title` (`nextcloud::event_day`).
     pub events: Vec<Item>,
     pub nextcloud: Nextcloud,
+    /// Notes pinned to the top of the list, by key.
+    pub pinned_notes: Vec<u64>,
     /// Files dropped on the Island, newest first.
     pub shelf: Vec<std::path::PathBuf>,
     pub ai_provider: String,
@@ -339,6 +341,7 @@ impl Default for Config {
             notes: Vec::new(),
             events: Vec::new(),
             nextcloud: Nextcloud::default(),
+            pinned_notes: Vec::new(),
             shelf: Vec::new(),
             ai_provider: "groq".into(),
             ai_model: PROVIDERS[0].model.into(),
