@@ -220,6 +220,8 @@ pub struct Island {
     pub date: String,
     /// (year, month, day), for the Calendar tab.
     pub today: (i32, u32, u32),
+    /// Minutes since midnight now, for Day Progress.
+    pub minutes: u32,
     /// None on a machine without a battery.
     pub percent: Option<u8>,
     pub charging: bool,
@@ -353,6 +355,7 @@ impl Island {
             left: false,
             time: String::new(),
             today: (1970, 1, 1),
+            minutes: 0,
             date: String::new(),
             percent: None,
             charging: false,
@@ -926,6 +929,7 @@ impl Island {
         self.time = format!("{hour}:{:02}", now.minute);
         self.date = crate::date::format_date(now.year, now.month, now.day);
         self.today = (now.year, now.month, now.day);
+        self.minutes = now.hour * 60 + now.minute;
     }
 
     // --- What the pollers report ---
