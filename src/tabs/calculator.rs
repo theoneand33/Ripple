@@ -96,7 +96,8 @@ fn from_kelvin(v: f64, unit: &str) -> f64 {
 
 /// `<sum> <unit> to|in <unit>`, as the answer and its unit; None for anything else.
 pub fn convert(text: &str, rates: Option<&HashMap<String, f64>>) -> Option<(f64, String)> {
-    let lower = text.to_lowercase();
+    // ASCII only: full lowercasing can change byte lengths (İ), and the offsets slice `text`.
+    let lower = text.to_ascii_lowercase();
     // The last " to ", else the last " in ", so "12 in to cm" reads inches.
     let at = lower.rfind(" to ").map(|i| (i, 4)).or_else(|| lower.rfind(" in ").map(|i| (i, 4)))?;
     let (left, to) = (text[..at.0].trim(), text[at.0 + at.1..].trim());
@@ -239,6 +240,7 @@ mod tests {
         near("2 lbs to kg", 0.90718474, "kg");
         assert_eq!(convert("5 km to kg", None), None, "length is not mass");
         assert_eq!(convert("5 km", None), None);
+        assert_eq!(convert("İ 5 to °C", None), None, "no panic on text whose lowercase is longer");
         let rates = [("USD".to_string(), 1.0), ("EUR".to_string(), 0.9), ("JPY".to_string(), 150.0)].into();
         assert_eq!(answer("20 usd in eur", Some(&rates)).as_deref(), Some("18.00 EUR"));
         assert_eq!(answer("900 JPY to eur", Some(&rates)).as_deref(), Some("5.40 EUR"));

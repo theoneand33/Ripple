@@ -62,7 +62,7 @@ impl Task {
         for (i, word) in text.split_whitespace().enumerate() {
             if i == 0 && is_bangs(word) { task.priority = word.len() as u8; continue }
             // `Display` escapes a title that starts with bangs.
-            if let Some(bangs) = word.strip_prefix('\\').filter(|w| i == 0 && is_bangs(w)) { title.push(bangs); continue }
+            if let Some(bangs) = word.strip_prefix('\\').filter(|w| title.is_empty() && is_bangs(w)) { title.push(bangs); continue }
             if let Some(due) = word.strip_prefix("due:").and_then(|v| parse_due(v, today)) { task.due = Some(due); continue }
             if let Some(every) = word.strip_prefix("every:").and_then(Every::parse) { task.every = Some(every); continue }
             title.push(word);
