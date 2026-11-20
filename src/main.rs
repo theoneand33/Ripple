@@ -322,6 +322,7 @@ fn island_spec() -> AppSpec<Island> {
                 s.cfg.dashboard = [config::Widget::Clock, config::Widget::Battery, config::Widget::Panel(Tab::Tasks), config::Widget::Panel(Tab::System)].map(config::Tile::new).into();
                 s.cfg.tasks = vec![config::Item::new("Ship the dashboard"), config::Item::new("Water the plants")];
             }),
+            ("overview-quote", |s| { s.mode = Mode::Large; s.set_tab(Tab::Overview); s.cfg.dashboard = [config::Widget::Quote, config::Widget::Clock].map(config::Tile::new).into() }),
             ("overview-edit", |s| { s.mode = Mode::Large; s.set_tab(Tab::Overview); s.dashboard_edit = true }),
             ("overview-resize", |s| { s.mode = Mode::Large; s.set_tab(Tab::Overview); s.dashboard_edit = true; s.dashboard_drag = Some((0, -130.0, -60.0, true)) }),
             ("camera", |s| { let mut tx = rune::Tx::default(); s.set_capture(Some(true), None, &mut tx); }),

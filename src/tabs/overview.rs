@@ -152,6 +152,7 @@ fn tile(s: &Island, i: usize, t: Tile, [x, y, w, h]: [f32; 4], layer: &mut Vec<E
         Widget::Weather => weather(s, h),
         Widget::Battery => battery(s, h),
         Widget::Today => today(s),
+        Widget::Quote => quote(s),
         Widget::Panel(tab) => super::panel(s, tab, layer),
     };
     let name = t.widget.name();
@@ -249,6 +250,51 @@ fn today(s: &Island) -> El {
             .font(s.cfg.font(12.0, 500.0)).color(muted))
 }
 
+/// (quote, author); all from authors long in the public domain.
+const QUOTES: [(&str, &str); 30] = [
+    ("The secret of getting ahead is getting started.", "Mark Twain"),
+    ("Well begun is half done.", "Aristotle"),
+    ("It does not matter how slowly you go as long as you do not stop.", "Confucius"),
+    ("What we think, we become.", "The Buddha"),
+    ("Simplicity is the ultimate sophistication.", "Leonardo da Vinci"),
+    ("The best way out is always through.", "Robert Frost"),
+    ("Energy and persistence conquer all things.", "Benjamin Franklin"),
+    ("Do what you can, with what you have, where you are.", "Theodore Roosevelt"),
+    ("Nothing will work unless you do.", "Maya Angelou"),
+    ("He who has a why to live can bear almost any how.", "Friedrich Nietzsche"),
+    ("The only way to have a friend is to be one.", "Ralph Waldo Emerson"),
+    ("Knowing is not enough; we must apply.", "Johann Wolfgang von Goethe"),
+    ("Waste no more time arguing what a good man should be. Be one.", "Marcus Aurelius"),
+    ("We suffer more often in imagination than in reality.", "Seneca"),
+    ("No man ever steps in the same river twice.", "Heraclitus"),
+    ("Little by little, one travels far.", "J. R. R. Tolkien"),
+    ("Quality is not an act, it is a habit.", "Aristotle"),
+    ("Go confidently in the direction of your dreams.", "Henry David Thoreau"),
+    ("A journey of a thousand miles begins with a single step.", "Lao Tzu"),
+    ("Imagination is more important than knowledge.", "Albert Einstein"),
+    ("Act as if what you do makes a difference. It does.", "William James"),
+    ("The unexamined life is not worth living.", "Socrates"),
+    ("Whatever you are, be a good one.", "Abraham Lincoln"),
+    ("Not all those who wander are lost.", "J. R. R. Tolkien"),
+    ("Be kind, for everyone you meet is fighting a hard battle.", "Ian Maclaren"),
+    ("Hope is the thing with feathers that perches in the soul.", "Emily Dickinson"),
+    ("To be yourself in a world trying to make you something else is the greatest accomplishment.", "Ralph Waldo Emerson"),
+    ("The future depends on what you do today.", "Mahatma Gandhi"),
+    ("Luck is what happens when preparation meets opportunity.", "Seneca"),
+    ("I think, therefore I am.", "René Descartes"),
+];
+
+/// The day's quote: the same all day, the next one tomorrow.
+fn quote_of(day: i64) -> (&'static str, &'static str) { QUOTES[day.rem_euclid(QUOTES.len() as i64) as usize] }
+
+fn quote(s: &Island) -> El {
+    let fg = s.cfg.text();
+    let (words, author) = quote_of(crate::date::days_from_civil(s.today.0, s.today.1, s.today.2));
+    col().key("quote").role("group").label(format!("Quote of the day: {words} {author}")).w_full().h_full().padding(14.0).gap(6.0).justify_center()
+        .child(text(format!("“{words}”")).font(s.cfg.font(15.0, 600.0).lh(20.0)).color(fg).wrap().max_lines(3).a11y_hidden())
+        .child(text(format!("— {author}")).font(s.cfg.font(12.0, 500.0)).color(fg.alpha(0.6 * fg.a)).truncate().a11y_hidden())
+}
+
 /// Droppy's player: cover and title on top, the progress bar with both times, then the controls.
 fn media(s: &Island, w: f32) -> El {
     let fg = s.cfg.text();
@@ -299,6 +345,14 @@ mod tests {
     use super::*;
 
     fn tile(w: u8, h: u8) -> Tile { Tile { widget: Widget::Clock, w, h } }
+
+    #[test]
+    fn the_quote_changes_once_a_day_and_wraps_around() {
+        assert_eq!(quote_of(10), quote_of(10));
+        assert_ne!(quote_of(10), quote_of(11));
+        assert_eq!(quote_of(0), quote_of(QUOTES.len() as i64));
+        assert_eq!(quote_of(-1), QUOTES[QUOTES.len() - 1]);
+    }
 
     #[test]
     fn tiles_fill_rows_in_order() {
