@@ -618,7 +618,8 @@ impl Island {
             if !self.focused && self.prior.is_none() && let Some(me @ Host::Window(_)) = self.me.clone() {
                 me.spawn(platform::gnome_focused_window, |s, w| if w.is_some() { s.prior = w });
             }
-            if self.mode == Mode::Still && self.cfg.show_info_idle && !self.playing() { self.set_mode(Mode::Large) }
+            // Not from a bubble: Large has none, so the hover would vanish and close it again.
+            if self.mode == Mode::Still && self.cfg.show_info_idle && !self.playing() && part != 2 { self.set_mode(Mode::Large) }
             else if self.mode != Mode::Large { self.set_mode(Mode::Quick) }
         } else if !self.hovered {
             self.art_hovered = false;
@@ -1646,6 +1647,15 @@ mod tests {
         s.set_caps_lock(false);
         s.poll(1.0, &mut tx);
         assert!(!s.hovered);
+
+        // With info shown when idle, hovering a bubble still leaves the Island compact.
+        let mut s = island(Config { show_info_idle: true, ..Config::default() });
+        s.pomodoro.ends = Some(60.0);
+        s.set_caps_lock(true);
+        s.bubble_hovered = Some(Bubble::CapsLock);
+        s.set_over(2, true, &mut tx);
+        assert_ne!(s.mode, Mode::Large);
+        assert_eq!(s.bubbles().len(), 1);
     }
 
     #[test]
