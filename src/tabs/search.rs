@@ -125,7 +125,9 @@ fn rank_files(mut files: Vec<PathBuf>, q: &str) -> Vec<PathBuf> {
 
 /// `file://` URL of a path, each segment percent-encoded; a Windows drive keeps its colon.
 fn file_url(path: &Path) -> String {
-    let p = path.to_string_lossy().replace('\\', "/");
+    let p = path.to_string_lossy();
+    // Only Windows separates with `\`; elsewhere it's part of a name and is encoded.
+    let p = if cfg!(windows) { p.replace('\\', "/") } else { p.into_owned() };
     let enc: Vec<String> = p.split('/').map(|seg| if seg.len() == 2 && seg.ends_with(':') { seg.into() } else { crate::net::percent_encode(seg) }).collect();
     let joined = enc.join("/");
     if joined.starts_with('/') { format!("file://{joined}") } else { format!("file:///{joined}") }
@@ -199,6 +201,9 @@ mod tests {
     #[test]
     fn file_urls_encode_each_segment() {
         assert_eq!(file_url(Path::new("/home/me/My Notes/a#1.txt")), "file:///home/me/My%20Notes/a%231.txt");
+        #[cfg(windows)]
         assert_eq!(file_url(Path::new(r"C:\Users\me\a b.pdf")), "file:///C:/Users/me/a%20b.pdf");
+        #[cfg(not(windows))]
+        assert_eq!(file_url(Path::new(r"/home/me/foo\bar.txt")), "file:///home/me/foo%5Cbar.txt");
     }
 }
