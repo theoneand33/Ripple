@@ -1138,7 +1138,8 @@ impl Island {
             alert_ended |= self.mode != Mode::Large;
             changed = true;
         }
-        if alert_ended {
+        // An alert ending leaves a Large the user opened meanwhile, by hand or under the pointer.
+        if alert_ended && !self.large_open() {
             self.set_mode(Mode::Still);
             changed = true;
         }
@@ -1695,6 +1696,9 @@ mod tests {
         s.cfg.fullscreen = "standby".into();
         s.set_fullscreen(true);
         assert!(s.mode == Mode::Large && s.large_open(), "nor does one with a rule");
+        s.remind("Look away 20s".into(), 0.0);
+        s.poll(7.0, &mut Tx::default());
+        assert!(s.reminder.is_none() && s.mode == Mode::Large, "a reminder ending leaves it open too");
     }
 
     #[test]
