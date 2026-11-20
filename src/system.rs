@@ -874,9 +874,12 @@ pub(crate) fn openable(url: &str) -> bool {
     // and spaces Windows drops (`x.exe.` is `x.exe`).
     let path = crate::net::percent_decode(path.split(['?', '#']).next().unwrap_or_default());
     let path = path.trim_end_matches(['/', '\\', '.', ' ']);
-    const EXECUTABLE: [&str; 29] = [".exe", ".bat", ".cmd", ".com", ".ps1", ".msi", ".scr", ".lnk", ".sh", ".app", ".desktop", ".jar",
+    const EXECUTABLE: [&str; 42] = [".exe", ".bat", ".cmd", ".com", ".ps1", ".msi", ".scr", ".lnk", ".sh", ".app", ".desktop", ".jar",
         ".vbs", ".vbe", ".js", ".jse", ".wsf", ".hta", ".reg", ".command", ".tool", ".pkg", ".appimage", ".run", ".py", ".pl",
-        ".cpl", ".msc", ".pif"];
+        ".cpl", ".msc", ".pif",
+        // Windows shell handlers that run, install or redirect: shortcuts, ClickOnce, help and setup files.
+        ".url", ".website", ".application", ".appref-ms", ".chm", ".inf", ".library-ms", ".search-ms", ".searchconnector-ms",
+        ".settingcontent-ms", ".scf", ".diagcab", ".msp"];
     !path.is_empty() && !EXECUTABLE.iter().any(|ext| path.ends_with(ext))
 }
 
@@ -1223,6 +1226,9 @@ mod tests {
         assert!(!openable("file:///C:/x%2Eexe"));
         assert!(!openable("file:///Users/me/run.command"));
         assert!(!openable("file:///home/me/Tool.AppImage"));
+        assert!(!openable("file:///C:/Users/me/Desktop/site.url"));
+        assert!(!openable("file:///C:/x/setup.application"));
+        assert!(!openable("file:///C:/x/help.chm"));
         assert!(!openable("javascript:alert(1)"));
         assert!(!openable("file://"));
     }
