@@ -939,7 +939,12 @@ impl Island {
     /// Shows a task's reminder for 6 seconds.
     pub fn remind(&mut self, title: String, now: f64) {
         self.reminder = Some((title, now + 6.0));
-        if self.mode != Mode::Large { self.set_mode(Mode::Quick) }
+        if !self.large_open() { self.set_mode(Mode::Quick) }
+    }
+
+    /// Large is open by hand: opened beyond where the Island rests, or under the pointer.
+    fn large_open(&self) -> bool {
+        self.mode == Mode::Large && (self.rest() != Mode::Large || self.hovered)
     }
 
     /// Once a second: the 20-20-20 eye break and the hourly break, paused while an app is full
@@ -948,7 +953,8 @@ impl Island {
         let elapsed = now - std::mem::replace(&mut self.break_tick, now);
         if rune::is_headless() { return }
         let on = [self.cfg.eye_breaks, self.cfg.hourly_breaks];
-        if let Some(i) = count_breaks(&mut self.break_left, on, elapsed, self.fullscreen || self.mode == Mode::Large) {
+        let paused = self.fullscreen || self.large_open();
+        if let Some(i) = count_breaks(&mut self.break_left, on, elapsed, paused) {
             self.remind(["Look away 20s", "Take a break"][i].into(), now);
         }
     }
@@ -1638,6 +1644,20 @@ mod tests {
         assert_eq!(count_breaks(&mut left, [true, true], 0.0, false), Some(1), "the hourly one comes next");
         assert_eq!(count_breaks(&mut left, [false, false], 5000.0, false), None);
         assert_eq!(left, [None, None]);
+    }
+
+    #[test]
+    fn breaks_count_while_the_island_rests_in_large() {
+        let mut s = island(Config { large_standby: true, ..Config::default() });
+        assert!(!s.large_open(), "resting in Large is not open by hand");
+        s.remind("Look away 20s".into(), 0.0);
+        assert_eq!(s.mode, Mode::Quick, "the reminder shows compact");
+        s.set_mode(Mode::Large);
+        s.hovered = true;
+        assert!(s.large_open(), "under the pointer");
+        let mut s = island(Config::default());
+        s.set_mode(Mode::Large);
+        assert!(s.large_open());
     }
 
     #[test]
