@@ -336,6 +336,7 @@ fn island_spec() -> AppSpec<Island> {
                 s.cfg.dashboard = [config::Widget::Clock, config::Widget::Water].map(config::Tile::new).into();
                 (s.cfg.water_day, s.cfg.water_count) = (date::days_from_civil(s.today.0, s.today.1, s.today.2), 3);
             }),
+            ("overview-quote", |s| { s.mode = Mode::Large; s.set_tab(Tab::Overview); s.cfg.dashboard = [config::Widget::Quote, config::Widget::Clock].map(config::Tile::new).into() }),
             ("overview-day", |s| {
                 s.mode = Mode::Large;
                 s.set_tab(Tab::Overview);
