@@ -141,6 +141,7 @@ fn island_spec() -> AppSpec<Island> {
                 s.task.replace_text("Ship v0.5");
             }),
             ("reminder", |s| s.remind("Ship v0.5 release notes".into(), 0.0)),
+            ("break-reminder", |s| s.remind("Look away 20s".into(), 0.0)),
             ("tasks-sync-error", |s| {
                 s.mode = Mode::Large;
                 s.set_tab(Tab::Tasks);
@@ -195,6 +196,13 @@ fn island_spec() -> AppSpec<Island> {
                     ("NVDA".to_string(), Ok(quote("NVIDIA Corporation", "USD", 131.04, vec![134.2, 133.0, 132.5, 131.8, 131.04]))),
                     ("BTC-USD".to_string(), Err("Couldn't reach Yahoo Finance".to_string())),
                 ].into();
+            }),
+            ("clocks", |s| {
+                s.mode = Mode::Large;
+                s.set_tab(Tab::Clocks);
+                let now = date::now_secs();
+                let city = |name: &str, offset: i64| Some(net::City { name: name.into(), offset, sun: Some((now - 4 * 3600, now + 5 * 3600)) });
+                s.clocks.cities = [("London", city("London", 0)), ("New York", city("New York", -5 * 3600)), ("Tokyo", city("Tokyo", 9 * 3600))].map(|(n, c)| (n.to_string(), c)).into();
             }),
             ("pomodoro", |s| { s.mode = Mode::Large; s.set_tab(Tab::Pomodoro); s.pomodoro.left = 18.0 * 60.0 + 42.0; s.pomodoro.rounds = 2 }),
             // Ends on the app clock, which starts near zero in a headless render.
@@ -321,6 +329,13 @@ fn island_spec() -> AppSpec<Island> {
                 s.set_tab(Tab::Overview);
                 s.cfg.dashboard = [config::Widget::Clock, config::Widget::Battery, config::Widget::Panel(Tab::Tasks), config::Widget::Panel(Tab::System)].map(config::Tile::new).into();
                 s.cfg.tasks = vec![config::Item::new("Ship the dashboard"), config::Item::new("Water the plants")];
+            }),
+            ("overview-day", |s| {
+                s.mode = Mode::Large;
+                s.set_tab(Tab::Overview);
+                s.cfg.dashboard = [config::Widget::Day].map(config::Tile::new).into();
+                s.cfg.events = ["2026-01-01 09:30 Standup", "2026-01-01 13:00 Lunch with Sam"].map(config::Item::new).into();
+                s.cfg.tasks = ["Ship v0.5 due:2026-01-01T17:00"].map(config::Item::new).into();
             }),
             ("overview-edit", |s| { s.mode = Mode::Large; s.set_tab(Tab::Overview); s.dashboard_edit = true }),
             ("overview-resize", |s| { s.mode = Mode::Large; s.set_tab(Tab::Overview); s.dashboard_edit = true; s.dashboard_drag = Some((0, -130.0, -60.0, true)) }),

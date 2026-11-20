@@ -44,6 +44,7 @@ tabs! {
     Calculator = 17,
     Habits = 18,
     Stocks = 20,
+    Clocks = 21,
     Plugins = 15,
     Weather = 19,
 }
@@ -71,6 +72,7 @@ impl Tab {
             Tab::Calculator => "Calculator",
             Tab::Habits => "Habits",
             Tab::Stocks => "Stocks",
+            Tab::Clocks => "World Clocks",
         }
     }
 }
@@ -105,11 +107,13 @@ pub enum Widget {
     Battery,
     /// Today's events and the tasks left.
     Today,
+    /// Today as one timeline: the share gone, and its timed events and due tasks.
+    Day,
     Panel(Tab),
 }
 
 impl Widget {
-    pub const OWN: [Widget; 5] = [Widget::Clock, Widget::Media, Widget::Weather, Widget::Battery, Widget::Today];
+    pub const OWN: [Widget; 6] = [Widget::Clock, Widget::Media, Widget::Weather, Widget::Battery, Widget::Today, Widget::Day];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -118,6 +122,7 @@ impl Widget {
             Widget::Weather => "Weather",
             Widget::Battery => "Battery",
             Widget::Today => "Today",
+            Widget::Day => "Day Progress",
             Widget::Panel(tab) => tab.name(),
         }
     }
@@ -139,7 +144,7 @@ impl Tile {
 
     /// Panels open full width and tall: they were drawn for the whole Island.
     pub fn new(widget: Widget) -> Tile {
-        let (w, h) = match widget { Widget::Media => (4, 3), Widget::Panel(_) => (4, 4), _ => (2, 2) };
+        let (w, h) = match widget { Widget::Media => (4, 3), Widget::Panel(_) => (4, 4), Widget::Day => (4, 2), _ => (2, 2) };
         Tile { widget, w, h }
     }
 
@@ -170,12 +175,15 @@ pub struct Provider {
     pub label: &'static str,
     pub url: &'static str,
     pub model: &'static str,
+    /// Empty for a server that takes no key (Ollama, LM Studio).
     pub key_hint: &'static str,
 }
 
-pub const PROVIDERS: [Provider; 2] = [
+pub const PROVIDERS: [Provider; 4] = [
     Provider { id: "groq", label: "Groq", url: "https://api.groq.com/openai/v1", model: "llama-3.3-70b-versatile", key_hint: "gsk_..." },
     Provider { id: "openrouter", label: "OpenRouter", url: "https://openrouter.ai/api/v1", model: "meta-llama/llama-3.3-70b-instruct", key_hint: "sk-or-..." },
+    Provider { id: "ollama", label: "Ollama", url: "http://localhost:11434/v1", model: "llama3.2", key_hint: "" },
+    Provider { id: "lmstudio", label: "LM Studio", url: "http://localhost:1234/v1", model: "local-model", key_hint: "" },
 ];
 
 pub const SEARCH_ENGINES: [(&str, &str, &str); 5] = [
@@ -336,6 +344,10 @@ pub struct Config {
     /// Seconds Large Mode stays open after the pointer leaves, once its tab was changed.
     pub tab_linger: f32,
     pub battery_alerts: bool,
+    /// 20-20-20: every 20 minutes, look 20 feet away for 20 seconds.
+    pub eye_breaks: bool,
+    /// A reminder to get up once an hour.
+    pub hourly_breaks: bool,
     pub island_border: bool,
     pub standby: bool,
     pub large_standby: bool,
@@ -348,6 +360,8 @@ pub struct Config {
     pub hour12: bool,
     pub weather_unit: String,
     pub location: String,
+    /// World Clocks: the cities shown, as typed (Open-Meteo looks each one up).
+    pub world_clocks: Vec<String>,
     pub theme: String,
     pub bg_color: String,
     pub text_color: String,
@@ -389,6 +403,8 @@ pub struct Config {
     pub shelf: Vec<std::path::PathBuf>,
     pub ai_provider: String,
     pub ai_model: String,
+    /// The provider's API base, for a server elsewhere; empty means the provider's own `url`.
+    pub ai_url: String,
     pub api_key: String,
     pub t3_devices: Vec<T3Device>,
     /// AI Limits: more Claude Code or Codex config folders, one per account.
@@ -424,6 +440,8 @@ impl Default for Config {
             dashboard: [Widget::Clock, Widget::Weather, Widget::Media, Widget::Today, Widget::Battery].map(Tile::new).into(),
             tab_linger: 1.0,
             battery_alerts: true,
+            eye_breaks: false,
+            hourly_breaks: false,
             island_border: false,
             standby: true,
             large_standby: false,
@@ -434,6 +452,7 @@ impl Default for Config {
             hour12: true,
             weather_unit: "f".into(),
             location: String::new(),
+            world_clocks: ["London", "New York", "Tokyo"].map(Into::into).into(),
             theme: "none".into(),
             bg_color: "#000000".into(),
             text_color: "#FFFFFF".into(),
@@ -462,6 +481,7 @@ impl Default for Config {
             shelf: Vec::new(),
             ai_provider: "groq".into(),
             ai_model: PROVIDERS[0].model.into(),
+            ai_url: String::new(),
             api_key: String::new(),
             t3_devices: Vec::new(),
             agent_dirs: Vec::new(),
@@ -547,6 +567,12 @@ impl Config {
 
     pub fn provider(&self) -> &'static Provider {
         PROVIDERS.iter().find(|p| p.id == self.ai_provider).unwrap_or(&PROVIDERS[0])
+    }
+
+    /// The chat completions base: the one set in Settings, else the provider's.
+    pub fn ai_url(&self) -> String {
+        let url = self.ai_url.trim().trim_end_matches('/');
+        if url.is_empty() { self.provider().url.into() } else { url.into() }
     }
 
     pub fn search_engine(&self) -> (&'static str, &'static str) {
@@ -674,7 +700,7 @@ mod tests {
     fn saved_orders_drop_retired_tabs_and_gain_new_ones() {
         use Tab::*;
         let cfg = serde_json::from_str::<Config>(r#"{"tab_order": [7, 2, 3, 0], "hidden_tabs": [3, 0], "default_tab": 7}"#).unwrap().normalized();
-        assert_eq!(cfg.tab_order, [Overview, Search, Workflows, Assistant, Clipboard, Tasks, T3, Notes, Stremflix, Shelf, System, Calendar, Limits, Pomodoro, Calculator, Habits, Stocks, Plugins, Weather]);
+        assert_eq!(cfg.tab_order, [Overview, Search, Workflows, Assistant, Clipboard, Tasks, T3, Notes, Stremflix, Shelf, System, Calendar, Limits, Pomodoro, Calculator, Habits, Stocks, Clocks, Plugins, Weather]);
         assert_eq!((cfg.hidden_tabs.as_slice(), cfg.default_tab), ([Search].as_slice(), Overview));
     }
 
@@ -730,6 +756,14 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(cfg, Config::default());
         assert!(backup.contains("keep me"));
+    }
+
+    #[test]
+    fn a_set_base_url_replaces_the_providers_own() {
+        let cfg = Config { ai_provider: "ollama".into(), ..Config::default() };
+        assert_eq!(cfg.ai_url(), "http://localhost:11434/v1");
+        assert!(cfg.provider().key_hint.is_empty(), "Ollama takes no key");
+        assert_eq!(Config { ai_url: " http://gpu-box:11434/v1/ ".into(), ..cfg }.ai_url(), "http://gpu-box:11434/v1");
     }
 
     #[test]
