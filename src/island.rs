@@ -242,6 +242,8 @@ pub struct Island {
     brightness: Option<u8>,
     /// Caps Lock is on: its alert stays until it goes off.
     caps_lock: bool,
+    /// The focused app is full screen.
+    fullscreen: bool,
     /// The volume or brightness ring showing, and until when.
     level: Option<(Alert, f64)>,
 
@@ -359,6 +361,7 @@ impl Island {
             brightness: None,
             level: None,
             caps_lock: false,
+            fullscreen: false,
             battery_alert_until: None,
             charging_alert_until: None,
             bluetooth_alert_until: None,
@@ -445,8 +448,16 @@ impl Island {
     /// The compact view shows the track: while it plays, and for 3 seconds after a pause.
     pub fn shows_track(&self) -> bool { self.playing() || self.paused_until.is_some() }
 
+    /// Hide when inactive, unless an app is full screen and its rule says otherwise.
+    pub fn hiding(&self) -> bool {
+        match self.fullscreen_rule() { "hidden" => true, "standby" | "still" => false, _ => self.cfg.hide_inactive }
+    }
+
+    /// The full screen rule in force now; "none" while no app is full screen.
+    fn fullscreen_rule(&self) -> &str { if self.fullscreen { &self.cfg.fullscreen } else { "none" } }
+
     /// Hide when inactive: resting with no track to show.
-    pub fn hidden(&self) -> bool { self.cfg.hide_inactive && self.mode == Mode::Still && !self.shows_track() && !self.caps_lock && !self.pomodoro.running() }
+    pub fn hidden(&self) -> bool { self.hiding() && self.mode == Mode::Still && !self.shows_track() && !self.caps_lock && !self.pomodoro.running() }
 
     pub fn alert(&self) -> Option<Alert> {
         // The level answers a key just pressed, so it goes over the rest.
@@ -597,8 +608,9 @@ impl Island {
     /// Where the Island rests when nothing holds it open.
     pub fn rest(&self) -> Mode {
         // Standby is on by default, so the opt-in settings win over it or they could never apply.
-        // Hiding wins over both, since it only works at Still.
-        if self.cfg.hide_inactive { Mode::Still } else if self.cfg.large_standby { Mode::Large } else if self.cfg.standby { Mode::Quick } else { Mode::Still }
+        // Hiding wins over both, since it only works at Still. A full screen rule wins over all.
+        match self.fullscreen_rule() { "standby" => return Mode::Quick, "still" => return Mode::Still, _ => {} }
+        if self.hiding() { Mode::Still } else if self.cfg.large_standby { Mode::Large } else if self.cfg.standby { Mode::Quick } else { Mode::Still }
     }
 
     /// Every mode change but a jump straight to a tab (Cmd+number, the Shelf) goes through here;
@@ -941,6 +953,16 @@ impl Island {
         true
     }
 
+    /// The full screen rule applies to a resting Island; one held open stays until it rests.
+    pub fn set_fullscreen(&mut self, on: bool) -> bool {
+        // Hovered or focused, the focused-window check may read Ripple itself; keep the last reading.
+        if on == self.fullscreen || self.hovered || self.focused { return false }
+        let resting = self.mode == self.rest();
+        self.fullscreen = on;
+        if resting { self.set_mode(Mode::Still) }
+        true
+    }
+
     /// Caps Lock's alert shows from the moment it goes on until it goes off; Large stays as it is.
     pub fn set_caps_lock(&mut self, on: bool) -> bool {
         if on == self.caps_lock { return false }
@@ -1147,6 +1169,10 @@ impl Island {
         let h = me.clone();
         std::thread::spawn(move || system::watch_drags(|active| h.update(move |s, _| s.desktop_drag(active))));
         let h = me.clone();
+        let store = self.store.clone();
+        // No rule, no query: the default pays nothing.
+        every(1000, move || { let f = store.get().fullscreen != "none" && platform::fullscreen(); h.update_if(move |s, _| s.set_fullscreen(f)); });
+        let h = me.clone();
         every(250, move || { let on = system::caps_lock().unwrap_or(false); h.update_if(move |s, _| s.set_caps_lock(on)); });
         let h = me.clone();
         std::thread::spawn(move || system::watch_levels(|v, b| h.update_if(move |s, tx| s.set_levels(v, b, tx))));
@@ -1345,7 +1371,7 @@ fn border(s: &Island, radii: [f32; 4], hidden: bool) -> El {
         else { s.alert().filter(|a| *a == Alert::Bluetooth) };
     let color = match state.and_then(Alert::color) {
         Some(color) => color,
-        None if cfg.hide_inactive || hidden => return ring,
+        None if s.hiding() || hidden => return ring,
         None => cfg.text().alpha(0.3 * cfg.text().a),
     };
     ring.border(1.0, color)
@@ -1456,7 +1482,7 @@ fn now_playing(s: &Island, fg: Color) -> El {
 
     let line = row().key(format!("playing-{}-{}", track.name, track.artist)).w_full().h_full().px(9.0).gap(6.0).center_y()
         .transition(Transition::blur_replace())
-        .opacity(if !track.playing { 0.5 } else if s.cfg.hide_inactive { 0.6 } else { 1.0 })
+        .opacity(if !track.playing { 0.5 } else if s.hiding() { 0.6 } else { 1.0 })
         .child(cover(s, 24.0, 4.0, 14.0, 1.05))
         .child(marquee);
     let line = line.child(if s.hovered {
@@ -1562,6 +1588,24 @@ mod tests {
         assert_eq!(island(Config { large_standby: true, ..Config::default() }).mode, Mode::Large);
         assert_eq!(island(Config { hide_inactive: true, ..Config::default() }).mode, Mode::Still);
         assert_eq!(island(Config { hide_inactive: true, large_standby: true, ..Config::default() }).mode, Mode::Still);
+    }
+
+    #[test]
+    fn a_full_screen_app_applies_its_rule_to_a_resting_island() {
+        let full = |rule: &str, cfg: Config| { let mut s = island(Config { fullscreen: rule.into(), ..cfg }); s.set_fullscreen(true); s };
+        assert_eq!(full("none", Config::default()).mode, Mode::Quick);
+        assert_eq!(full("still", Config::default()).mode, Mode::Still);
+        assert_eq!(full("standby", Config { standby: false, ..Config::default() }).mode, Mode::Quick);
+        // The rule beats Hide when inactive, so the Island neither hides nor draws as hidden.
+        let s = full("standby", Config { hide_inactive: true, ..Config::default() });
+        assert!(s.mode == Mode::Quick && !s.hiding());
+        let mut s = full("hidden", Config::default());
+        assert!(s.mode == Mode::Still && s.hidden());
+        s.set_fullscreen(false);
+        assert!(s.mode == Mode::Quick && !s.hidden());
+        // A hovered Island may have taken focus, so its reading is ignored.
+        s.hovered = true;
+        assert!(!s.set_fullscreen(true) && !s.fullscreen);
     }
 
     #[test]

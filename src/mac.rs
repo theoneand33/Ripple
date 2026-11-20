@@ -173,6 +173,46 @@ pub fn frontmost_pid() -> Option<i32> {
     }
 }
 
+/// The frontmost app has a window covering a whole display at the normal level: a full screen
+/// Space (a zoomed window leaves the menu bar showing, so it doesn't count).
+pub fn frontmost_fullscreen() -> bool {
+    #[link(name = "CoreGraphics", kind = "framework")]
+    unsafe extern "C" {
+        fn CGWindowListCopyWindowInfo(option: u32, relative_to: u32) -> *mut AnyObject;
+        fn CGGetActiveDisplayList(max: u32, displays: *mut u32, count: *mut u32) -> i32;
+        fn CGDisplayBounds(display: u32) -> Rect;
+    }
+    #[link(name = "CoreFoundation", kind = "framework")]
+    unsafe extern "C" { fn CFRelease(object: *const c_void); }
+    let Some(pid) = frontmost_pid() else { return false };
+    let mut ids = [0u32; 16];
+    let mut count = 0;
+    // SAFETY: `ids` holds 16 entries and `count` receives how many were filled.
+    if unsafe { CGGetActiveDisplayList(16, ids.as_mut_ptr(), &mut count) } != 0 { return false }
+    // SAFETY: plain display queries.
+    let sizes: Vec<(f64, f64)> = ids[..count as usize].iter().map(|&d| { let r = unsafe { CGDisplayBounds(d) }; (r.size.width, r.size.height) }).collect();
+    // SAFETY: on-screen windows (1) without desktop elements (16). The CFArray of CFDictionaries is
+    // toll-free bridged to NSArray/NSDictionary, read by key, then released as the Copy rule says.
+    // The pool drains the key strings; this runs on a polling thread that has none.
+    objc2::rc::autoreleasepool(|_| unsafe {
+        let list = CGWindowListCopyWindowInfo(1 | 16, 0);
+        if list.is_null() { return false }
+        let n: usize = msg_send![list, count];
+        let num = |w: *mut AnyObject, key: &str| -> Option<f64> {
+            let v: *mut AnyObject = msg_send![w, objectForKey: ns_string(key)];
+            (!v.is_null()).then(|| msg_send![v, doubleValue])
+        };
+        let full = (0..n).any(|i| {
+            let w: *mut AnyObject = msg_send![list, objectAtIndex: i];
+            let bounds: *mut AnyObject = msg_send![w, objectForKey: ns_string("kCGWindowBounds")];
+            num(w, "kCGWindowOwnerPID") == Some(f64::from(pid)) && num(w, "kCGWindowLayer") == Some(0.0) && !bounds.is_null()
+                && matches!((num(bounds, "Width"), num(bounds, "Height")), (Some(w), Some(h)) if sizes.contains(&(w, h)))
+        });
+        CFRelease(list as *const c_void);
+        full
+    })
+}
+
 /// Brings the app with `pid` to the front; Ripple, being active, may hand activation over.
 pub fn activate_pid(pid: i32) {
     // SAFETY: a nil app (it quit) is skipped.
