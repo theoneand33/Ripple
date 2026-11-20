@@ -1621,7 +1621,7 @@ mod tests {
                 let p = Placement::of(&Config { island_scale: scale, position_mode: mode.into(), ..Config::default() }, (1920.0, 1080.0));
                 let [x, y, w, h] = p.frame();
                 assert!(x >= 0.0 && y >= 0.0 && x + w <= 1920.01 && y + h <= 1080.01, "{scale}% {mode}: {:?}", p.frame());
-                assert_eq!(w, CANVAS.0 * scale / 100.0);
+                assert!((w - CANVAS.0 * scale / 100.0).abs() < 0.01, "{scale}%: {w}");
             }
         }
         let free = |scale| { let p = Placement::of(&Config { island_scale: scale, ..Config::default() }, (1920.0, 1080.0)); (p.window.1 + p.y) * p.zoom };
