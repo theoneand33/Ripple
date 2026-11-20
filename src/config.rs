@@ -531,6 +531,10 @@ impl Config {
     /// sunset, the night theme otherwise. None while off or with no sun times.
     pub fn sun_theme(&self, sun: Option<(i64, i64)>, now: i64) -> Option<&str> {
         let (rise, set) = sun.filter(|_| self.auto_theme)?;
+        // Times a day or more old (the weather hasn't refreshed since a wake) move on by whole
+        // days: tomorrow's sunrise is within minutes of today's.
+        let days = (now - rise).div_euclid(86_400).max(0);
+        let (rise, set) = (rise + days * 86_400, set + days * 86_400);
         Some(if (rise..set).contains(&now) { &self.day_theme } else { &self.night_theme })
     }
 
@@ -751,6 +755,8 @@ mod tests {
         assert_eq!(cfg.sun_theme(sun, 1000), Some("none"));
         assert_eq!(cfg.sun_theme(sun, 2000), Some("sleek-black"));
         assert_eq!(cfg.sun_theme(None, 1500), None);
+        assert_eq!(cfg.sun_theme(sun, 86_400 + 1500), Some("none"), "yesterday's times still say it's day");
+        assert_eq!(cfg.sun_theme(sun, 86_400 + 999), Some("sleek-black"));
         assert_eq!(Config::default().sun_theme(sun, 1500), None, "off");
     }
 
