@@ -29,6 +29,7 @@ stroke!(FLAME, "flame", r#"<path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-
 stroke!(PENCIL, "pencil", r#"<path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/><path d="m15 5 4 4"/>"#);
 stroke!(MAXIMIZE, "maximize-2", r#"<path d="M15 3h6v6"/><path d="m21 3-7 7"/><path d="m3 21 7-7"/><path d="M9 21H3v-6"/>"#);
 stroke!(TRENDING_UP, "trending-up", r#"<path d="M16 7h6v6"/><path d="m22 7-8.5 8.5-5-5L2 17"/>"#);
+stroke!(TYPE, "type", r#"<polyline points="4 7 4 4 20 4 20 7"/><line x1="9" x2="15" y1="20" y2="20"/><line x1="12" x2="12" y1="4" y2="20"/>"#);
 stroke!(BATTERY, "battery", r#"<rect width="16" height="10" x="2" y="7" rx="2" ry="2"/><line x1="22" x2="22" y1="11" y2="13"/>"#);
 
 /// Filled, as the playback controls and the default-tab star draw.

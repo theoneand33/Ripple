@@ -1,10 +1,11 @@
 //! Clipboard: the last 50 texts and 10 images copied anywhere, newest first, each one copyable
 //! again. Pinned items stay on top and are kept across restarts; pinned images are saved as PNG
-//! files in a `clipboard` folder beside prefs.json.
+//! files in a `clipboard` folder beside prefs.json. Text tools turn the newest copied text into
+//! another form (case, Base64, JSON, URL encoding, a JWT's claims, a Unix time) and copy that.
 
 use rune::{ClipboardContent, ClipboardImage, Color, El, Image, SurfaceFit, TextEdit, Transition, Tx, col, el, row, text};
 
-use super::{Scrolls, empty, field, tool};
+use super::{Scrolls, empty, field, pill, tool};
 use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
@@ -52,6 +53,62 @@ pub struct Clipboard {
     last_read: Option<ClipboardContent>,
     /// Where pinned images are saved; None keeps them only this run (headless).
     dir: Option<PathBuf>,
+    /// The text tools show under the search.
+    pub tools: bool,
+    /// Why the last text tool couldn't run.
+    pub tool_error: Option<String>,
+}
+
+type TextTool = fn(&str) -> Result<String, String>;
+
+/// Each text tool's label and what it makes of a text.
+pub const TOOLS: [(&str, TextTool); 10] = [
+    ("UPPER", |t| Ok(t.to_uppercase())),
+    ("lower", |t| Ok(t.to_lowercase())),
+    ("Title", |t| Ok(title_case(t))),
+    ("Base64", |t| { use base64::Engine; Ok(base64::engine::general_purpose::STANDARD.encode(t)) }),
+    ("From Base64", |t| from_base64(t.trim(), false)),
+    ("JSON", |t| serde_json::from_str::<serde_json::Value>(t).ok().and_then(|v| serde_json::to_string_pretty(&v).ok()).ok_or_else(|| "Not JSON".into())),
+    ("URL encode", |t| Ok(crate::net::percent_encode(t))),
+    ("URL decode", |t| Ok(crate::net::percent_decode(&t.replace('+', " ")))),
+    ("JWT", jwt),
+    ("Unix time", unix_time),
+];
+
+/// Each word's first letter upper case, the rest lower.
+fn title_case(t: &str) -> String {
+    let mut start = true;
+    t.chars().flat_map(|c| {
+        let out: Vec<char> = if start { c.to_uppercase().collect() } else { c.to_lowercase().collect() };
+        start = !c.is_alphanumeric() && c != '\'';
+        out
+    }).collect()
+}
+
+/// Base64, standard or URL-safe, padded or not, as UTF-8 text.
+fn from_base64(t: &str, url: bool) -> Result<String, String> {
+    use base64::Engine;
+    use base64::engine::general_purpose::{STANDARD_NO_PAD, URL_SAFE_NO_PAD};
+    let t = t.trim_end_matches('=');
+    let bytes = if url || t.contains(['-', '_']) { URL_SAFE_NO_PAD.decode(t) } else { STANDARD_NO_PAD.decode(t) };
+    String::from_utf8(bytes.map_err(|_| "Not Base64")?).map_err(|_| "Not text once decoded".into())
+}
+
+/// A JWT's header and claims, as formatted JSON; the signature isn't checked.
+fn jwt(t: &str) -> Result<String, String> {
+    let parts: Vec<&str> = t.trim().split('.').collect();
+    let [header, claims, _] = parts[..] else { return Err("Not a JWT".into()) };
+    let json = |p: &str| -> Result<serde_json::Value, String> { serde_json::from_str(&from_base64(p, true)?).map_err(|_| "Not a JWT".into()) };
+    serde_json::to_string_pretty(&serde_json::json!({ "header": json(header)?, "claims": json(claims)? })).map_err(|e| e.to_string())
+}
+
+/// Unix seconds (or milliseconds, past the year 5138) as the date and time on this clock.
+fn unix_time(t: &str) -> Result<String, String> {
+    let n: i64 = t.trim().parse().map_err(|_| "Not a Unix time")?;
+    let ms = if n.abs() >= 100_000_000_000 { n } else { n.saturating_mul(1000) };
+    let l = rune::time::LocalTime::at(ms);
+    let off = l.offset / 60;
+    Ok(format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02} {}{:02}:{:02}", l.year, l.month, l.day, l.hour, l.minute, l.second, if off < 0 { '-' } else { '+' }, off.abs() / 60, off.abs() % 60))
 }
 
 /// A pinned image's file name: its PNG's hash, so the same image is one file.
@@ -91,6 +148,21 @@ impl Island {
         let known = self.clipboard.items.iter().any(|c| matches!(&c.content, Content::Image(i, _) if *i == image));
         let pixels = if known { None } else { self.images.as_ref().map(|cache| cache.load(image.png().to_vec())) };
         self.clipboard.push(Content::Image(image, pixels))
+    }
+
+    /// Runs a text tool on the newest copied text, then copies its answer.
+    fn run_tool(&mut self, tool: usize, tx: &mut Tx) {
+        let c = &mut self.clipboard;
+        let newest = c.items[c.pinned()..].iter().chain(&c.items).find_map(|i| match &i.content { Content::Text(t) => Some(t.clone()), Content::Image(..) => None });
+        let Some(source) = newest else { c.tool_error = Some("Copy some text first".into()); return };
+        match (TOOLS[tool].1)(&source) {
+            Ok(out) => {
+                tx.copy(out.clone());
+                c.push(Content::Text(out));
+                (c.tool_error, c.copied) = (None, Some((c.pinned(), tx.clock() + 2.0)));
+            }
+            Err(e) => c.tool_error = Some(format!("{}: {e}", TOOLS[tool].0)),
+        }
     }
 
     pub fn toggle_clip_pin(&mut self, i: usize) {
@@ -237,8 +309,22 @@ pub fn view(s: &Island) -> El {
                 .child(copy),
         );
     }
-    col().key("clipboard").w_full().h_full().px(14.0).pt(14.0).pb(14.0).gap(10.0)
-        .child(row().key("clipboard-search-row").w_full().child(field(s, "clipboard-search", &s.clipboard.search, "Search clipboard", |s: &mut Island| &mut s.clipboard.search, |_, _| {})))
+    let tools = tool(s, "text-tools", &icons::TYPE, "Text tools").checked(s.clipboard.tools).on_press(|s: &mut Island| s.clipboard.tools = !s.clipboard.tools);
+    let mut root = col().key("clipboard").w_full().h_full().px(14.0).pt(14.0).pb(14.0).gap(10.0)
+        .child(row().key("clipboard-search-row").w_full().gap(8.0).center_y()
+            .child(field(s, "clipboard-search", &s.clipboard.search, "Search clipboard", |s: &mut Island| &mut s.clipboard.search, |_, _| {}))
+            .child(if s.clipboard.tools { tools.fill(fg.alpha(0.26 * fg.a)) } else { tools }));
+    if s.clipboard.tools {
+        let mut chips = row().key("text-tool-chips").role("group").label("Text tools: run on the newest copied text").w_full().gap(6.0).flex_wrap();
+        for (i, (label, _)) in TOOLS.iter().enumerate() {
+            chips = chips.child(pill(s, &format!("tool-{i}"), label).on_press_tx(move |s: &mut Island, tx| s.run_tool(i, tx)));
+        }
+        root = root.child(chips);
+        if let Some(e) = &s.clipboard.tool_error {
+            root = root.child(text(e).key("tool-error").role("alert").font(s.cfg.font(12.0, 500.0)).color(super::accent::red()));
+        }
+    }
+    root
         .child(col().key("clipboard-scroll").w_full().grow(1.0).min_h(0.0).scrolls().scroll_edge_fade(12.0).child(list))
 }
 
@@ -248,6 +334,28 @@ mod tests {
 
     fn texts(c: &Clipboard) -> Vec<String> {
         c.items.iter().map(|i| match &i.content { Content::Text(t) => t.clone(), Content::Image(..) => "<image>".into() }).collect()
+    }
+
+    #[test]
+    fn text_tools_convert_and_refuse_what_they_cannot_read() {
+        let run = |label: &str, t: &str| (super::TOOLS.iter().find(|x| x.0 == label).unwrap().1)(t);
+        assert_eq!(run("UPPER", "Hi there").unwrap(), "HI THERE");
+        assert_eq!(run("Title", "hello wORLD, it's me").unwrap(), "Hello World, It's Me");
+        assert_eq!(run("Base64", "hi?").unwrap(), "aGk/");
+        assert_eq!(run("From Base64", " aGk/ ").unwrap(), "hi?");
+        assert!(run("From Base64", "@@").is_err());
+        assert_eq!(run("JSON", r#"{"a":[1]}"#).unwrap(), "{\n  \"a\": [\n    1\n  ]\n}");
+        assert!(run("JSON", "{").is_err());
+        assert_eq!(run("URL encode", "a b&c").unwrap(), "a%20b%26c");
+        assert_eq!(run("URL decode", "a+b%26c").unwrap(), "a b&c");
+        // {"alg":"none"}.{"sub":"me"}.
+        let claims = run("JWT", "eyJhbGciOiJub25lIn0.eyJzdWIiOiJtZSJ9.").unwrap();
+        assert!(claims.contains(r#""sub": "me""#) && claims.contains(r#""alg": "none""#), "{claims}");
+        assert!(run("JWT", "a.b").is_err());
+        let t = run("Unix time", "0").unwrap();
+        assert!(t.starts_with("1970-01-01") || t.starts_with("1969-12-31"), "{t}");
+        assert_eq!(run("Unix time", "1767225600000").unwrap()[..7], run("Unix time", "1767225600").unwrap()[..7], "milliseconds too");
+        assert!(run("Unix time", "soon").is_err());
     }
 
     #[test]
