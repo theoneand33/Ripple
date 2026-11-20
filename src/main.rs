@@ -340,6 +340,7 @@ fn island_spec() -> AppSpec<Island> {
                 s.contributions.github = Some(("octocat".into(), Ok(graph(5))));
                 s.contributions.leetcode = Some(("ana".into(), Ok(graph(3))));
             }),
+            ("overview-quote", |s| { s.mode = Mode::Large; s.set_tab(Tab::Overview); s.cfg.dashboard = [config::Widget::Quote, config::Widget::Clock].map(config::Tile::new).into() }),
             ("overview-day", |s| {
                 s.mode = Mode::Large;
                 s.set_tab(Tab::Overview);

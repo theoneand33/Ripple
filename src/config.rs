@@ -109,13 +109,15 @@ pub enum Widget {
     Today,
     /// GitHub and LeetCode contribution graphs, with streaks.
     Contributions,
+    /// A quote, a new one each day.
+    Quote,
     /// Today as one timeline: the share gone, and its timed events and due tasks.
     Day,
     Panel(Tab),
 }
 
 impl Widget {
-    pub const OWN: [Widget; 7] = [Widget::Clock, Widget::Media, Widget::Weather, Widget::Battery, Widget::Today, Widget::Day, Widget::Contributions];
+    pub const OWN: [Widget; 8] = [Widget::Clock, Widget::Media, Widget::Weather, Widget::Battery, Widget::Today, Widget::Day, Widget::Quote, Widget::Contributions];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -125,6 +127,7 @@ impl Widget {
             Widget::Battery => "Battery",
             Widget::Today => "Today",
             Widget::Contributions => "Contributions",
+            Widget::Quote => "Quote of the Day",
             Widget::Day => "Day Progress",
             Widget::Panel(tab) => tab.name(),
         }
@@ -147,7 +150,7 @@ impl Tile {
 
     /// Panels open full width and tall: they were drawn for the whole Island.
     pub fn new(widget: Widget) -> Tile {
-        let (w, h) = match widget { Widget::Media => (4, 3), Widget::Panel(_) | Widget::Contributions => (4, 4), Widget::Day => (4, 2), _ => (2, 2) };
+        let (w, h) = match widget { Widget::Media => (4, 3), Widget::Panel(_) | Widget::Contributions => (4, 4), Widget::Quote => (4, 2), Widget::Day => (4, 2), _ => (2, 2) };
         Tile { widget, w, h }
     }
 
@@ -441,7 +444,7 @@ impl Default for Config {
             hidden_tabs: vec![Tab::Stremflix],
             default_tab: Tab::Overview,
             open_default_tab: true,
-            dashboard: [Widget::Clock, Widget::Weather, Widget::Media, Widget::Today, Widget::Battery].map(Tile::new).into(),
+            dashboard: [Widget::Clock, Widget::Weather, Widget::Media, Widget::Today, Widget::Battery, Widget::Quote].map(Tile::new).into(),
             tab_linger: 1.0,
             battery_alerts: true,
             eye_breaks: false,
