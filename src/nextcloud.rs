@@ -999,6 +999,8 @@ mod tests {
         let out = sync_shelf(&nc, "Ripple Shelf", &[tmp.join("old.txt")], &["old.txt".into(), "x.txt".into()], &cache);
         assert_eq!(out.error.as_deref(), Some("Nextcloud refused the user or app password"));
         assert_eq!((out.both.unwrap(), out.gone), (vec!["x.txt".to_string(), "old.txt".into()], Vec::new()));
+        let folder = |f: &str| Nextcloud { shelf_folder: f.into(), ..Nextcloud::default() }.shelf_folder();
+        assert_eq!([folder(""), folder(".."), folder(" /./ "), folder("/A/../ B /")], ["Ripple Shelf", "Ripple Shelf", "Ripple Shelf", "A/B"]);
         assert_eq!([in_folder("A/x", "A"), in_folder("A/B/x", "A"), in_folder("AB/x", "A")], [Some("x"), None, None]);
         std::fs::remove_dir_all(&tmp).ok();
     }

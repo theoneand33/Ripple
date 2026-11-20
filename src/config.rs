@@ -229,9 +229,10 @@ pub struct Nextcloud {
 impl Nextcloud {
     pub fn account(&self) -> String { format!("{}@{}", self.user.trim(), self.url.trim().trim_end_matches('/')) }
     pub fn enabled(&self) -> bool { !self.url.trim().is_empty() && !self.user.trim().is_empty() }
+    /// The Shelf folder's path in Nextcloud Files; `.` and `..` parts are dropped, so it never names the root.
     pub fn shelf_folder(&self) -> String {
-        let f = self.shelf_folder.trim().trim_matches('/');
-        if f.is_empty() { "Ripple Shelf".into() } else { f.into() }
+        let f = self.shelf_folder.split('/').map(str::trim).filter(|p| !matches!(*p, "" | "." | "..")).collect::<Vec<_>>().join("/");
+        if f.is_empty() { "Ripple Shelf".into() } else { f }
     }
 }
 
