@@ -912,9 +912,9 @@ fn openable(url: &str) -> bool {
 
 /// Names the OS would run rather than open, by extension.
 fn runs_as_program(path: &str) -> bool {
-    const EXECUTABLE: [&str; 34] = [".exe", ".bat", ".cmd", ".com", ".ps1", ".msi", ".scr", ".lnk", ".sh", ".app", ".desktop", ".jar",
+    const EXECUTABLE: [&str; 41] = [".exe", ".bat", ".cmd", ".com", ".ps1", ".msi", ".scr", ".lnk", ".sh", ".app", ".desktop", ".jar",
         ".vbs", ".vbe", ".js", ".jse", ".wsf", ".hta", ".reg", ".command", ".tool", ".pkg", ".appimage", ".run", ".py", ".pl",
-        ".cpl", ".msc", ".pif", ".terminal", ".application", ".appref-ms", ".url", ".scf"];
+        ".cpl", ".msc", ".pif", ".terminal", ".application", ".appref-ms", ".url", ".scf", ".ws", ".msix", ".appx", ".msixbundle", ".appxbundle", ".jnlp", ".mpkg"];
     let path = path.trim_end_matches(['/', '\\', '.', ' ']).to_ascii_lowercase();
     EXECUTABLE.iter().any(|ext| path.ends_with(ext))
 }
