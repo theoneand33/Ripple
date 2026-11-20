@@ -26,6 +26,7 @@ pub use assistant::Assistant;
 pub use calculator::Calculator;
 pub use calendar::Calendar;
 pub use clipboard::{Clipboard, Content};
+pub use overview::Contributions;
 pub use clocks::Clocks;
 pub use limits::Limits;
 pub use notes::Notes;
@@ -100,6 +101,7 @@ pub fn entered(s: &mut Island) {
     load(s, s.tab);
     if s.tab == Tab::Overview {
         for tile in s.cfg.dashboard.clone() { if let Widget::Panel(tab) = tile.widget { load(s, tab) } }
+        if s.cfg.dashboard.iter().any(|t| t.widget == Widget::Contributions) { s.contributions_load() }
     }
 }
 
@@ -148,6 +150,11 @@ pub fn each_second(s: &mut Island, now: f64) -> bool {
         Some(_) if shows(s, Tab::Stocks) => s.stocks_load(),
         _ => {}
     }
+    match s.contributions.reload_in.take() {
+        Some(n) if n > 1 => s.contributions.reload_in = Some(n - 1),
+        Some(_) if s.mode == Mode::Large && s.tab == Tab::Overview && s.cfg.dashboard.iter().any(|t| t.widget == Widget::Contributions) => s.contributions_load(),
+        _ => {}
+    }
     s.pomodoro.tick_all(now) | plugins
 }
 
@@ -167,6 +174,7 @@ pub fn reloaded(s: &mut Island, old: &Config) {
     if (old.sure_url != s.cfg.sure_url || old.sure_key != s.cfg.sure_key) && !s.cfg.sure_key.is_empty() {
         (s.stocks.portfolio, s.stocks.generation, s.stocks.reload_in) = (None, s.stocks.generation + 1, Some(2));
     }
+    if old.github_user != s.cfg.github_user || old.leetcode_user != s.cfg.leetcode_user { s.contributions.reload_in = Some(2) }
 }
 
 /// What a delete took: a note or an event and where it sat, or the cleared Shelf.

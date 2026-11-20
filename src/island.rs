@@ -308,6 +308,7 @@ pub struct Island {
     pub stats: Option<system::Stats>,
     pub limits: tabs::Limits,
     pub stocks: tabs::Stocks,
+    pub contributions: tabs::Contributions,
     pub clocks: tabs::Clocks,
     /// A file drag is over the Island.
     pub dropping: bool,
@@ -427,6 +428,7 @@ impl Island {
             stats: None,
             limits: tabs::Limits::default(),
             stocks: tabs::Stocks::default(),
+            contributions: tabs::Contributions::default(),
             clocks: tabs::Clocks::default(),
             dropping: false,
             desktop_drag: false,

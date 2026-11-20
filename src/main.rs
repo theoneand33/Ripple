@@ -336,6 +336,16 @@ fn island_spec() -> AppSpec<Island> {
                 s.cfg.dashboard = [config::Widget::Clock, config::Widget::Battery, config::Widget::Panel(Tab::Tasks), config::Widget::Panel(Tab::System)].map(config::Tile::new).into();
                 s.cfg.tasks = vec![config::Item::new("Ship the dashboard"), config::Item::new("Water the plants")];
             }),
+            ("overview-contributions", |s| {
+                s.mode = Mode::Large;
+                s.set_tab(Tab::Overview);
+                s.cfg.dashboard = [config::Widget::Contributions].map(config::Tile::new).into();
+                (s.cfg.github_user, s.cfg.leetcode_user) = ("octocat".into(), "ana".into());
+                let today = date::days_from_civil(s.today.0, s.today.1, s.today.2);
+                let graph = |seed: i64| (0..365).filter(|d| (d * seed) % 7 < 3 || *d < 6).map(|d| (today - d, ((d * seed) % 4 + 1) as u8)).collect::<Vec<_>>();
+                s.contributions.github = Some(("octocat".into(), Ok(graph(5))));
+                s.contributions.leetcode = Some(("ana".into(), Ok(graph(3))));
+            }),
             ("overview-quote", |s| { s.mode = Mode::Large; s.set_tab(Tab::Overview); s.cfg.dashboard = [config::Widget::Quote, config::Widget::Clock].map(config::Tile::new).into() }),
             ("overview-day", |s| {
                 s.mode = Mode::Large;
