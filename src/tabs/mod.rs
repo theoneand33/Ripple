@@ -1,6 +1,7 @@
 //! What the Island shows in Large mode: one module per tab, each with its state, its actions
 //! and its view.
 
+mod agents;
 mod assistant;
 mod calculator;
 mod calendar;
@@ -22,6 +23,7 @@ mod tasks;
 mod weather;
 mod workflows;
 
+pub use agents::Agents;
 pub use assistant::Assistant;
 pub use calculator::Calculator;
 pub use calendar::{link_host, Calendar};
@@ -58,6 +60,7 @@ fn panel(s: &Island, tab: Tab, layer: &mut Vec<El>) -> El {
         Tab::Clipboard => clipboard::view(s),
         Tab::Tasks => tasks::view(s),
         Tab::T3 => t3::view(s, layer),
+        Tab::Agents => agents::view(s),
         Tab::Notes => notes::view(s),
         Tab::Stremflix => stremflix::view(s),
         Tab::Shelf => shelf::view(s, layer),
@@ -82,7 +85,7 @@ pub const fn size(tab: Tab) -> (f32, f32) {
         Tab::Shelf => (520.0, 230.0),
         Tab::System => (520.0, 342.0),
         Tab::T3 | Tab::Plugins | Tab::Calculator => (420.0, 290.0),
-        Tab::Tasks => (480.0, 320.0),
+        Tab::Tasks | Tab::Agents => (480.0, 320.0),
         Tab::Habits => (520.0, 290.0),
         Tab::Pomodoro => (440.0, 236.0),
         Tab::Calendar => (560.0, 280.0),
@@ -145,6 +148,7 @@ pub fn each_second(s: &mut Island, now: f64) -> bool {
     s.task_reminders(now);
     s.event_alerts(now);
     s.notifications(now);
+    let agents = s.agents_poll(now);
     let theme = s.cfg.sun_theme(s.weather.sun, crate::date::now_secs()).filter(|t| *t != s.cfg.theme).map(str::to_string);
     if let Some(theme) = theme { s.save(|c| c.set_theme(&theme)) }
     s.water_reminders(now);
@@ -161,7 +165,7 @@ pub fn each_second(s: &mut Island, now: f64) -> bool {
         Some(_) if s.mode == Mode::Large && s.tab == Tab::Overview && s.cfg.dashboard.iter().any(|t| t.widget == Widget::Contributions) => s.contributions_load(),
         _ => {}
     }
-    s.pomodoro.tick_all(now) | plugins
+    s.pomodoro.tick_all(now) | plugins | agents
 }
 
 /// Before every frame, from `Island::poll`.

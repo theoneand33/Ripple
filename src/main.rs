@@ -3,6 +3,7 @@
 // Release builds on Windows open no console window beside the Island; `attach_console` keeps CLI output.
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
+mod agents;
 mod command;
 mod config;
 mod date;
@@ -270,6 +271,25 @@ fn island_spec() -> AppSpec<Island> {
                     top_cpu: vec![("firefox".into(), 12.4), ("rust-analyzer".into(), 6.1), ("ripple".into(), 0.8)],
                     top_mem: vec![("firefox".into(), 3 * GB + GB / 5), ("rust-analyzer".into(), 2 * GB), ("Slack".into(), 900 << 20)] });
             }),
+            ("agents", |s| {
+                s.mode = Mode::Large;
+                s.set_tab(Tab::Agents);
+                let session = |key: &str, agent: &str, cwd: &str, working, detail: &str| agents::Session { key: key.into(), agent: agent.into(), cwd: cwd.into(), working, detail: detail.into() };
+                s.agents.sessions = vec![
+                    session("claude-1", "claude", "/home/me/ripple", true, ""),
+                    session("opencode-2", "opencode", "/home/me/site", false, ""),
+                    session("codex-3", "codex", "/home/me/api", true, "Add rate limiting to the login endpoint"),
+                    session("claude-4", "claude", "/home/me/notes", false, "Done: the README now covers the hook setup."),
+                ];
+                let choice = |label: &str| agents::Choice { label: label.into(), description: String::new() };
+                s.agents.requests = vec![
+                    agents::Request { key: "r1".into(), session: "claude-1".into(), tool: "Bash".into(), detail: "cargo build --release".into(), questions: Vec::new() },
+                    agents::Request { key: "r2".into(), session: "opencode-2".into(), tool: "AskUserQuestion".into(), detail: String::new(), questions: vec![agents::Question {
+                        question: "Which framework should the site use?".into(), header: "Framework".into(), options: vec![choice("Astro"), choice("Next.js"), choice("Plain HTML")], multi_select: false,
+                    }] },
+                ];
+                s.agents.picks.insert(("r2".into(), 0), vec!["Astro".into()]);
+            }),
             ("limits", |s| {
                 s.mode = Mode::Large;
                 s.set_tab(Tab::Limits);
@@ -504,6 +524,8 @@ fn main() {
         attach_console();
         std::process::exit(notify::cli(&args[1..]))
     }
+    // No console: the agent reads the hook's answer from the stdout it piped.
+    if args.first().is_some_and(|a| a == "hook") { std::process::exit(agents::cli(&args[1..])) }
     #[cfg(target_os = "linux")]
     let wayland = {
         let wayland = std::env::var_os("WAYLAND_DISPLAY").is_some();
