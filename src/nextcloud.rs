@@ -506,6 +506,18 @@ fn minutes(((y, m, d), time): ((i32, u32, u32), Option<(u32, u32)>)) -> i64 {
     days_from_civil(y, m, d) * 1440 + i64::from(h * 60 + min)
 }
 
+/// Minutes since 1970 on this clock as UTC minutes, at that moment's offset.
+fn to_utc(local: i64) -> i64 {
+    let offset = |m: i64| i64::from(rune::time::LocalTime::at(m * 60_000).offset) / 60;
+    local - offset(local - offset(local))
+}
+
+/// Today on this clock, for the `today` and `tomorrow` a hand-edited task may hold.
+fn today() -> (i32, u32, u32) {
+    let t = rune::time::LocalTime::at(crate::date::now_ms());
+    (t.year, t.month, t.day)
+}
+
 /// A DATE (`all_day`) or local DATE-TIME value at `at` minutes since 1970.
 fn ics_value(at: i64, all_day: bool) -> String {
     let t = rune::time::LocalTime::at_offset(at * 60_000, 0);
@@ -527,15 +539,19 @@ fn edited_event(ics: &str, text: &str) -> Option<String> {
         let length = property(ics, "VEVENT", "DTEND").and_then(|(_, v)| Some(minutes(ics_time(&v)?) - minutes(old_start)))
             .or_else(|| property(ics, "VEVENT", "DURATION").and_then(|(_, v)| duration(&v)))
             .or(otime.is_none().then_some(1440));
-        let tz = start.0.split(';').find(|p| p.to_ascii_uppercase().starts_with("TZID=")).filter(|_| time.is_some() && otime.is_some() && !start.1.ends_with('Z'));
+        let timed = time.is_some() && otime.is_some();
+        let tz = start.0.split(';').find(|p| p.to_ascii_uppercase().starts_with("TZID=")).filter(|_| timed && !start.1.ends_with('Z'));
         let params = tz.map_or(String::new(), |tz| format!(";{tz}"));
+        // A UTC time stays UTC; others are written on this clock.
+        let utc = timed && start.1.trim().ends_with('Z');
+        let value = |local: i64| if utc { format!("{}Z", ics_value(to_utc(local), false)) } else { ics_value(local, false) };
         let at = minutes((day, time));
         drop.extend(["DTSTART", "DTEND", "DURATION"]);
         match time {
             Some(_) => {
-                add.push(format!("DTSTART{params}:{}", ics_value(at, false)));
+                add.push(format!("DTSTART{params}:{}", value(at)));
                 // Timed to timed keeps its length; an all-day event made timed has none, as new ones.
-                if let Some(len) = length.filter(|_| otime.is_some()) { add.push(format!("DTEND{params}:{}", ics_value(at + len, false))) }
+                if let Some(len) = length.filter(|_| otime.is_some()) { add.push(format!("DTEND{params}:{}", value(at + len))) }
             }
             None => {
                 let days = length.filter(|_| otime.is_none()).map_or(1, |l| (l / 1440).max(1));
@@ -567,7 +583,7 @@ fn duration(v: &str) -> Option<i64> {
 
 /// A to-do's object with its text's edit made: only the parts that changed are written.
 fn edited_task(ics: &str, text: &str) -> Option<String> {
-    let (old, new) = (Task::parse(&open_task(ics)?, (1970, 1, 1)), Task::parse(text, (1970, 1, 1)));
+    let (old, new) = (Task::parse(&open_task(ics)?, today()), Task::parse(text, today()));
     let fresh = new_task("", text, "");
     let line = |name: &str| fresh.lines().find(|l| l.split([':', ';']).next() == Some(name)).map(str::to_string);
     let (mut drop, mut add) = (Vec::new(), Vec::new());
@@ -745,8 +761,7 @@ fn escape_text(value: &str) -> String { value.replace('\\', "\\\\").replace(';',
 
 /// A to-do from a task's text; `open_task` reads it back as the same text.
 fn new_task(uid: &str, text: &str, stamp: &str) -> String {
-    // The written form has no `today` or `tomorrow` left to resolve.
-    let task = Task::parse(text, (1970, 1, 1));
+    let task = Task::parse(text, today());
     let summary = escape_text(&task.title);
     let mut extra = String::new();
     if task.priority > 0 { extra += &format!("PRIORITY:{}\r\n", [0, 9, 5, 1][usize::from(task.priority)]) }
@@ -1163,6 +1178,10 @@ mod tests {
         assert_eq!(event(&moved).as_deref(), Some("2026-11-20 09:00 Dentist"));
         let all_day = edited_event(ics, "2026-11-21 Dentist").unwrap();
         assert!(all_day.contains("DTSTART;VALUE=DATE:20261121\r\nDTEND;VALUE=DATE:20261122\r\n") && !all_day.contains("T150000"));
+        let utc = "BEGIN:VEVENT\r\nDTSTART:20261119T150000Z\r\nDTEND:20261119T160000Z\r\nSUMMARY:Call\r\nEND:VEVENT\r\n";
+        let moved_utc = edited_event(utc, "2026-11-20 09:00 Call").unwrap();
+        assert_eq!(event(&moved_utc).as_deref(), Some("2026-11-20 09:00 Call"), "{moved_utc}");
+        assert!(moved_utc.lines().filter(|l| l.starts_with("DTSTART:") || l.starts_with("DTEND:")).all(|l| l.ends_with('Z')), "a UTC event stays UTC: {moved_utc}");
         let trip = "BEGIN:VEVENT\r\nDTSTART;VALUE=DATE:20261101\r\nDURATION:P3D\r\nSUMMARY:Trip\r\nEND:VEVENT\r\n";
         assert!(edited_event(trip, "2026-11-10 Trip").unwrap().contains("DTSTART;VALUE=DATE:20261110\r\nDTEND;VALUE=DATE:20261113\r\n"), "a moved event keeps its length");
         let todo = "BEGIN:VCALENDAR\r\nBEGIN:VTODO\r\nSUMMARY:Rent\r\nRRULE:FREQ=MONTHLY;BYMONTHDAY=1\r\nDESCRIPTION:Landlord\r\nEND:VTODO\r\nEND:VCALENDAR\r\n";

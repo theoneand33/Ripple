@@ -159,8 +159,14 @@ pub struct TaskDraft {
 /// sync writes the change over it on Nextcloud.
 fn add_task(s: &mut Island, _: &mut Tx) {
     let d = &s.task_draft;
-    // shortcut: a title word like `due:…` or `every:…` reads as a setting; escape them if that bites.
-    let task = Task { priority: d.priority, title: s.task.text.split_whitespace().collect::<Vec<_>>().join(" "), due: d.due.map(|day| (day, d.time)), every: d.every };
+    // Typed `due:tomorrow` and the like still work: read as of today, then saved as dates.
+    // Priority comes from its control only, so leading bangs stay in the title.
+    let typed = s.task.text.trim();
+    let typed = if typed.split_whitespace().next().is_some_and(is_bangs) { format!("\\{typed}") } else { typed.to_string() };
+    let mut task = Task::parse(&typed, s.today);
+    if d.priority > 0 { task.priority = d.priority }
+    if let Some(day) = d.due { task.due = Some((day, d.time)) }
+    if d.every.is_some() { task.every = d.every }
     if task.title.is_empty() { return }
     let text = task.to_string();
     match s.task_draft.editing {
@@ -375,6 +381,12 @@ mod tests {
         s.task_draft.every = None;
         super::add_task(&mut s, &mut rune::Tx::default());
         assert_eq!((s.cfg.tasks.len(), s.cfg.tasks[0].key, s.cfg.tasks[0].text.as_str()), (1, key, "!! Pay rent due:2026-01-31T23:30"));
+        s.task.replace_text("Call Bob due:tomorrow");
+        super::add_task(&mut s, &mut rune::Tx::default());
+        assert_eq!(s.cfg.tasks[1].text, "Call Bob due:2026-01-02", "a typed relative day is saved as its date");
+        s.task.replace_text("! call mom");
+        super::add_task(&mut s, &mut rune::Tx::default());
+        assert_eq!(Task::parse(&s.cfg.tasks[2].text, s.today), Task { title: "! call mom".into(), ..Task::default() });
     }
 
     #[test]
