@@ -1018,7 +1018,7 @@ impl Island {
         // Hovered or focused, the focused-window check may read Ripple itself; keep the last reading.
         if on == self.fullscreen || self.hovered || self.focused { return false }
         let before = self.rest();
-        let resting = self.mode == before;
+        let resting = self.mode == before && !self.large_by_hand;
         self.fullscreen = on;
         // Only a rule that moves the rest moves the Island: a Large opened by hand stays so.
         if resting && self.rest() != before { self.set_mode(Mode::Still) }
@@ -1692,6 +1692,9 @@ mod tests {
         s.set_fullscreen(true);
         s.set_fullscreen(false);
         assert!(s.large_open(), "a full screen app with no rule leaves a Large opened by hand alone");
+        s.cfg.fullscreen = "standby".into();
+        s.set_fullscreen(true);
+        assert!(s.mode == Mode::Large && s.large_open(), "nor does one with a rule");
     }
 
     #[test]
