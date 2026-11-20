@@ -30,7 +30,7 @@ Ripple is a Dynamic Island-style bar for Windows, Linux, and macOS. It is one Ru
 ## Build and verify
 
 - GitHub Actions (`.github/workflows/build.yml`) runs the tests, renders every scene, and smoke-runs the app on each OS.
-- You may run `cargo check`, `cargo build`, and `cargo run` locally to confirm that a change or fix works. Debug builds render headlessly, so you need no display:
+- You may run `cargo check`, `cargo test`, `cargo build`, and `cargo run` locally to confirm that a change or fix works. Debug builds render headlessly, so you need no display:
 
   ```bash
   cargo run -- --list-scenes
@@ -38,7 +38,7 @@ Ripple is a Dynamic Island-style bar for Windows, Linux, and macOS. It is one Ru
   cargo run -- --window settings --size 520x2600 --snap settings.png
   ```
 
-- For a very small change, such as a typo, a string, a constant, or a few lines with no new logic, run only `cargo check` (about 1s). Skip `cargo build` and `cargo test` (6s to 2 min each) and let CI run them.
+- For a very small change, such as a typo, a string, a constant, or a few lines with no new logic, run only `cargo check` (fairly quick). Skip `cargo build` and `cargo test` (both can take a while if uncached) and let CI run them.
 - Then push and read the CI results.
 - When you add a view or a state that needs a visual check, add a scene to `scenes` in `src/main.rs`. CI renders every scene `--list-scenes` prints and uploads the PNGs as the `smoke-*` artifacts.
 - To add a tab, add it to `Tab` in `src/config.rs` with a new number, then follow the compiler: every `match` on `Tab` needs an arm.
