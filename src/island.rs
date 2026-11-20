@@ -266,6 +266,8 @@ pub struct Island {
     pub weather: Weather,
     pub track: Option<Track>,
     pub art: Option<Image>,
+    /// The track's synced lyrics, once LRCLIB has them.
+    pub lyrics: Option<Vec<crate::net::Lyric>>,
     pub art_hovered: bool,
     /// The bubble under the pointer: a bubble that goes away takes no hover-leave with it.
     bubble_hovered: Option<Bubble>,
@@ -418,6 +420,7 @@ impl Island {
             charging: false,
             weather: Weather::default(),
             track: None,
+            lyrics: None,
             art: None,
             art_hovered: false,
             bubble_hovered: None,
@@ -1243,6 +1246,20 @@ impl Island {
             self.schedule(tx);
         } else if !paused {
             self.paused_until = None;
+        }
+        let song = |t: &Option<Track>| t.as_ref().map(|t| (t.name.clone(), t.artist.clone()));
+        if song(&self.track) != song(&track) {
+            self.lyrics = None;
+            if let (Some(t), Some(me), true) = (&track, self.me.clone(), self.cfg.lyrics)
+                && !t.name.trim().is_empty()
+            {
+                let (name, artist, length) = (t.name.clone(), t.artist.clone(), t.progress.map(|p| p.1));
+                std::thread::spawn(move || {
+                    let Some(lines) = crate::net::lyrics(&artist, &name, length) else { return };
+                    // The track may have changed while the lyrics loaded.
+                    me.update(move |s, _| if s.track.as_ref().is_some_and(|t| t.name == name && t.artist == artist) { s.lyrics = Some(lines) });
+                });
+            }
         }
         let art_url = |t: &Option<Track>| t.as_ref().and_then(|t| t.artwork_url.clone());
         let (old_art, new_art) = (art_url(&self.track), art_url(&track));

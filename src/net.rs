@@ -318,6 +318,49 @@ pub fn fetch_image(url: &str) -> Option<Vec<u8>> {
     res.body_mut().with_config().limit(LIMIT).read_to_vec().ok()
 }
 
+/// One synced lyric line: when it starts, in milliseconds, and its words.
+pub type Lyric = (u32, String);
+
+/// A track's synced lyrics from LRCLIB, which needs no API key; None when it has none.
+/// `length` (seconds) prefers the result whose duration matches, as a song has many recordings.
+pub fn lyrics(artist: &str, title: &str, length: Option<u32>) -> Option<Vec<Lyric>> {
+    lyrics_from("https://lrclib.net", artist, title, length)
+}
+
+fn lyrics_from(base: &str, artist: &str, title: &str, length: Option<u32>) -> Option<Vec<Lyric>> {
+    let found = get_json(agent().get(format!("{base}/api/search")).header("User-Agent", "Ripple").query("artist_name", artist).query("track_name", title))?;
+    let synced: Vec<&Value> = found.as_array()?.iter().filter(|r| r["syncedLyrics"].as_str().is_some_and(|l| !l.trim().is_empty())).collect();
+    let off = |r: &&Value| length.map_or(0.0, |l| (r["duration"].as_f64().unwrap_or(f64::MAX) - l as f64).abs());
+    // Search is fuzzy: a result more than 5 s off in length is another song or recording.
+    let best = synced.iter().filter(|r| off(r) <= 5.0).min_by(|a, b| off(a).total_cmp(&off(b)))?;
+    let lines = parse_lrc(best["syncedLyrics"].as_str()?);
+    (!lines.is_empty()).then_some(lines)
+}
+
+/// LRC lines in time order. A line may carry several `[mm:ss.xx]` stamps; tags like `[ar:…]` are skipped.
+pub fn parse_lrc(lrc: &str) -> Vec<Lyric> {
+    let mut out = Vec::new();
+    for line in lrc.lines() {
+        let mut rest = line.trim();
+        let mut stamps = Vec::new();
+        while let Some((stamp, after)) = rest.strip_prefix('[').and_then(|r| r.split_once(']')) {
+            let Some((m, s)) = stamp.split_once(':') else { break };
+            let (Ok(m), Ok(s)) = (m.trim().parse::<u32>(), s.trim().parse::<f64>()) else { break };
+            if !(0.0..60.0).contains(&s) { break }
+            stamps.push(m.saturating_mul(60_000).saturating_add((s * 1000.0).round() as u32));
+            rest = after;
+        }
+        out.extend(stamps.into_iter().map(|t| (t, rest.trim().to_string())));
+    }
+    out.sort_by_key(|l| l.0);
+    out
+}
+
+/// The line sung at `ms`: the last one started, if any has.
+pub fn lyric_at(lines: &[Lyric], ms: u32) -> Option<&str> {
+    lines[..lines.partition_point(|l| l.0 <= ms)].last().map(|l| l.1.as_str())
+}
+
 /// SVG or SVGZ, sniffed the way Rune's decoder does: gzip magic, or `<` after an optional BOM.
 pub fn is_vector(bytes: &[u8]) -> bool {
     let text = bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(bytes);
@@ -358,6 +401,32 @@ mod tests {
         assert_eq!(sse_delta(r#"data: {"choices":[{"delta":{"content":"say [DONE]"}}]}"#), Sse::Delta("say [DONE]".into()));
         assert_eq!(sse_delta(": keep-alive"), Sse::Other);
         assert_eq!(sse_delta("data: {broken"), Sse::Other);
+    }
+
+    #[test]
+    fn lrc_lines_come_in_time_order_and_skip_tags() {
+        let lines = parse_lrc("[ar:Someone]\n[00:12.50]First\n[01:02.00][00:20.00] Chorus \n[00:30.00]\nplain text");
+        assert_eq!(lines, [(12_500, "First".into()), (20_000, "Chorus".into()), (30_000, String::new()), (62_000, "Chorus".into())]);
+        assert_eq!(lyric_at(&lines, 0), None);
+        assert_eq!(lyric_at(&lines, 12_500), Some("First"));
+        assert_eq!(lyric_at(&lines, 25_000), Some("Chorus"));
+        assert_eq!(lyric_at(&lines, 99_000), Some("Chorus"));
+    }
+
+    #[test]
+    fn lyrics_take_the_synced_result_closest_in_length() {
+        use crate::testserver::{json, serve};
+        let base = serve(|r| match r.path.as_str() {
+            "/api/search?artist_name=Artist&track_name=Song" => json(200, json!([
+                { "duration": 200.0, "syncedLyrics": null, "plainLyrics": "Plain" },
+                { "duration": 300.0, "syncedLyrics": "[00:01.00]Long cut" },
+                { "duration": 201.0, "syncedLyrics": "[00:01.00]Album cut" },
+            ])),
+            _ => json(200, json!([])),
+        });
+        assert_eq!(lyrics_from(&base, "Artist", "Song", Some(200)), Some(vec![(1000, "Album cut".into())]));
+        assert_eq!(lyrics_from(&base, "Artist", "Song", Some(250)), None, "no result within 5 s");
+        assert_eq!(lyrics_from(&base, "Artist", "Unknown", Some(200)), None);
     }
 
     #[test]

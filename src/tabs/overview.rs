@@ -488,6 +488,11 @@ fn media(s: &Island, w: f32) -> El {
             .child(el().grow(1.0).h(6.0).radius(3.0).fill(fg.alpha(0.15 * fg.a)).a11y_hidden()
                 .child(el().h_full().w_frac(position.min(length) as f32 / length.max(1) as f32).radius(3.0).fill(fg.alpha(0.55 * fg.a))))
             .child(time(format!("−{}", clock(length.saturating_sub(position)))).a11y_hidden()));
+        // shortcut: whole-second position from the 2 s poll, so a line can show up to 2 s late; interpolate if that shows.
+        if let Some(line) = s.lyrics.as_deref().filter(|_| s.cfg.lyrics).and_then(|l| crate::net::lyric_at(l, position * 1000)).filter(|l| !l.is_empty()) {
+            body = body.child(text(line).key(format!("lyric-{line}")).font(s.cfg.font(14.0, 600.0)).color(fg).w_full().truncate()
+                .transition(Transition::blur_replace()));
+        }
     }
     body.child(el().grow(1.0)).child(row().key("controls").w_full().gap(36.0).center()
         .child(button("previous", &icons::SKIP_BACK, 22.0, MediaCommand::Previous, "Previous"))
