@@ -523,7 +523,9 @@ pub fn microphone_in_use() -> bool {
             fn AudioObjectGetPropertyData(object: u32, address: *const Address, qualifier_size: u32, qualifier: *const std::ffi::c_void, size: *mut u32, data: *mut std::ffi::c_void) -> i32;
         }
         // 'dIn ' kAudioHardwarePropertyDefaultInputDevice, 'gone' kAudioDevicePropertyDeviceIsRunningSomewhere,
-        // 'glob' global scope, 'inpt' input scope (a headset that only plays music isn't recording).
+        // 'glob' global scope, 'inpt' input scope.
+        // shortcut: "running somewhere" is device-wide, so a headset that is the default input and only plays music may
+        // light the dot (the input scope is unlikely to filter it); check the device's input streams if users see it.
         let read = |object: u32, selector: &[u8; 4], scope: &[u8; 4]| {
             let (mut value, mut size) = (0u32, 4u32);
             // SAFETY: both properties are a UInt32, and `size` says so.
