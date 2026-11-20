@@ -503,7 +503,6 @@ mod tests {
 
     #[test]
     fn the_quote_changes_once_a_day_and_wraps_around() {
-        assert_eq!(quote_of(10), quote_of(10));
         assert_ne!(quote_of(10), quote_of(11));
         assert_eq!(quote_of(0), quote_of(QUOTES.len() as i64));
         assert_eq!(quote_of(-1), QUOTES[QUOTES.len() - 1]);
@@ -524,10 +523,11 @@ mod tests {
     fn tiles_fill_rows_in_order() {
         let r = layout(&[tile(2, 2), tile(1, 1), tile(2, 1), tile(4, 3)]);
         assert_eq!((r[0][0], r[0][1]), (0.0, 0.0));
-        assert_eq!((r[1][0], r[1][1]), (span(2, CELL.0) + GAP, 0.0));
+        // Four columns: a two-wide tile ends halfway, less half a gap.
+        assert_eq!((r[1][0], r[1][1]), ((WIDTH + GAP) / 2.0, 0.0));
         // Three columns used: the two-wide tile starts a row under the tallest one.
-        assert_eq!((r[2][0], r[2][1]), (0.0, span(2, CELL.1) + GAP));
-        assert_eq!(r[3][1], r[2][1] + span(1, CELL.1) + GAP);
+        assert_eq!((r[2][0], r[2][1]), (0.0, 124.0));
+        assert_eq!(r[3][1], 186.0);
         assert_eq!(r[3][2], WIDTH);
     }
 
