@@ -23,8 +23,8 @@ pub const CANVAS: (f32, f32) = (680.0, 460.0);
 /// Room kept around the Island inside the window for its shadow and hover scale.
 const PAD: f32 = 30.0;
 /// The tab dock under the Large Island: its height, the gap above it, one button and the space between.
-// 3pt between buttons leaves room past all 18 tabs in the canvas.
-const DOCK: (f32, f32, f32, f32) = (44.0, 12.0, 32.0, 3.0);
+// 30pt buttons 3pt apart leave room past all 20 tabs in the canvas.
+const DOCK: (f32, f32, f32, f32) = (44.0, 12.0, 30.0, 3.0);
 /// Room between the Large Island's edge and its tab's content.
 const LARGE_EDGE: f32 = 12.0;
 /// Framer's spring (stiffness 400, damping 40, mass 2.5) as duration and bounce.
@@ -211,6 +211,8 @@ pub struct Island {
     pub tab: Tab,
     /// The pointer is over the Island or its dock.
     pub hovered: bool,
+    /// Large was opened on purpose (a click, Cmd+number, the Shelf), not resting there.
+    large_by_hand: bool,
     /// Over the Island, over the dock, over a bubble.
     over: [bool; 3],
     /// The pointer left both; the next poll lets the Island rest.
@@ -220,6 +222,8 @@ pub struct Island {
     pub date: String,
     /// (year, month, day), for the Calendar tab.
     pub today: (i32, u32, u32),
+    /// Minutes since midnight now, for Day Progress.
+    pub minutes: u32,
     /// None on a machine without a battery.
     pub percent: Option<u8>,
     pub charging: bool,
@@ -258,6 +262,10 @@ pub struct Island {
     bluetooth_alert_until: Option<f64>,
     /// The task that fell due, and until when its reminder shows.
     pub reminder: Option<(String, f64)>,
+    /// Seconds until each break reminder (eye, hourly), counted only while no app is full screen.
+    break_left: [Option<f64>; 2],
+    /// The clock at the last count.
+    break_tick: f64,
     /// The minute task reminders were last checked, as `YYYY-MM-DDTHH:MM`; empty until the first.
     pub task_mark: String,
     capture: Option<(Alert, f64)>,
@@ -289,6 +297,7 @@ pub struct Island {
     pub limits: tabs::Limits,
     pub stocks: tabs::Stocks,
     pub contributions: tabs::Contributions,
+    pub clocks: tabs::Clocks,
     /// A file drag is over the Island.
     pub dropping: bool,
     /// A drag started elsewhere on the desktop opened the Shelf; it rests when the drag ends.
@@ -350,10 +359,12 @@ impl Island {
             mode: Mode::Still,
             tab: cfg.default_tab,
             hovered: false,
+            large_by_hand: false,
             over: [false; 3],
             left: false,
             time: String::new(),
             today: (1970, 1, 1),
+            minutes: 0,
             date: String::new(),
             percent: None,
             charging: false,
@@ -381,6 +392,8 @@ impl Island {
             bluetooth_alert_until: None,
             reminder: None,
             task_mark: String::new(),
+            break_left: [None; 2],
+            break_tick: 0.0,
             capture: None,
             capture_queue: Vec::new(),
             paused_until: None,
@@ -404,6 +417,7 @@ impl Island {
             limits: tabs::Limits::default(),
             stocks: tabs::Stocks::default(),
             contributions: tabs::Contributions::default(),
+            clocks: tabs::Clocks::default(),
             dropping: false,
             desktop_drag: false,
             t3: tabs::T3::new(store.dir().as_deref()),
@@ -644,6 +658,7 @@ impl Island {
     pub fn set_mode(&mut self, mode: Mode) {
         let was = self.mode;
         self.mode = if mode == Mode::Still { self.rest() } else { mode };
+        self.large_by_hand = mode == Mode::Large;
         if self.mode == Mode::Large && was != Mode::Large {
             if self.cfg.open_default_tab { self.tab = self.first_tab() }
             self.entered_tab();
@@ -787,6 +802,7 @@ impl Island {
     fn open_shelf(&mut self) {
         self.close_at = None;
         self.mode = Mode::Large;
+        self.large_by_hand = true;
         self.set_tab(Tab::Shelf);
         self.entered_tab();
     }
@@ -834,6 +850,7 @@ impl Island {
                 let Some(&tab) = self.visible_tabs().get(c as usize - '1' as usize) else { return false };
                 // Straight on that tab; the starred tab doesn't apply.
                 self.mode = Mode::Large;
+                self.large_by_hand = true;
                 self.open_tab(tab);
             }
             _ => return false,
@@ -928,6 +945,7 @@ impl Island {
         self.time = format!("{hour}:{:02}", now.minute);
         self.date = crate::date::format_date(now.year, now.month, now.day);
         self.today = (now.year, now.month, now.day);
+        self.minutes = now.hour * 60 + now.minute;
     }
 
     // --- What the pollers report ---
@@ -935,7 +953,25 @@ impl Island {
     /// Shows a task's reminder for 6 seconds.
     pub fn remind(&mut self, title: String, now: f64) {
         self.reminder = Some((title, now + 6.0));
-        if self.mode != Mode::Large { self.set_mode(Mode::Quick) }
+        if !self.large_open() { self.set_mode(Mode::Quick) }
+    }
+
+    /// Large is open by hand or under the pointer, not merely resting there (large_standby).
+    fn large_open(&self) -> bool {
+        self.mode == Mode::Large && (self.large_by_hand || self.hovered)
+    }
+
+    /// Once a second: the 20-20-20 eye break and the hourly break, paused while an app is full
+    /// screen. One due while Large is open waits until it closes.
+    pub fn break_reminders(&mut self, now: f64) {
+        let elapsed = now - std::mem::replace(&mut self.break_tick, now);
+        if rune::is_headless() { return }
+        let on = [self.cfg.eye_breaks, self.cfg.hourly_breaks];
+        // While another reminder shows, the break waits rather than replace it.
+        let paused = self.fullscreen || self.large_open() || self.reminder.is_some();
+        if let Some(i) = count_breaks(&mut self.break_left, on, elapsed, paused) {
+            self.remind(["Look away 20s", "Take a break"][i].into(), now);
+        }
     }
 
     pub fn set_battery(&mut self, battery: Option<(u8, bool)>, tx: &mut Tx) -> bool {
@@ -989,9 +1025,11 @@ impl Island {
     pub fn set_fullscreen(&mut self, on: bool) -> bool {
         // Hovered or focused, the focused-window check may read Ripple itself; keep the last reading.
         if on == self.fullscreen || self.hovered || self.focused { return false }
-        let resting = self.mode == self.rest();
+        let before = self.rest();
+        let resting = self.mode == before && !self.large_by_hand;
         self.fullscreen = on;
-        if resting { self.set_mode(Mode::Still) }
+        // Only a rule that moves the rest moves the Island: a Large opened by hand stays so.
+        if resting && self.rest() != before { self.set_mode(Mode::Still) }
         true
     }
 
@@ -1108,7 +1146,8 @@ impl Island {
             alert_ended |= self.mode != Mode::Large;
             changed = true;
         }
-        if alert_ended {
+        // An alert ending leaves a Large the user opened meanwhile, by hand or under the pointer.
+        if alert_ended && !self.large_open() {
             self.set_mode(Mode::Still);
             changed = true;
         }
@@ -1204,8 +1243,8 @@ impl Island {
         std::thread::spawn(move || system::watch_drags(|active| h.update(move |s, _| s.desktop_drag(active))));
         let h = me.clone();
         let store = self.store.clone();
-        // No rule, no query: the default pays nothing.
-        every(1000, move || { let f = store.get().fullscreen != "none" && platform::fullscreen(); h.update_if(move |s, _| s.set_fullscreen(f)); });
+        // No rule and no break reminders, no query: the default pays nothing.
+        every(1000, move || { let f = { let c = store.get(); (c.fullscreen != "none" || c.eye_breaks || c.hourly_breaks) && platform::fullscreen() }; h.update_if(move |s, _| s.set_fullscreen(f)); });
         let h = me.clone();
         every(250, move || { let on = system::caps_lock().unwrap_or(false); h.update_if(move |s, _| s.set_caps_lock(on)); });
         let h = me.clone();
@@ -1240,6 +1279,25 @@ impl Island {
     pub fn set_window(&mut self, window: WindowHandle) {
         self.passthrough.set_window(window);
     }
+}
+
+/// Each break's period in seconds: 20 minutes for the eyes, an hour to get up.
+const BREAKS: [f64; 2] = [20.0 * 60.0, 3600.0];
+
+/// Counts `elapsed` off the breaks that are on, unless `paused`; returns the one that fell due,
+/// which starts its period again.
+fn count_breaks(left: &mut [Option<f64>; 2], on: [bool; 2], elapsed: f64, paused: bool) -> Option<usize> {
+    let mut due = None;
+    for i in 0..2 {
+        if !on[i] { left[i] = None; continue }
+        let l = left[i].get_or_insert(BREAKS[i]);
+        if paused { continue }
+        // A gap of over a minute (sleep, a suspended app) was a break itself: start again.
+        if elapsed > 60.0 { *l = BREAKS[i]; continue }
+        *l -= elapsed;
+        if *l <= 0.0 && due.is_none() { *l = BREAKS[i]; due = Some(i) }
+    }
+    due
 }
 
 /// Fetches an image (blocking) and hands it, loaded, to `put` on the UI thread.
@@ -1592,6 +1650,63 @@ mod tests {
 
     fn island(cfg: Config) -> Island {
         Island::new(Store::memory(cfg), Vec::new())
+    }
+
+    #[test]
+    fn breaks_fall_due_on_their_period_and_pause_while_full_screen() {
+        let mut left = [None; 2];
+        // `secs` one-second ticks, as the Island counts; the first break that falls due.
+        let run = |left: &mut [Option<f64>; 2], secs: u32, paused: bool| (0..secs).find_map(|_| count_breaks(left, [true, true], 1.0, paused));
+        assert_eq!(count_breaks(&mut left, [true, true], 0.0, false), None);
+        assert_eq!(run(&mut left, 1199, false), None);
+        assert_eq!(run(&mut left, 600, true), None, "paused");
+        assert_eq!(run(&mut left, 1, false), Some(0));
+        assert_eq!(left[0], Some(BREAKS[0]), "starts again");
+        assert_eq!(run(&mut left, 2400, false), Some(0));
+        assert_eq!(run(&mut left, 1200, false), Some(0), "both fall due at the hour: the eye break first");
+        assert_eq!(count_breaks(&mut left, [true, true], 0.0, false), Some(1), "the hourly one comes next");
+        assert_eq!(count_breaks(&mut left, [true, true], 3600.0, false), None, "waking from sleep starts both again");
+        assert_eq!(left, [Some(BREAKS[0]), Some(BREAKS[1])]);
+        assert_eq!(count_breaks(&mut left, [false, false], 5000.0, false), None);
+        assert_eq!(left, [None, None]);
+    }
+
+    #[test]
+    fn breaks_count_while_the_island_rests_in_large() {
+        let mut s = island(Config { large_standby: true, ..Config::default() });
+        assert!(!s.large_open(), "resting in Large is not open by hand");
+        s.remind("Look away 20s".into(), 0.0);
+        assert_eq!(s.mode, Mode::Quick, "the reminder shows compact");
+        s.set_mode(Mode::Still);
+        assert_eq!(s.mode, Mode::Large);
+        assert!(!s.large_open(), "back at rest");
+        s.hovered = true;
+        assert!(s.large_open(), "under the pointer");
+        s.hovered = false;
+        let cmd1 = KeyEvent { key: Key::Command('1'), mods: rune::Mods::default() };
+        assert!(s.key(&cmd1, &mut Tx::default()));
+        assert!(s.large_open(), "Cmd+1 opens it by hand with the pointer away");
+        let tab = s.tab;
+        s.remind("Look away 20s".into(), 0.0);
+        assert_eq!((s.mode, s.tab), (Mode::Large, tab), "the reminder waits");
+        s.set_mode(Mode::Still);
+        assert!(!s.large_open(), "resting clears it");
+        let mut s = island(Config::default());
+        s.set_mode(Mode::Large);
+        assert!(s.large_open());
+        s.set_mode(Mode::Quick);
+        assert!(!s.large_open());
+        let mut s = island(Config { large_standby: true, eye_breaks: true, ..Config::default() });
+        s.key(&KeyEvent { key: Key::Command('1'), mods: rune::Mods::default() }, &mut Tx::default());
+        s.set_fullscreen(true);
+        s.set_fullscreen(false);
+        assert!(s.large_open(), "a full screen app with no rule leaves a Large opened by hand alone");
+        s.cfg.fullscreen = "standby".into();
+        s.set_fullscreen(true);
+        assert!(s.mode == Mode::Large && s.large_open(), "nor does one with a rule");
+        s.remind("Look away 20s".into(), 0.0);
+        s.poll(7.0, &mut Tx::default());
+        assert!(s.reminder.is_none() && s.mode == Mode::Large, "a reminder ending leaves it open too");
     }
 
     #[test]

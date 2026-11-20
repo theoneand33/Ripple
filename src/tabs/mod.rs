@@ -5,6 +5,7 @@ mod assistant;
 mod calculator;
 mod calendar;
 mod clipboard;
+mod clocks;
 mod habits;
 mod limits;
 mod monitor;
@@ -26,6 +27,7 @@ pub use calculator::Calculator;
 pub use calendar::Calendar;
 pub use clipboard::{Clipboard, Content};
 pub use overview::Contributions;
+pub use clocks::Clocks;
 pub use limits::Limits;
 pub use notes::Notes;
 pub use shelf::Shelf;
@@ -67,6 +69,7 @@ fn panel(s: &Island, tab: Tab, layer: &mut Vec<El>) -> El {
         Tab::Calculator => calculator::view(s),
         Tab::Habits => habits::view(s),
         Tab::Stocks => stocks::view(s),
+        Tab::Clocks => clocks::view(s),
     }
 }
 
@@ -88,6 +91,7 @@ pub const fn size(tab: Tab) -> (f32, f32) {
         Tab::Assistant => (420.0, 230.0),
         Tab::Clipboard => (420.0, 290.0),
         Tab::Weather => (420.0, 190.0),
+        Tab::Clocks => (480.0, 300.0),
     }
 }
 
@@ -114,6 +118,7 @@ fn load(s: &mut Island, tab: Tab) {
         Tab::Limits => s.limits_load(),
         Tab::Calculator => s.calc_load(),
         Tab::Stocks => s.stocks_load(),
+        Tab::Clocks => s.clocks_load(),
         Tab::Notes => s.nextcloud_sync(Kind::Notes),
         Tab::Tasks => {
             if s.task_draft.editing.is_some() { tasks::reset_draft(s) }
@@ -137,6 +142,7 @@ pub fn each_second(s: &mut Island, now: f64) -> bool {
     let plugins = shows(s, Tab::Plugins) && s.plugins.tick();
     s.notes_tick();
     s.task_reminders(now);
+    s.break_reminders(now);
     crate::system::WANT_PROCESSES.store(s.mode == Mode::Large && s.tab == Tab::System, std::sync::atomic::Ordering::Relaxed);
     match s.stocks.reload_in.take() {
         Some(n) if n > 1 => s.stocks.reload_in = Some(n - 1),
