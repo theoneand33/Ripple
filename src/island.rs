@@ -1747,7 +1747,7 @@ fn dock(s: &Island, [x, y, w, h]: [f32; 4]) -> El {
                 .size(button, button).center().radius(round(button / 2.0))
                 .fill(if on { fg.alpha(0.18 * fg.a) } else { Color::TRANSPARENT })
                 .hover(fg.alpha(0.1 * fg.a)).press(fg.alpha(0.2 * fg.a)).press_scale(0.97)
-                .child(icon(icons::tab(tab), 17.0).color(if on { fg } else { fg.alpha(0.55 * fg.a) }).a11y_hidden())
+                .child(icon(tabs::icon_of(tab), 17.0).color(if on { fg } else { fg.alpha(0.55 * fg.a) }).a11y_hidden())
                 .on_press(move |s: &mut Island| s.open_tab(tab)),
         );
     }

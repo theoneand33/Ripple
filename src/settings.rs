@@ -9,6 +9,7 @@ use crate::config::{Config, POSITIONS, PROVIDERS, QuickApp, SEARCH_ENGINES, Stor
 use crate::icons;
 use crate::island::Host;
 use crate::platform::Screen;
+use crate::tabs;
 
 /// A sidebar entry: the app-wide pages, then one per tab that has settings.
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -31,7 +32,7 @@ impl Page {
             Page::Tabs => &icons::LIST,
             Page::Appearance => &icons::MONITOR,
             Page::Features => &icons::ZAP,
-            Page::Tab(tab) => icons::tab(tab),
+            Page::Tab(tab) => tabs::icon_of(tab),
         }
     }
 }
@@ -669,7 +670,7 @@ fn page(s: &Settings, k: &Kit, layer: &mut Vec<El>, page: Page) -> Vec<El> {
                         }
                     }
                         .child(icon(&icons::GRIP, 16.0).color(fg.alpha(0.3)))
-                        .child(icon(icons::tab(tab), 16.0).color(fg))
+                        .child(icon(tabs::icon_of(tab), 16.0).color(fg))
                         .child(text(name).font(cfg.font(14.0, 500.0)).color(fg).grow(1.0).min_w(0.0).truncate())
                         .child(if has_panel(tab) {
                             IconButton::new(&icons::SETTINGS).label(format!("{} settings", name))

@@ -100,6 +100,33 @@ pub const fn size(tab: Tab) -> (f32, f32) {
     }
 }
 
+/// The tab's icon in the dock and in Settings.
+pub fn icon_of(tab: Tab) -> &'static rune::Icon {
+    match tab {
+        Tab::Search => &icons::SEARCH,
+        Tab::Workflows => &icons::ZAP,
+        Tab::Overview => &icons::SUN,
+        Tab::Weather => &icons::CLOUD_SUN,
+        Tab::Assistant => &icons::MIC,
+        Tab::Clipboard => &icons::LIST,
+        Tab::Tasks => &icons::CHECK,
+        Tab::T3 => &icons::TERMINAL,
+        Tab::Agents => &icons::BOT,
+        Tab::Notes => &icons::STICKY_NOTE,
+        Tab::Stremflix => &icons::TV,
+        Tab::Shelf => &icons::INBOX,
+        Tab::System => &icons::ACTIVITY,
+        Tab::Limits => &icons::GAUGE,
+        Tab::Calendar => &icons::CALENDAR,
+        Tab::Plugins => &icons::PUZZLE,
+        Tab::Pomodoro => &icons::TIMER,
+        Tab::Calculator => &icons::CALCULATOR,
+        Tab::Habits => &icons::FLAME,
+        Tab::Stocks => &icons::TRENDING_UP,
+        Tab::Clocks => &icons::CLOCK,
+    }
+}
+
 /// Loads what a tab shows, as it opens: the Overview's panels with it.
 pub fn entered(s: &mut Island) {
     s.dashboard_drag = None;
