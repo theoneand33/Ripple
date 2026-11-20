@@ -563,6 +563,9 @@ fn page(s: &Settings, k: &Kit, layer: &mut Vec<El>, page: Page) -> Vec<El> {
                 style.push(setting(s, &format!("Position X ({:.1}%)", cfg.island_x), slider(s, "island-x", "Position X", (0.0, 100.0, 0.1), |c| c.island_x, |c, v| c.island_x = v)).key("island-x-row"));
                 style.push(setting(s, &format!("Position Y ({}px)", cfg.island_y.round()), slider(s, "island-y", "Position Y", (0.0, 500.0, 1.0), |c| c.island_y, |c, v| c.island_y = v)).key("island-y-row"));
             }
+            style.push(setting(s, &format!("Size ({}%)", cfg.island_scale.round()), slider(s, "island-scale", "Island size", (80.0, 200.0, 10.0), |c| c.island_scale, |c, v| c.island_scale = v)).key("island-scale-row"));
+            style.push(setting(s, &format!("Opacity, compact ({}%)", cfg.compact_opacity.round()), slider(s, "compact-opacity", "Opacity when compact", (10.0, 100.0, 5.0), |c| c.compact_opacity, |c, v| c.compact_opacity = v)).key("compact-opacity-row"));
+            style.push(setting(s, &format!("Opacity, open ({}%)", cfg.large_opacity.round()), slider(s, "large-opacity", "Opacity when open", (10.0, 100.0, 5.0), |c| c.large_opacity, |c, v| c.large_opacity = v)).key("large-opacity-row"));
             style.push(toggle(s, k, "Island border", cfg.island_border, |c| c.island_border = !c.island_border));
             // Only the Wayland layer-shell overlay can be pushed below a panel.
             if matches!(s.island, Some(Host::Overlay(..))) {
