@@ -1168,7 +1168,9 @@ impl Island {
         let h = me.clone();
         std::thread::spawn(move || system::watch_drags(|active| h.update(move |s, _| s.desktop_drag(active))));
         let h = me.clone();
-        every(1000, move || { let f = platform::fullscreen(); h.update_if(move |s, _| s.set_fullscreen(f)); });
+        let store = self.store.clone();
+        // No rule, no query: the default pays nothing.
+        every(1000, move || { let f = store.get().fullscreen != "none" && platform::fullscreen(); h.update_if(move |s, _| s.set_fullscreen(f)); });
         let h = me.clone();
         every(250, move || { let on = system::caps_lock().unwrap_or(false); h.update_if(move |s, _| s.set_caps_lock(on)); });
         let h = me.clone();
