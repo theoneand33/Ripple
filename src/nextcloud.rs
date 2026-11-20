@@ -209,8 +209,8 @@ impl Island {
                     c.shelf.retain(|f| !out.gone.contains(f));
                 }
                 for f in out.downloaded { if !c.shelf.contains(&f) { c.shelf.push(f) } }
-                c.nextcloud.shelf_synced.retain(|e| in_folder(e, folder).is_none());
-                c.nextcloud.shelf_synced.extend(both.into_iter().map(|n| format!("{folder}/{n}")));
+                // Only this folder's: a stale record of another would make its files look removed on a switch back.
+                c.nextcloud.shelf_synced = both.into_iter().map(|n| format!("{folder}/{n}")).collect();
             });
         }
         if std::mem::take(&mut self.shelf_sync.again) && current { self.nextcloud_shelf_sync() }
@@ -700,8 +700,11 @@ fn shelf(c: &Client, folder: &str, files: &[PathBuf], base: &[String], cache: &P
         if !ok(status) { skipped.get_or_insert(format!("Couldn't download {name}: {}", failed(status))); continue }
         // Written beside, then renamed, so a broken download never sits on the Shelf.
         // shortcut: a downloaded file stays in the cache after it leaves the Shelf; prune it if the folder grows.
-        let (path, part) = (cache.join(name), cache.join(format!(".{name}.ripple-download")));
-        let copied = std::fs::create_dir_all(cache).and_then(|_| std::fs::File::create(&part)).and_then(|mut f| std::io::copy(&mut res.body_mut().as_reader(), &mut f)).and_then(|_| std::fs::rename(&part, &path));
+        // A file kept from before (it left the Shelf, not the disk) is never overwritten: the new one
+        // goes in a numbered folder, keeping its name so it still matches Nextcloud's.
+        let dir = (1..).map(|i| if i == 1 { cache.to_path_buf() } else { cache.join(i.to_string()) }).find(|d| !d.join(name).exists()).unwrap_or_default();
+        let (path, part) = (dir.join(name), dir.join(format!(".{name}.ripple-download")));
+        let copied = std::fs::create_dir_all(&dir).and_then(|_| std::fs::File::create(&part)).and_then(|mut f| std::io::copy(&mut res.body_mut().as_reader(), &mut f)).and_then(|_| std::fs::rename(&part, &path));
         if let Err(e) = copied { let _ = std::fs::remove_file(&part); skipped.get_or_insert(format!("Couldn't save {name}: {e}")); continue }
         out.downloaded.push(path);
         both.push(name.clone());
@@ -1010,7 +1013,9 @@ mod tests {
         let nc = Nextcloud { url: base, user: "me".into(), password: "pw".into(), ..Nextcloud::default() };
         let tmp = std::env::temp_dir().join(format!("ripple-shelf-{}", std::process::id()));
         let cache = tmp.join("cache");
-        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::create_dir_all(&cache).unwrap();
+        // Downloaded once, then off the Shelf: kept on disk, so the new download goes beside it.
+        std::fs::write(cache.join("their file.txt"), "kept").unwrap();
         let names = ["big.txt", "kept.txt", "mine.txt", "old.txt", "clash.txt", "twin.txt", "same.txt"];
         for name in names { std::fs::write(tmp.join(name), name).unwrap() }
         // The server has no room for big.txt: it's skipped, and the rest still syncs. Its clash.txt
@@ -1022,8 +1027,9 @@ mod tests {
         assert_eq!(out.error.as_deref(), Some("Couldn't upload big.txt: Nextcloud answered 507"));
         assert_eq!(out.both.unwrap(), ["kept.txt", "twin.txt", "mine.txt", "their file.txt"]);
         assert_eq!(out.gone, [tmp.join("old.txt")]);
-        assert_eq!(out.downloaded, [cache.join("their file.txt")]);
-        assert_eq!(std::fs::read_to_string(cache.join("their file.txt")).unwrap(), "hello");
+        assert_eq!(out.downloaded, [cache.join("2").join("their file.txt")]);
+        assert_eq!(std::fs::read_to_string(&out.downloaded[0]).unwrap(), "hello");
+        assert_eq!(std::fs::read_to_string(cache.join("their file.txt")).unwrap(), "kept");
         let first = std::mem::take(&mut *seen.lock().unwrap());
         let sent: Vec<_> = first.iter().filter(|r| r.0 == "PUT" || r.0 == "DELETE").map(|r| (r.0.as_str(), r.1.as_str(), r.2.as_str())).collect();
         assert_eq!(sent, [("DELETE", &*format!("{dir}dropped.txt"), ""), ("PUT", &*format!("{dir}big.txt"), "big.txt"), ("PUT", &*format!("{dir}mine.txt"), "mine.txt")]);
