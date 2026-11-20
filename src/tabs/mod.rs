@@ -28,6 +28,7 @@ pub use notes::Notes;
 pub use pomodoro::{Clock, Pomodoro, live as pomodoro_live};
 pub use stremflix::Stremflix;
 pub use t3::T3;
+pub use tasks::{Every, Task};
 
 use rune::{Color, El, Key, KeyEvent, ScrollSpec, TextEdit, Tx, el, icon, row, text, text_input};
 
@@ -98,6 +99,7 @@ pub fn entered(s: &mut Island) {
 pub fn each_second(s: &mut Island, now: f64) -> bool {
     let plugins = s.mode == Mode::Large && s.tab == Tab::Plugins && s.plugins.tick();
     s.notes_tick();
+    s.task_reminders(now);
     s.pomodoro.tick_all(now) | plugins
 }
 

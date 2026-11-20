@@ -119,6 +119,12 @@ fn island_spec() -> AppSpec<Island> {
                 if let Some(image) = rune::ClipboardImage::from_png(png) { s.clipboard_image(image); }
             }),
             ("tasks", |s| { s.mode = Mode::Large; s.set_tab(Tab::Tasks) }),
+            ("tasks-due", |s| {
+                s.mode = Mode::Large;
+                s.set_tab(Tab::Tasks);
+                s.cfg.tasks = ["Water the plants due:2026-01-01 every:week", "!!! Ship v0.5 due:2026-01-02T17:00", "Read the RFC", "! Book flights due:2026-01-09"].map(config::Item::new).into();
+            }),
+            ("reminder", |s| s.remind("Ship v0.5 release notes".into(), 0.0)),
             ("tasks-sync-error", |s| {
                 s.mode = Mode::Large;
                 s.set_tab(Tab::Tasks);

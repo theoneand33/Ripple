@@ -12,6 +12,7 @@ use crate::config::{Config, Item, Nextcloud, Remote};
 use crate::date::days_from_civil;
 use crate::island::Island;
 use crate::net::percent_encode;
+use crate::tabs::{Every, Task};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Kind {
@@ -459,9 +460,10 @@ fn unescape(s: &str) -> String {
 /// iCalendar lines with their folds joined.
 fn unfold(ics: &str) -> String { ics.replace("\r\n", "\n").replace("\n ", "").replace("\n\t", "") }
 
-/// The summary of the calendar object's to-do, unless it is done.
+/// The calendar object's to-do as a task's text (`tabs::Task`), unless it is done.
 fn open_task(ics: &str) -> Option<String> {
     let (mut inside, mut summary, mut open) = (false, None, true);
+    let mut task = Task::default();
     for line in unfold(ics).lines() {
         let upper = line.to_ascii_uppercase();
         // An alarm inside the to-do has a SUMMARY of its own.
@@ -473,10 +475,38 @@ fn open_task(ics: &str) -> Option<String> {
             "SUMMARY" => summary = Some(unescape_text(value)),
             "STATUS" => open &= !matches!(value.trim().to_ascii_uppercase().as_str(), "COMPLETED" | "CANCELLED"),
             "COMPLETED" => open = false,
+            // 1-4 high, 5 medium, 6-9 low; 0 none (RFC 5545 3.8.1.9).
+            "PRIORITY" => task.priority = match value.trim().parse::<u8>() { Ok(1..=4) => 3, Ok(5) => 2, Ok(6..=9) => 1, _ => 0 },
+            "DUE" => task.due = ics_time(value),
+            "RRULE" => task.every = value.split(';').find_map(|p| match p.trim().to_ascii_uppercase().as_str() {
+                "FREQ=DAILY" => Some(Every::Day),
+                "FREQ=WEEKLY" => Some(Every::Week),
+                "FREQ=MONTHLY" => Some(Every::Month),
+                _ => None,
+            }),
             _ => {}
         }
     }
-    summary.filter(|_| open)
+    task.title = summary.filter(|_| open)?;
+    Some(task.to_string())
+}
+
+/// A DATE or DATE-TIME value: its day, and its time on this clock. UTC moves to this clock; a
+/// TZID time is taken as written, as it is usually this zone.
+fn ics_time(value: &str) -> Option<((i32, u32, u32), Option<(u32, u32)>)> {
+    let value = value.trim();
+    let num = |from: usize, to: usize| value.get(from..to)?.parse::<u32>().ok();
+    let (y, m, d) = (num(0, 4)? as i32, num(4, 6)?, num(6, 8)?);
+    match value.get(8..)? {
+        "" => Some(((y, m, d), None)),
+        t if t.starts_with('T') => {
+            let (h, min) = (num(9, 11)?, num(11, 13)?);
+            if !t.ends_with('Z') { return Some(((y, m, d), Some((h, min)))) }
+            let l = rune::time::LocalTime::at((days_from_civil(y, m, d) * 86_400 + i64::from(h * 3600 + min * 60)) * 1000);
+            Some(((l.year, l.month, l.day), Some((l.hour, l.minute))))
+        }
+        _ => None,
+    }
 }
 
 /// An iCalendar TEXT value; a line break becomes a space, as tasks are one line here.
@@ -495,9 +525,20 @@ fn unescape_text(value: &str) -> String {
 /// A TEXT value for iCalendar.
 fn escape_text(value: &str) -> String { value.replace('\\', "\\\\").replace(';', "\\;").replace(',', "\\,").replace('\n', "\\n").replace('\r', "") }
 
-fn new_task(uid: &str, summary: &str, stamp: &str) -> String {
-    let summary = escape_text(summary);
-    format!("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Ripple//EN\r\nBEGIN:VTODO\r\nUID:{uid}\r\nDTSTAMP:{stamp}\r\nCREATED:{stamp}\r\nSUMMARY:{summary}\r\nSTATUS:NEEDS-ACTION\r\nEND:VTODO\r\nEND:VCALENDAR\r\n")
+/// A to-do from a task's text; `open_task` reads it back as the same text.
+fn new_task(uid: &str, text: &str, stamp: &str) -> String {
+    // The written form has no `today` or `tomorrow` left to resolve.
+    let task = Task::parse(text, (1970, 1, 1));
+    let summary = escape_text(&task.title);
+    let mut extra = String::new();
+    if task.priority > 0 { extra += &format!("PRIORITY:{}\r\n", [0, 9, 5, 1][usize::from(task.priority)]) }
+    match task.due {
+        Some(((y, m, d), None)) => extra += &format!("DUE;VALUE=DATE:{y:04}{m:02}{d:02}\r\n"),
+        Some(((y, m, d), Some((h, min)))) => extra += &format!("DUE:{y:04}{m:02}{d:02}T{h:02}{min:02}00\r\n"),
+        None => {}
+    }
+    if let Some(every) = task.every { extra += &format!("RRULE:FREQ={}\r\n", match every { Every::Day => "DAILY", Every::Week => "WEEKLY", Every::Month => "MONTHLY" }) }
+    format!("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Ripple//EN\r\nBEGIN:VTODO\r\nUID:{uid}\r\nDTSTAMP:{stamp}\r\nCREATED:{stamp}\r\nSUMMARY:{summary}\r\n{extra}STATUS:NEEDS-ACTION\r\nEND:VTODO\r\nEND:VCALENDAR\r\n")
 }
 
 /// The calendar object with its to-dos marked done, everything else kept.
@@ -571,22 +612,11 @@ fn event(ics: &str) -> Option<String> {
             _ => {}
         }
     }
-    let start = start?;
-    let num = |from: usize, to: usize| start.get(from..to)?.parse::<u32>().ok();
-    let (y, m, d) = (num(0, 4)? as i32, num(4, 6)?, num(6, 8)?);
+    let ((y, m, d), time) = ics_time(&start?)?;
     let summary = if summary.trim().is_empty() { "Untitled".to_string() } else { summary };
-    let text = match start.get(8..)? {
-        "" => format!("{y:04}-{m:02}-{d:02} {summary}"),
-        t if t.starts_with('T') => {
-            let (h, min) = (num(9, 11)?, num(11, 13)?);
-            // UTC moves to this clock; a TZID time is taken as written, as it is usually this zone.
-            let (y, m, d, h, min) = if t.ends_with('Z') {
-                let l = rune::time::LocalTime::at((days_from_civil(y, m, d) * 86_400 + i64::from(h * 3600 + min * 60)) * 1000);
-                (l.year, l.month, l.day, l.hour, l.minute)
-            } else { (y, m, d, h, min) };
-            format!("{y:04}-{m:02}-{d:02} {h:02}:{min:02} {summary}")
-        }
-        _ => return None,
+    let text = match time {
+        None => format!("{y:04}-{m:02}-{d:02} {summary}"),
+        Some((h, min)) => format!("{y:04}-{m:02}-{d:02} {h:02}:{min:02} {summary}"),
     };
     open.then_some(text)
 }
@@ -712,11 +742,16 @@ mod tests {
     #[test]
     fn todos_read_and_complete() {
         let ics = "BEGIN:VCALENDAR\r\nBEGIN:VTODO\r\nUID:1\r\nSUMMARY;LANGUAGE=en:Buy milk\\, eggs and a very long\r\n  line\r\nSTATUS:NEEDS-ACTION\r\nDUE:20260101\r\nEND:VTODO\r\nEND:VCALENDAR\r\n";
-        assert_eq!(open_task(ics).as_deref(), Some("Buy milk, eggs and a very long line"));
+        assert_eq!(open_task(ics).as_deref(), Some("Buy milk, eggs and a very long line due:2026-01-01"));
         let done = completed(ics, "20261118T000000Z");
         assert_eq!(open_task(&done), None);
         assert!(done.contains("DUE:20260101\r\nSTATUS:COMPLETED\r\nCOMPLETED:20261118T000000Z\r\nPERCENT-COMPLETE:100\r\nEND:VTODO") && !done.contains("NEEDS-ACTION"));
         assert_eq!(open_task(&new_task("u", "a, b; c \\n", "20260101T000000Z")).as_deref(), Some("a, b; c \\n"));
+        let rich = "!!! Pay rent due:2026-12-01T09:30 every:month";
+        let written = new_task("u", rich, "20260101T000000Z");
+        assert!(written.contains("PRIORITY:1\r\nDUE:20261201T093000\r\nRRULE:FREQ=MONTHLY\r\n") && written.contains("SUMMARY:Pay rent\r\n"));
+        assert_eq!(open_task(&written).as_deref(), Some(rich));
+        assert_eq!(open_task("BEGIN:VTODO\r\nSUMMARY:Low\r\nPRIORITY:7\r\nRRULE:FREQ=WEEKLY;BYDAY=MO\r\nEND:VTODO").as_deref(), Some("! Low every:week"));
         assert_eq!(open_task("BEGIN:VTODO\r\nSUMMARY:Task\r\nBEGIN:VALARM\r\nSUMMARY:Alarm\r\nEND:VALARM\r\nEND:VTODO").as_deref(), Some("Task"));
     }
 

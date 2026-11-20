@@ -50,6 +50,8 @@ pub enum Alert {
     Volume,
     Brightness,
     CapsLock,
+    /// A task fell due.
+    Reminder,
 }
 
 impl Alert {
@@ -61,6 +63,7 @@ impl Alert {
             Alert::Bluetooth => Some(accent::bluetooth()),
             Alert::Camera => Some(accent::camera()),
             Alert::Microphone => Some(accent::mic()),
+            Alert::Reminder => Some(accent::orange()),
             Alert::Volume | Alert::Brightness | Alert::CapsLock => None,
         }
     }
@@ -74,6 +77,7 @@ impl Alert {
             Alert::Volume => &icons::VOLUME,
             Alert::Brightness => &icons::SUN,
             Alert::CapsLock => &icons::CAPS_LOCK,
+            Alert::Reminder => &icons::BELL,
         }
     }
 
@@ -87,6 +91,7 @@ impl Alert {
             Alert::Volume => "volume",
             Alert::Brightness => "brightness",
             Alert::CapsLock => "caps-lock",
+            Alert::Reminder => "reminder",
         }
     }
 }
@@ -236,6 +241,10 @@ pub struct Island {
     battery_alert_until: Option<f64>,
     charging_alert_until: Option<f64>,
     bluetooth_alert_until: Option<f64>,
+    /// The task that fell due, and until when its reminder shows.
+    pub reminder: Option<(String, f64)>,
+    /// The minute task reminders were last checked, as `YYYY-MM-DDTHH:MM`.
+    pub task_mark: String,
     capture: Option<(Alert, f64)>,
     capture_queue: Vec<Alert>,
     paused_until: Option<f64>,
@@ -341,6 +350,8 @@ impl Island {
             battery_alert_until: None,
             charging_alert_until: None,
             bluetooth_alert_until: None,
+            reminder: None,
+            task_mark: String::new(),
             capture: None,
             capture_queue: Vec::new(),
             paused_until: None,
@@ -428,6 +439,7 @@ impl Island {
         else if self.charging_alert_until.is_some() { Some(Alert::Charging) }
         else if self.battery_alert_until.is_some() { Some(Alert::Battery) }
         else if self.bluetooth_alert_until.is_some() { Some(Alert::Bluetooth) }
+        else if self.reminder.is_some() { Some(Alert::Reminder) }
         // A playing track goes over Caps Lock, which may stay on for good.
         else { self.capture.map(|c| c.0).or((self.caps_lock && !self.shows_track()).then_some(Alert::CapsLock)) }
     }
@@ -446,6 +458,11 @@ impl Island {
             Alert::Microphone => "Microphone".into(),
             Alert::Volume | Alert::Brightness => String::new(),
             Alert::CapsLock => "Caps Lock".into(),
+            // Fits the alert's width.
+            Alert::Reminder => {
+                let title = self.reminder.as_ref().map_or("", |r| r.0.as_str());
+                if title.chars().count() > 13 { format!("{}…", title.chars().take(12).collect::<String>()) } else { title.to_string() }
+            }
         }
     }
 
@@ -820,6 +837,12 @@ impl Island {
 
     // --- What the pollers report ---
 
+    /// Shows a task's reminder for 6 seconds.
+    pub fn remind(&mut self, title: String, now: f64) {
+        self.reminder = Some((title, now + 6.0));
+        if self.mode != Mode::Large { self.set_mode(Mode::Quick) }
+    }
+
     pub fn set_battery(&mut self, battery: Option<(u8, bool)>, tx: &mut Tx) -> bool {
         let (percent, charging) = battery.map_or((None, false), |(p, c)| (Some(p), c));
         if (percent, charging) == (self.percent, self.charging) { return false }
@@ -946,7 +969,7 @@ impl Island {
 
     /// Asks for a poll at the next deadline any timer holds.
     fn schedule(&self, tx: &mut Tx) {
-        let deadlines = [self.level.map(|l| l.1), self.battery_alert_until, self.charging_alert_until, self.bluetooth_alert_until, self.capture.map(|c| c.1), self.paused_until, tabs::deadline(self), self.intro_at, self.close_at];
+        let deadlines = [self.level.map(|l| l.1), self.battery_alert_until, self.charging_alert_until, self.bluetooth_alert_until, self.reminder.as_ref().map(|r| r.1), self.capture.map(|c| c.1), self.paused_until, tabs::deadline(self), self.intro_at, self.close_at];
         if let Some(due) = deadlines.into_iter().flatten().reduce(f64::min) { tx.wake_at(due) }
     }
 
@@ -967,6 +990,7 @@ impl Island {
         let mut alert_ended = due(&mut self.battery_alert_until);
         alert_ended |= due(&mut self.charging_alert_until);
         alert_ended |= due(&mut self.bluetooth_alert_until);
+        if self.reminder.as_ref().is_some_and(|r| now >= r.1) { self.reminder = None; alert_ended = true }
         if self.capture.is_some_and(|c| now >= c.1) {
             self.capture = None;
             self.next_capture(tx);
