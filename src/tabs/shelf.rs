@@ -10,7 +10,7 @@ use rune_kit::{MenuItem, context_menu};
 
 use super::{Undo, tool, undo_button};
 use crate::icons;
-use crate::island::Island;
+use crate::island::{Island, Mode};
 use crate::system;
 
 /// The `open_select` name while a file's menu is open: its menu hangs outside the Island.
@@ -216,7 +216,10 @@ pub fn view(s: &Island, layer: &mut Vec<El>) -> El {
             .hover(fg.alpha(0.08 * fg.a)).press(fg.alpha(0.14 * fg.a))
             .transition(Transition::opacity())
             .drag_out(move |_: &Island| Some(DragItem::new().file(&out)))
-            .on_drag_end(move |s: &mut Island, outcome, _| if outcome == DragOutcome::Moved { s.save(|c| c.shelf.retain(|f| *f != moved)); s.nextcloud_shelf_sync() })
+            .on_drag_end(move |s: &mut Island, outcome, _| {
+                if outcome == DragOutcome::Moved { s.save(|c| c.shelf.retain(|f| *f != moved)); s.nextcloud_shelf_sync() }
+                s.set_mode(Mode::Still);
+            })
             .on_secondary_press(move |s: &mut Island, at, _| { s.shelf.menu = Some((target.clone(), at)); s.open_select = Some(MENU) })
             .child(
                 el().size(52.0, 52.0).center().radius(s.cfg.radius(12.0)).fill(fg.alpha(0.08 * fg.a))
