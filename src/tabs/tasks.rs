@@ -80,15 +80,14 @@ impl Task {
     /// before today; one with no due day is due a repeat from today.
     pub fn next(&self, today: Date) -> Option<Task> {
         let every = self.every?;
-        let step = |(y, m, d): Date| match every {
-            Every::Day => shift_days((y, m, d), 1),
-            Every::Week => shift_days((y, m, d), 7),
-            // The 31st repeats on each month's last day.
-            Every::Month => { let (y, m) = crate::date::shift_month(y, m, 1); (y, m, d.min(days_in(y, m))) }
+        let (from, time) = self.due.unwrap_or((today, None));
+        // The nth repeat counts from the due day itself, so the 31st repeats on each month's last day without drifting.
+        let nth = |n: i32| match every {
+            Every::Day => shift_days(from, n.into()),
+            Every::Week => shift_days(from, i64::from(n) * 7),
+            Every::Month => { let (y, m) = crate::date::shift_month(from.0, from.1, n); (y, m, from.2.min(days_in(y, m))) }
         };
-        let (mut day, time) = self.due.unwrap_or((today, None));
-        day = step(day);
-        while day < today { day = step(day) }
+        let day = (1..).map(nth).find(|day| *day >= today)?;
         Some(Task { due: Some((day, time)), ..self.clone() })
     }
 }
@@ -211,7 +210,8 @@ impl Island {
     /// Once a minute: a reminder for the tasks that fell due and haven't had one, including those
     /// that fell due while Ripple wasn't running. Several at once share one reminder.
     pub fn task_reminders(&mut self, now: f64) {
-        if rune::is_headless() { return }
+        // Large mode draws no alerts: the reminder waits until the Island is compact again.
+        if rune::is_headless() || self.mode == crate::island::Mode::Large { return }
         let t = LocalTime::at(crate::date::now_ms());
         let mark = format!("{:04}-{:02}-{:02}T{:02}:{:02}", t.year, t.month, t.day, t.hour, t.minute);
         if std::mem::replace(&mut self.task_mark, mark.clone()) == mark { return }
@@ -339,6 +339,7 @@ mod tests {
         let today = (2026, 11, 20);
         let next = |text: &str| Task::parse(text, today).next(today).map(|t| t.to_string());
         assert_eq!(next("Rent due:2026-01-31 every:month").as_deref(), Some("Rent due:2026-11-30 every:month"));
+        assert_eq!(Task::parse("Rent due:2026-01-31 every:month", (2026, 2, 1)).next((2026, 2, 1)).unwrap().due, Some(((2026, 2, 28), None)));
         assert_eq!(next("Standup due:2026-11-20T09:30 every:day").as_deref(), Some("Standup due:2026-11-21T09:30 every:day"));
         assert_eq!(next("Bins every:week").as_deref(), Some("Bins due:2026-11-27 every:week"));
         assert_eq!(next("Once due:2026-11-20"), None);

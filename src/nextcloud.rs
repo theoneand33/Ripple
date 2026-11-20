@@ -936,7 +936,9 @@ mod tests {
         assert!(task.contains("RRULE:FREQ=MONTHLY;BYMONTHDAY=1") && task.contains("DESCRIPTION:Landlord"), "an unchanged repeat keeps its rule");
         assert!(task.contains("SUMMARY:Pay rent\r\nPRIORITY:5\r\nEND:VTODO"));
         assert_eq!(open_task(&task).as_deref(), Some("!! Pay rent every:month"));
-        assert_eq!(duration("P1DT2H30M"), Some(1590));
+        assert_eq!((duration("P1DT2H30M"), duration("PT30M"), duration("P2W"), duration("1H")), (Some(1590), Some(30), Some(20_160), None));
+        assert_eq!(ics_time("20261119T1500"), Some(((2026, 11, 19), Some((15, 0)))));
+        assert_eq!((ics_time("2026111"), ics_time("20261119X")), (None, None));
     }
 
     #[test]

@@ -70,9 +70,10 @@ impl Island {
         if now >= self.clipboard.next_read && !rune::is_headless() {
             self.clipboard.next_read = now + 2.0;
             tx.wake_at(self.clipboard.next_read);
-            tx.read_clipboard(|s: &mut Island, content, _| match content.image() {
-                Some(image) => { s.clipboard_image(image.clone()); }
-                None => { s.clipboard.push(Content::Text(content.text().to_string())); }
+            // A copy from a spreadsheet or browser can carry both; the text goes on top.
+            tx.read_clipboard(|s: &mut Island, content, _| {
+                if let Some(image) = content.image() { s.clipboard_image(image.clone()); }
+                s.clipboard.push(Content::Text(content.text().to_string()));
             });
         }
         let ended = self.clipboard.copied.is_some_and(|c| now >= c.1);
