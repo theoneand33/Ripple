@@ -273,7 +273,7 @@ impl Island {
     pub fn contributions_load(&mut self) {
         let now = crate::date::now_secs();
         let c = &self.contributions;
-        let same = |had: &Option<(String, Result<Graph, String>)>, user: &str| user.trim().is_empty() || had.as_ref().is_some_and(|h| h.0 == user);
+        let same = |had: &Option<(String, Result<Graph, String>)>, user: &str| user.trim().is_empty() || had.as_ref().is_some_and(|h| h.0 == user.trim());
         if same(&c.github, &self.cfg.github_user) && same(&c.leetcode, &self.cfg.leetcode_user) && now - c.loaded_at < 3600 { return }
         let Some(me) = self.me.clone() else { return };
         self.contributions.loaded_at = now;
