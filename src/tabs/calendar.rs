@@ -39,13 +39,14 @@ impl Island {
         // A year back, as Nextcloud sync keeps.
         let since = crate::date::shift_month(y, m, -12);
         let since = format!("{:04}-{:02}-{d:02}", since.0, since.1);
+        // Apply only a fetch for the current links, so a slow one for old links can't land last.
         me.spawn(move || {
             let (mut events, mut errors) = (Vec::new(), Vec::new());
             for url in &feeds {
                 match crate::net::calendar_feed(url) { Ok(ics) => events.extend(nextcloud::feed_events(&ics, &since)), Err(e) => errors.push(e) }
             }
-            (events, errors.into_iter().next())
-        }, move |s, (events, error)| if s.cfg.calendar_feeds == s.calendar.feeds_loaded.0 { (s.calendar.feed_events, s.calendar.feed_error) = (events, error) });
+            (feeds, events, errors.into_iter().next())
+        }, move |s, (feeds, events, error)| if s.cfg.calendar_feeds == feeds { (s.calendar.feed_events, s.calendar.feed_error) = (events, error) });
     }
 }
 
