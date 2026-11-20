@@ -20,9 +20,10 @@ impl Range {
         match self { Range::Day => ("1d", "5m"), Range::Week => ("5d", "30m"), Range::Month => ("1mo", "1d"), Range::All => ("max", "1mo") }
     }
 
-    /// Days of Sure's daily balances; None for all of them.
-    fn days(self) -> Option<i64> {
-        match self { Range::Day => Some(1), Range::Week => Some(7), Range::Month => Some(30), Range::All => None }
+    /// Days of Sure's daily balances.
+    fn days(self) -> i64 {
+        // shortcut: All is the last 1,999 days, which `pages` fits in 20 pages per account.
+        match self { Range::Day => 1, Range::Week => 7, Range::Month => 30, Range::All => 1999 }
     }
 }
 
@@ -133,7 +134,7 @@ fn money(s: &str) -> Option<f64> {
     Some(if s.contains('-') { -n } else { n })
 }
 
-/// `GET {url}/api/v1/{path}`, every page of it up to `max_pages`, each page's `field` array joined.
+/// `GET {url}/api/v1/{path}`, every page of it, each page's `field` array joined; an error past `max_pages`.
 fn pages(url: &str, key: &str, path: &str, query: &[(&str, String)], field: &str, max_pages: u32) -> Result<Vec<Value>, String> {
     let mut all = Vec::new();
     for page in 1..=max_pages {
@@ -149,9 +150,9 @@ fn pages(url: &str, key: &str, path: &str, query: &[(&str, String)], field: &str
             _ => return Err(body["message"].as_str().map_or_else(|| format!("Sure answered {status}"), str::to_string)),
         }
         all.extend(body[field].as_array().cloned().unwrap_or_default());
-        if i64::from(page) >= body["pagination"]["total_pages"].as_i64().unwrap_or(0) { break }
+        if i64::from(page) >= body["pagination"]["total_pages"].as_i64().unwrap_or(0) { return Ok(all) }
     }
-    Ok(all)
+    Err(format!("Sure has more {path} than Ripple reads"))
 }
 
 /// The day `days` before today (UTC), as `YYYY-MM-DD`.
@@ -163,13 +164,13 @@ fn days_ago(days: i64) -> String {
 /// Sure's investment and crypto accounts, their positions, and their balances over `range`.
 pub fn portfolio(url: &str, key: &str, range: Range) -> Result<Portfolio, String> {
     let url = if url.trim().is_empty() { "https://app.sure.am" } else { url.trim().trim_end_matches('/') };
-    // shortcut: the first 100 accounts only, enough for a person's own accounts.
+    // shortcut: up to 100 accounts, enough for a person's own; more is an error.
     let accounts: Vec<Value> = pages(url, key, "accounts", &[], "accounts", 1)?.into_iter()
         .filter(|a| matches!(a["account_type"].as_str(), Some("investment" | "crypto"))).collect();
     let currency = accounts.first().and_then(|a| a["currency"].as_str()).unwrap_or("USD").to_string();
     let ids: Vec<&str> = accounts.iter().filter_map(|a| a["id"].as_str()).collect();
     // The last week's holdings: each account's latest day of them is what it holds now.
-    let holdings = if ids.is_empty() { Vec::new() } else { pages(url, key, "holdings", &[("start_date", days_ago(7))], "holdings", 20)? };
+    let holdings = if ids.is_empty() { Vec::new() } else { pages(url, key, "holdings", &[("start_date", days_ago(7))], "holdings", 50)? };
     // Per day: the balance, and its net market flows.
     let mut history: BTreeMap<String, [f64; 2]> = BTreeMap::new();
     let mut out = Vec::new();
@@ -192,10 +193,7 @@ pub fn portfolio(url: &str, key: &str, range: Range) -> Result<Portfolio, String
                 (acct.cost, acct.value) = (acct.cost + qty * avg, acct.value + amount);
             }
         }
-        let since: Vec<(&str, String)> = range.days().map(|d| ("start_date", days_ago(d))).into_iter().collect();
-        let mut query = vec![("account_id", id.to_string())];
-        query.extend(since);
-        // shortcut: up to 2,000 days of balances per account under All.
+        let query = [("account_id", id.to_string()), ("start_date", days_ago(range.days()))];
         for b in pages(url, key, "balances", &query, "balances", 20)? {
             if let (Some(day), Some(cents)) = (b["date"].as_str(), b["end_balance_cents"].as_f64()) {
                 let d = history.entry(day.into()).or_default();
