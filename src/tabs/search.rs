@@ -130,7 +130,9 @@ fn file_url(path: &Path) -> String {
     let p = if cfg!(windows) { p.replace('\\', "/") } else { p.into_owned() };
     let enc: Vec<String> = p.split('/').map(|seg| if seg.len() == 2 && seg.ends_with(':') { seg.into() } else { crate::net::percent_encode(seg) }).collect();
     let joined = enc.join("/");
-    if joined.starts_with('/') { format!("file://{joined}") } else { format!("file:///{joined}") }
+    // A Windows UNC path `\\server\share` names its server as the URL's host.
+    if cfg!(windows) && joined.starts_with("//") { format!("file:{joined}") }
+    else if joined.starts_with('/') { format!("file://{joined}") } else { format!("file:///{joined}") }
 }
 
 fn keys(s: &mut Island, ev: &KeyEvent, tx: &mut Tx) -> bool {
@@ -203,6 +205,8 @@ mod tests {
         assert_eq!(file_url(Path::new("/home/me/My Notes/a#1.txt")), "file:///home/me/My%20Notes/a%231.txt");
         #[cfg(windows)]
         assert_eq!(file_url(Path::new(r"C:\Users\me\a b.pdf")), "file:///C:/Users/me/a%20b.pdf");
+        #[cfg(windows)]
+        assert_eq!(file_url(Path::new(r"\\server\share\a.pdf")), "file://server/share/a.pdf");
         #[cfg(not(windows))]
         assert_eq!(file_url(Path::new(r"/home/me/foo\bar.txt")), "file:///home/me/foo%5Cbar.txt");
     }

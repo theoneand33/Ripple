@@ -176,6 +176,20 @@ fn island_spec() -> AppSpec<Island> {
             ("plugins-empty", |s| { s.mode = Mode::Large; s.set_tab(Tab::Plugins); s.plugins = Default::default() }),
             ("shelf-drop", |s| { s.mode = Mode::Large; s.set_tab(Tab::Shelf); s.dropping = true }),
             ("shelf", |s| { s.mode = Mode::Large; s.set_tab(Tab::Shelf); s.cfg.shelf = vec!["/home/me/Report final.pdf".into(), "/home/me/photo.png".into()] }),
+            ("shelf-menu", |s| {
+                s.mode = Mode::Large;
+                s.set_tab(Tab::Shelf);
+                s.cfg.shelf = vec!["/home/me/Report final.pdf".into(), "/home/me/photo.png".into()];
+                s.shelf.menu = Some(("/home/me/photo.png".into(), rune::PointerPress { x: 500.0, y: 90.0 }));
+                (s.open_select, s.hovered) = (Some("shelf"), true);
+            }),
+            ("shelf-rename", |s| {
+                s.mode = Mode::Large;
+                s.set_tab(Tab::Shelf);
+                s.cfg.shelf = vec!["/home/me/Report final.pdf".into()];
+                s.shelf.renaming = Some("/home/me/Report final.pdf".into());
+                s.shelf.name = rune::TextEdit::new("Report final.pdf");
+            }),
             ("shelf-undo", |s| { s.mode = Mode::Large; s.set_tab(Tab::Shelf); s.undo = Some(tabs::Undo::Shelf(vec!["/home/me/photo.png".into()])) }),
             ("t3-device", |s| {
                 s.mode = Mode::Large;
@@ -206,6 +220,15 @@ fn island_spec() -> AppSpec<Island> {
                 let mut tx = rune::Tx::default();
                 s.set_track(Some(system::Track { name: "Song".into(), artist: "Artist".into(), playing: true, progress: Some((89, 200)), ..Default::default() }), &mut tx);
             }),
+            ("overview", |s| { s.mode = Mode::Large; s.set_tab(Tab::Overview); s.cfg.location = "Lisbon".into(); s.weather.temp = Some(21); s.percent = Some(64) }),
+            ("overview-panels", |s| {
+                s.mode = Mode::Large;
+                s.set_tab(Tab::Overview);
+                s.cfg.dashboard = [config::Widget::Clock, config::Widget::Battery, config::Widget::Panel(Tab::Tasks), config::Widget::Panel(Tab::System)].map(config::Tile::new).into();
+                s.cfg.tasks = vec![config::Item::new("Ship the dashboard"), config::Item::new("Water the plants")];
+            }),
+            ("overview-edit", |s| { s.mode = Mode::Large; s.set_tab(Tab::Overview); s.dashboard_edit = true }),
+            ("overview-resize", |s| { s.mode = Mode::Large; s.set_tab(Tab::Overview); s.dashboard_edit = true; s.dashboard_drag = Some((0, -130.0, -60.0, true)) }),
             ("camera", |s| { let mut tx = rune::Tx::default(); s.set_capture(Some(true), None, &mut tx); }),
             ("capture-both", |s| {
                 let mut tx = rune::Tx::default();

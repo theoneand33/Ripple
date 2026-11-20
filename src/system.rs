@@ -342,7 +342,8 @@ end if"#;
 
 #[cfg(windows)]
 pub fn media() -> Option<Track> {
-    const SCRIPT: &str = "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Add-Type -AssemblyName System.Runtime.WindowsRuntime; $manager = [Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager, Windows.Media.Control, ContentType = WindowsRuntime]::RequestAsync().GetAwaiter().GetResult(); $session = $manager.GetSessions() | Where-Object { $_.GetPlaybackInfo().PlaybackStatus -eq 'Playing' } | Select-Object -First 1; if (-not $session) { $session = $manager.GetCurrentSession() }; if ($session) { $props = $session.TryGetMediaPropertiesAsync().GetAwaiter().GetResult(); $playback = $session.GetPlaybackInfo(); $status = $playback.PlaybackStatus; $timeline = $session.GetTimelineProperties(); $position = $timeline.Position; if ($status.ToString() -eq 'Playing' -and $timeline.LastUpdatedTime.Year -gt 2000) { $position += [DateTimeOffset]::Now - $timeline.LastUpdatedTime }; $length = $timeline.EndTime - $timeline.StartTime; $thumbnail = $props.Thumbnail; $artwork = ''; if ($thumbnail) { try { $stream = $thumbnail.OpenReadAsync().GetAwaiter().GetResult(); $buffer = New-Object byte[] $stream.Size; $reader = New-Object Windows.Storage.Streams.DataReader $stream; $reader.LoadAsync($stream.Size).GetAwaiter().GetResult() | Out-Null; $reader.ReadBytes($buffer); $artwork = 'data:image/png;base64,' + [Convert]::ToBase64String($buffer); $reader.Close(); $stream.Close(); } catch { } } $info = @{ Title = $props.Title; Artist = $props.Artist; Album = $props.AlbumTitle; Status = $status.ToString().ToLower(); Source = $session.SourceAppUserModelId; Artwork = $artwork; Position = $position.TotalSeconds; Length = $length.TotalSeconds }; return $info | ConvertTo-Json -Compress; } return 'null';";
+    const SCRIPT: &str = "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Add-Type -AssemblyName System.Runtime.WindowsRuntime; $manager = [Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager, Windows.Media.Control, ContentType = WindowsRuntime]::RequestAsync().GetAwaiter().GetResult(); $session = $manager.GetSessions() | Where-Object { $_.GetPlaybackInfo().PlaybackStatus -eq 'Playing' } | Select-Object -First 1; if (-not $session) { $session = $manager.GetCurrentSession() }; if ($session) { $props = $session.TryGetMediaPropertiesAsync().GetAwaiter().GetResult(); $playback = $session.GetPlaybackInfo(); $status = $playback.PlaybackStatus; $timeline = $session.GetTimelineProperties(); $position = $timeline.Position; if ($status.ToString() -eq 'Playing' -and $timeline.LastUpdatedTime.Year -gt 2000) { $position += [DateTimeOffset]::Now - $timeline.LastUpdatedTime }; $length = $timeline.EndTime - $timeline.StartTime; $thumbnail = $props.Thumbnail; $key = [string]$session.SourceAppUserModelId + '|' + $props.Title + '|' + $props.Artist + '|' + $props.AlbumTitle + '|' + $timeline.EndTime; if ($key -ne $global:artKey) { $global:art = ''; if ($thumbnail) { try { $stream = $thumbnail.OpenReadAsync().GetAwaiter().GetResult(); $buffer = New-Object byte[] $stream.Size; $reader = New-Object Windows.Storage.Streams.DataReader $stream; $reader.LoadAsync($stream.Size).GetAwaiter().GetResult() | Out-Null; $reader.ReadBytes($buffer); $global:art = 'data:image/png;base64,' + [Convert]::ToBase64String($buffer); $global:artKey = $key; $reader.Close(); $stream.Close(); } catch { } } }; $artwork = $global:art; $info = @{ Title = $props.Title; Artist = $props.Artist; Album = $props.AlbumTitle; Status = $status.ToString().ToLower(); Source = $session.SourceAppUserModelId; Artwork = $artwork; Position = $position.TotalSeconds; Length = $length.TotalSeconds }; return $info | ConvertTo-Json -Compress; } return 'null';";
+    // The cover is read once per track (`$global:art` lasts in the shared PowerShell); a player sets it after the title, so an empty one is retried.
     let out = powershell_media(SCRIPT);
     if let Ok(data) = serde_json::from_str::<serde_json::Value>(&out)
         && data.is_object()
@@ -458,7 +459,8 @@ pub fn bluetooth_connected() -> bool {
             .is_some_and(|d| d["SPBluetoothDataType"][0]["device_connected"].as_array().is_some_and(|a| !a.is_empty()))
     }
     #[cfg(windows)]
-    { powershell("@(Get-PnpDevice -Class Bluetooth -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'OK' -and $_.Present -eq $true -and $_.InstanceId -match 'BTHENUM' }).Count -gt 0").eq_ignore_ascii_case("true") }
+    // A paired device keeps status OK while away; DEVPKEY_Device_IsConnected says whether it is linked now.
+    { powershell("$ids = @(Get-PnpDevice -Class Bluetooth -PresentOnly -ErrorAction SilentlyContinue | Where-Object { $_.InstanceId -like 'BTHENUM\\DEV_*' } | ForEach-Object { $_.InstanceId }); if ($ids.Count -eq 0) { 'false' } else { @(Get-PnpDeviceProperty -InstanceId $ids -KeyName '{83DA6326-97A6-4088-9453-A1923F573B29} 15' -ErrorAction SilentlyContinue | Where-Object { $_.Data -eq $true }).Count -gt 0 }").eq_ignore_ascii_case("true") }
 }
 
 pub fn camera_in_use() -> bool {
@@ -477,8 +479,31 @@ pub fn camera_in_use() -> bool {
     }
     #[cfg(target_os = "macos")]
     {
-        output("ioreg", &["-l"]).is_some_and(|o| o.lines()
-            .any(|l| (l.contains("FrontCameraActive") || l.contains("FrontCameraStreaming")) && l.contains("= Yes")))
+        // Any CoreMediaIO device (built-in, USB or virtual) some process is capturing from.
+        #[repr(C)]
+        struct Address { selector: u32, scope: u32, element: u32 }
+        #[link(name = "CoreMediaIO", kind = "framework")]
+        unsafe extern "C" {
+            fn CMIOObjectGetPropertyDataSize(object: u32, address: *const Address, qualifier_size: u32, qualifier: *const std::ffi::c_void, size: *mut u32) -> i32;
+            fn CMIOObjectGetPropertyData(object: u32, address: *const Address, qualifier_size: u32, qualifier: *const std::ffi::c_void, size: u32, used: *mut u32, data: *mut std::ffi::c_void) -> i32;
+        }
+        // 'dev#' kCMIOHardwarePropertyDevices, 'gone' kCMIODevicePropertyDeviceIsRunningSomewhere, 'glob' global scope.
+        const GLOBAL: u32 = u32::from_be_bytes(*b"glob");
+        let devices_at = Address { selector: u32::from_be_bytes(*b"dev#"), scope: GLOBAL, element: 0 };
+        let running_at = Address { selector: u32::from_be_bytes(*b"gone"), scope: GLOBAL, element: 0 };
+        // SAFETY: 1 is kCMIOObjectSystemObject; every buffer is sized as the call is told.
+        unsafe {
+            let mut size = 0u32;
+            if CMIOObjectGetPropertyDataSize(1, &devices_at, 0, std::ptr::null(), &mut size) != 0 { return false }
+            let mut ids = vec![0u32; size as usize / 4];
+            let mut used = 0u32;
+            if CMIOObjectGetPropertyData(1, &devices_at, 0, std::ptr::null(), (ids.len() * 4) as u32, &mut used, ids.as_mut_ptr().cast()) != 0 { return false }
+            ids.truncate(used as usize / 4);
+            ids.iter().any(|&id| {
+                let mut running = 0u32;
+                CMIOObjectGetPropertyData(id, &running_at, 0, std::ptr::null(), 4, &mut used, (&raw mut running).cast()) == 0 && running != 0
+            })
+        }
     }
     #[cfg(windows)]
     { capability_in_use("webcam") }
@@ -490,8 +515,29 @@ pub fn microphone_in_use() -> bool {
     { output("pactl", &["list", "short", "source-outputs"]).is_some_and(|o| !o.is_empty()) }
     #[cfg(target_os = "macos")]
     {
-        output("ioreg", &["-l"]).is_some_and(|o| o.lines()
-            .any(|l| (l.contains("IOAudioStreamActive") || l.contains("IOAudioEngine") || l.contains("IOAudioStream")) && l.to_lowercase().contains("yes")))
+        #[repr(C)]
+        struct Address { selector: u32, scope: u32, element: u32 }
+        #[link(name = "CoreAudio", kind = "framework")]
+        unsafe extern "C" {
+            fn AudioObjectGetPropertyDataSize(object: u32, address: *const Address, qualifier_size: u32, qualifier: *const std::ffi::c_void, size: *mut u32) -> i32;
+            fn AudioObjectGetPropertyData(object: u32, address: *const Address, qualifier_size: u32, qualifier: *const std::ffi::c_void, size: *mut u32, data: *mut std::ffi::c_void) -> i32;
+        }
+        // 'dev#' kAudioHardwarePropertyDevices, 'stm#' kAudioDevicePropertyStreams, 'gone' kAudioDevicePropertyDeviceIsRunningSomewhere;
+        // scopes 'glob' (global) and 'inpt' (input). 1 is kAudioObjectSystemObject.
+        let at = |selector: &[u8; 4], scope: &[u8; 4]| Address { selector: u32::from_be_bytes(*selector), scope: u32::from_be_bytes(*scope), element: 0 };
+        // SAFETY (both closures): a size query, and a read into a buffer of the size it gave.
+        let size_of = |object: u32, a: &Address| { let mut n = 0u32; (unsafe { AudioObjectGetPropertyDataSize(object, a, 0, std::ptr::null(), &mut n) } == 0).then_some(n) };
+        let running = |device: u32| { let (mut v, mut n) = (0u32, 4u32); unsafe { AudioObjectGetPropertyData(device, &at(b"gone", b"glob"), 0, std::ptr::null(), &mut n, (&raw mut v).cast()) == 0 && v != 0 } };
+        let devices = at(b"dev#", b"glob");
+        let Some(mut n) = size_of(1, &devices) else { return false };
+        let mut ids = vec![0u32; n as usize / 4];
+        // SAFETY: `ids` holds `n` bytes; `n` is updated to the bytes written.
+        if unsafe { AudioObjectGetPropertyData(1, &devices, 0, std::ptr::null(), &mut n, ids.as_mut_ptr().cast()) } != 0 { return false }
+        ids.truncate(n as usize / 4);
+        // Any device that has input streams: an app may record from a mic that isn't the system default.
+        // shortcut: "running somewhere" is device-wide, so a headset playing music, or a loopback driver carrying audio,
+        // lights the dot; a missed recording is worse, so it is read at global scope too (the input scope may be refused).
+        ids.iter().any(|&d| size_of(d, &at(b"stm#", b"inpt")).is_some_and(|n| n > 0) && running(d))
     }
     #[cfg(windows)]
     { capability_in_use("microphone") }
@@ -826,9 +872,34 @@ pub fn set_auto_launch(enable: bool) {
         if enable { output("reg", &["add", RUN, "/v", "Ripple", "/t", "REG_SZ", "/d", &value, "/f"]); }
         else { output("reg", &["delete", RUN, "/v", "Ripple", "/f"]); }
     }
-    // macOS: not offered, as before (Settings hides the row).
+    // A per-user LaunchAgent that starts the binary once at login; launchd ignores it once removed.
     #[cfg(target_os = "macos")]
-    let _ = (exe, enable);
+    {
+        let Some(dir) = rune::dirs::home().map(|h| h.join("Library/LaunchAgents")) else { return };
+        let file = dir.join("com.topmyster.ripple.plist");
+        let result = if enable {
+            std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&file, launch_agent(&exe.to_string_lossy())))
+        } else if file.exists() {
+            std::fs::remove_file(&file)
+        } else {
+            Ok(())
+        };
+        if let Err(e) = result { eprintln!("Ripple: failed to set launch at login: {e}") }
+    }
+}
+
+/// The LaunchAgent plist that runs `exe` at login, with the path escaped for XML.
+#[cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))]
+fn launch_agent(exe: &str) -> String {
+    let exe = exe.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
+    format!(r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.topmyster.ripple</string>
+  <key>ProgramArguments</key><array><string>{exe}</string></array>
+  <key>RunAtLoad</key><true/>
+</dict></plist>
+"#)
 }
 
 /// A path as one quoted Exec argument: `"`, `` ` ``, `$` and `\` take a backslash, `%` doubles,
@@ -864,6 +935,37 @@ pub fn open_external(url: &str) {
     spawn(cmd);
 }
 
+/// Opens a document in its default app; programs are refused, as `open_external` refuses them.
+pub fn open_file(path: &std::path::Path) {
+    // The real name, not a URL's: a `?` or `#` in it must not hide the extension.
+    if runs_as_program(&path.to_string_lossy()) { return }
+    #[cfg(target_os = "linux")]
+    let mut cmd = command("xdg-open");
+    #[cfg(target_os = "macos")]
+    let mut cmd = command("open");
+    #[cfg(windows)]
+    let mut cmd = { let mut cmd = command("rundll32"); cmd.arg("url.dll,FileProtocolHandler"); cmd };
+    cmd.arg(path);
+    spawn(cmd);
+}
+
+/// Shows a file in its folder: selected in Finder and Explorer, the folder itself elsewhere.
+pub fn reveal(path: &std::path::Path) {
+    #[cfg(target_os = "linux")]
+    let cmd = { let mut cmd = command("xdg-open"); cmd.arg(path.parent().unwrap_or(path)); cmd };
+    #[cfg(target_os = "macos")]
+    let cmd = { let mut cmd = command("open"); cmd.arg("-R").arg(path); cmd };
+    #[cfg(windows)]
+    let cmd = {
+        use std::os::windows::process::CommandExt;
+        // Explorer parses `/select,"path"` itself; std's quoting of the whole argument confuses it.
+        let mut cmd = command("explorer");
+        cmd.raw_arg(format!("/select,\"{}\"", path.display()));
+        cmd
+    };
+    spawn(cmd);
+}
+
 /// Web pages, and `file:` documents that wouldn't run as programs.
 pub(crate) fn openable(url: &str) -> bool {
     let lower = url.to_ascii_lowercase();
@@ -874,13 +976,19 @@ pub(crate) fn openable(url: &str) -> bool {
     // and spaces Windows drops (`x.exe.` is `x.exe`).
     let path = crate::net::percent_decode(path.split(['?', '#']).next().unwrap_or_default());
     let path = path.trim_end_matches(['/', '\\', '.', ' ']);
-    const EXECUTABLE: [&str; 42] = [".exe", ".bat", ".cmd", ".com", ".ps1", ".msi", ".scr", ".lnk", ".sh", ".app", ".desktop", ".jar",
+    !path.is_empty() && !runs_as_program(path)
+}
+
+/// Names the OS would run rather than open, by extension.
+fn runs_as_program(path: &str) -> bool {
+    const EXECUTABLE: [&str; 58] = [".exe", ".bat", ".cmd", ".com", ".ps1", ".msi", ".scr", ".lnk", ".sh", ".app", ".desktop", ".jar",
         ".vbs", ".vbe", ".js", ".jse", ".wsf", ".hta", ".reg", ".command", ".tool", ".pkg", ".appimage", ".run", ".py", ".pl",
-        ".cpl", ".msc", ".pif",
-        // Windows shell handlers that run, install or redirect: shortcuts, ClickOnce, help and setup files.
-        ".url", ".website", ".application", ".appref-ms", ".chm", ".inf", ".library-ms", ".search-ms", ".searchconnector-ms",
-        ".settingcontent-ms", ".scf", ".diagcab", ".msp"];
-    !path.is_empty() && !EXECUTABLE.iter().any(|ext| path.ends_with(ext))
+        ".cpl", ".msc", ".pif", ".terminal", ".application", ".appref-ms", ".url", ".scf", ".ws", ".msix", ".appx", ".msixbundle", ".appxbundle", ".jnlp", ".mpkg", ".msp", ".sct", ".wsc", ".msu", ".diagcab",
+        // Windows shell handlers that open as code or redirect: help, setup, search and settings files, Office add-ins.
+        ".website", ".chm", ".inf", ".library-ms", ".search-ms", ".searchconnector-ms", ".settingcontent-ms",
+        ".xll", ".xla", ".xlam", ".ppa", ".ppam"];
+    let path = path.trim_end_matches(['/', '\\', '.', ' ']).to_ascii_lowercase();
+    EXECUTABLE.iter().any(|ext| path.ends_with(ext))
 }
 
 /// Starts an app by name or command line. No shell: the text is split into argv, so it
@@ -1229,6 +1337,8 @@ mod tests {
         assert!(!openable("file:///C:/Users/me/Desktop/site.url"));
         assert!(!openable("file:///C:/x/setup.application"));
         assert!(!openable("file:///C:/x/help.chm"));
+        assert!(!openable("file:///C:/x/invoice.jnlp"));
+        assert!(!openable("file:///C:/x/addin.xll"));
         assert!(!openable("javascript:alert(1)"));
         assert!(!openable("file://"));
     }
@@ -1287,3 +1397,10 @@ mod tests {
         assert_eq!(parse_pmset("Now drawing from 'AC Power'"), None);
     }
 }
+    #[test]
+    fn launch_agent_paths_are_escaped_for_xml() {
+        let plist = launch_agent("/Applications/R&D <1>.app/Contents/MacOS/Ripple");
+        assert!(plist.contains("<string>/Applications/R&amp;D &lt;1&gt;.app/Contents/MacOS/Ripple</string>"));
+        assert!(plist.contains("<key>RunAtLoad</key><true/>"));
+    }
+
