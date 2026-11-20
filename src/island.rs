@@ -300,6 +300,8 @@ pub struct Island {
     pub reminder: Option<(String, f64)>,
     /// The reminder's meeting link, for its Join button.
     pub reminder_link: Option<String>,
+    /// The script alert showing: until when, and how many alerts it stands for.
+    notified: (f64, usize),
     /// The hour of rain or snow already alerted (Unix seconds).
     rain_alerted: Option<i64>,
     /// Seconds until each break reminder (eye, hourly), counted only while no app is full screen.
@@ -439,6 +441,7 @@ impl Island {
             reminder: None,
             reminder_link: None,
             task_mark: String::new(),
+            notified: (0.0, 0),
             water_mark: None,
             rain_alerted: None,
             break_left: [None; 2],
@@ -1105,6 +1108,20 @@ impl Island {
         if let Some(link) = self.reminder_link.take() { system::open_external(&link) }
         self.reminder = None;
         self.set_mode(Mode::Still);
+    }
+
+    /// Once a second: alerts that `ripple notify` queued; several at once, or while one shows, share one.
+    pub fn notifications(&mut self, now: f64) {
+        let Some(dir) = self.store.dir() else { return };
+        // An open Large draws no alerts: they stay queued until the Island is compact (`take` drops ones over 5 minutes old).
+        // Resting in Large (Large standby) isn't open: `remind` shows the alert compact.
+        if self.large_open() { return }
+        // An alert of ours showing counts as the alerts it merged; another reminder isn't replaced, so they wait.
+        let shown = match &self.reminder { Some(r) if now < r.1 => if r.1 == self.notified.0 { self.notified.1 } else { return }, _ => 0 };
+        if let Some((text, n)) = crate::notify::merge(shown, crate::notify::take(&dir)) {
+            self.remind(text, now);
+            self.notified = (self.reminder.as_ref().map_or(0.0, |r| r.1), n);
+        }
     }
 
     pub fn set_battery(&mut self, battery: Option<(u8, bool)>, tx: &mut Tx) -> bool {

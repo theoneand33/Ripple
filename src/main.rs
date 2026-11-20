@@ -13,6 +13,7 @@ mod limits;
 mod mac;
 mod net;
 mod nextcloud;
+mod notify;
 mod platform;
 mod plugins;
 mod settings;
@@ -142,6 +143,7 @@ fn island_spec() -> AppSpec<Island> {
             }),
             ("reminder", |s| s.remind("Ship v0.5 release notes".into(), 0.0)),
             ("event-alert", |s| s.remind_event("Standup".into(), Some("https://meet.example.com/abc".into()), 0.0)),
+            ("notify", |s| s.remind("Build passed".into(), 0.0)),
             ("rain-alert", |s| { s.weather.precip = Some((date::now_secs() + 3000, false)); s.remind(s.precip_label(), 0.0) }),
             ("break-reminder", |s| s.remind("Look away 20s".into(), 0.0)),
             ("tasks-sync-error", |s| {
@@ -485,6 +487,11 @@ fn main() {
         #[cfg(windows)]
         attach_console();
         std::process::exit(plugins::test_cli(&args[1..]))
+    }
+    if args.first().is_some_and(|a| a == "notify") {
+        #[cfg(windows)]
+        attach_console();
+        std::process::exit(notify::cli(&args[1..]))
     }
     #[cfg(target_os = "linux")]
     let wayland = {
