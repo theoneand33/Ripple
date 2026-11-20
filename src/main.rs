@@ -132,6 +132,14 @@ fn island_spec() -> AppSpec<Island> {
                 s.set_tab(Tab::Calendar);
                 s.cfg.events = ["2026-01-01 New Year's brunch", "2026-01-01 09:30 Standup", "2026-01-15 Dentist"].map(config::Item::new).into();
             }),
+            ("calendar-edit", |s| {
+                s.mode = Mode::Large;
+                s.set_tab(Tab::Calendar);
+                s.cfg.events = ["2026-01-01 New Year's brunch", "2026-01-01 09:30 Standup"].map(config::Item::new).into();
+                let key = s.cfg.events[1].key;
+                s.calendar.editing = Some(key);
+                s.calendar.event.replace_text("09:30 Standup");
+            }),
             ("t3", |s| { s.mode = Mode::Large; s.set_tab(Tab::T3) }),
             ("pomodoro", |s| { s.mode = Mode::Large; s.set_tab(Tab::Pomodoro); s.pomodoro.left = 18.0 * 60.0 + 42.0; s.pomodoro.rounds = 2 }),
             // Ends on the app clock, which starts near zero in a headless render.

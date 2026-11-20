@@ -1,5 +1,6 @@
 //! Calendar: a month at a glance, today marked; the arrows page through months. Beside it, the
-//! picked day's events. With a Nextcloud account, events sync with a Nextcloud calendar.
+//! picked day's events; press one to edit it. With a Nextcloud account, events sync with a
+//! Nextcloud calendar.
 
 use rune::{El, TextEdit, Transition, Tx, col, el, row, text};
 
@@ -17,20 +18,48 @@ pub struct Calendar {
     /// The picked day; None is today.
     pub day: Option<(i32, u32, u32)>,
     pub event: TextEdit,
+    /// The event the field edits, by key; None adds a new one.
+    pub editing: Option<u64>,
 }
 
 const MONTHS: [&str; 12] = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 
+/// Adds the typed event on the picked day, or saves the one being edited there.
 fn add_event(s: &mut Island, _: &mut Tx) {
     let title = s.calendar.event.text.trim().to_string();
     if title.is_empty() { return }
     let (y, m, d) = s.calendar.day.unwrap_or(s.today);
-    s.save(|c| c.events.push(Item::new(format!("{y:04}-{m:02}-{d:02} {title}"))));
+    let text = format!("{y:04}-{m:02}-{d:02} {title}");
+    match s.calendar.editing.take() {
+        Some(key) => s.save(|c| edit_event(c, key, text)),
+        None => s.save(|c| c.events.push(Item::new(text))),
+    }
     s.calendar.event.clear();
     s.nextcloud_sync(Kind::Events);
 }
 
+/// Sync only uploads new events, so a synced one is deleted there and uploads afresh.
+/// shortcut: that drops what Ripple doesn't read (description, alarms); PUT over the object if that matters.
+fn edit_event(c: &mut crate::config::Config, key: u64, text: String) {
+    let Some((i, old)) = nextcloud::remove(c, Kind::Events, key) else { return };
+    let item = if old.remote.is_none() { Item { text, ..old } } else { Item::new(text) };
+    c.events.insert(i, item);
+}
+
+fn start_edit(s: &mut Island, key: u64) {
+    let Some((day, title)) = s.cfg.events.iter().find(|e| e.key == key).and_then(|e| event_day(&e.text)) else { return };
+    s.calendar.event.replace_text(title.to_string());
+    s.calendar.event.focused = true;
+    (s.calendar.editing, s.calendar.day) = (Some(key), Some(day));
+}
+
+fn cancel_edit(s: &mut Island) {
+    s.calendar.editing = None;
+    s.calendar.event.clear();
+}
+
 fn delete_event(s: &mut Island, key: u64) {
+    if s.calendar.editing == Some(key) { cancel_edit(s) }
     let mut gone = None;
     s.save(|c| gone = nextcloud::remove(c, Kind::Events, key));
     if let Some((i, item)) = gone { s.undo = Some(Undo::Item(Kind::Events, i, item)) }
@@ -112,15 +141,20 @@ pub fn view(s: &Island) -> El {
     let tints = [accent::indigo(), accent::orange(), accent::green(), accent::teal()];
     for (i, (key, title)) in events.into_iter().enumerate() {
         let tint = tints[i % tints.len()];
+        let mut line = row().key(format!("event-{key}")).w_full().pl(8.0).pr(4.0).py(4.0).gap(8.0).center_y()
+            .radius(s.cfg.radius(10.0)).fill(tint.alpha(0.16))
+            .transition(Transition::opacity());
+        if s.calendar.editing == Some(key) { line = line.border(1.5, tint) }
         list = list.child(
-            row().key(format!("event-{key}")).w_full().pl(8.0).pr(4.0).py(4.0).gap(8.0).center_y()
-                .radius(s.cfg.radius(10.0)).fill(tint.alpha(0.16))
-                .transition(Transition::opacity())
+            line
                 .child(el().w(3.0).h(22.0).radius(1.5).fill(tint).a11y_hidden())
-                .child(text(title).font(s.cfg.font(14.0, 600.0)).color(tint).grow(1.0).min_w(0.0).wrap_anywhere())
+                .child(el().key("edit").role("button").label(format!("Edit {title}")).focusable(true).grow(1.0).min_w(0.0)
+                    .on_press(move |s: &mut Island| start_edit(s, key))
+                    .child(text(title).font(s.cfg.font(14.0, 600.0)).color(tint).w_full().wrap_anywhere().a11y_hidden()))
                 .child(tool(s, "delete", &icons::X, &format!("Delete {title}")).on_press(move |s: &mut Island| delete_event(s, key))),
         );
     }
+    let editing = s.calendar.editing.is_some();
     let (py_, pm_, pd_) = picked;
     let day = col().key("calendar-day").w(0.0).grow(1.0).h_full().gap(8.0)
         .child(row().key("calendar-day-title").w_full().h(28.0).center_y().justify_between()
@@ -132,15 +166,41 @@ pub fn view(s: &Island) -> El {
                     .child(text(wd.to_uppercase()).font(s.cfg.font(15.0, 700.0)).color(fg.alpha(0.5 * fg.a)))
                     .child(text(rest.to_string()).font(s.cfg.font(15.0, 700.0)).color(fg))
             })
-            .children(undo_button(s)))
+            .children(undo_button(s))
+            .children(editing.then(|| pill(s, "cancel-edit", "Cancel edit").on_press(cancel_edit))))
         .child(col().key("event-scroll").w_full().grow(1.0).min_h(0.0).scrolls().child(list))
         .child(
             row().key("event-input").w_full().gap(8.0).center_y()
-                .child(field(s, "new-event", &s.calendar.event, "New event…", |s: &mut Island| &mut s.calendar.event, add_event))
-                .child(button(s, "add-event", "Add", true).on_press_tx(add_event)),
+                .child(field(s, "new-event", &s.calendar.event, if editing { "Event title" } else { "New event…" }, |s: &mut Island| &mut s.calendar.event, add_event))
+                .child(button(s, "add-event", if editing { "Save" } else { "Add" }, true).on_press_tx(add_event)),
         );
 
     row().key("calendar").w_full().h_full().px(16.0).pt(14.0).pb(14.0).gap(16.0)
         .child(col().key("calendar-month").w(280.0).h_full().gap(8.0).child(header).child(names).child(grid))
         .child(day)
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::config::{Config, Item, Remote, Store};
+    use crate::island::Island;
+
+    #[test]
+    fn an_edit_keeps_a_local_event_and_reuploads_a_synced_one() {
+        let synced = Item { remote: Some(Remote { id: "/cal/a.ics".into(), etag: "1".into(), text: "2026-01-01 Old".into() }), ..Item::new("2026-01-01 Old") };
+        let (local, synced_key) = (Item::new("2026-01-02 Mine"), synced.key);
+        let local_key = local.key;
+        let mut s = Island::new(Store::memory(Config { events: vec![synced, local], ..Config::default() }), Vec::new());
+        super::start_edit(&mut s, local_key);
+        assert_eq!((s.calendar.event.text.as_str(), s.calendar.day), ("Mine", Some((2026, 1, 2))));
+        s.calendar.event.replace_text("09:00 Mine, moved");
+        s.calendar.day = Some((2026, 1, 3));
+        super::add_event(&mut s, &mut rune::Tx::default());
+        assert_eq!((s.cfg.events[1].text.as_str(), s.cfg.events[1].key, s.calendar.editing), ("2026-01-03 09:00 Mine, moved", local_key, None));
+        super::start_edit(&mut s, synced_key);
+        s.calendar.event.replace_text("New");
+        super::add_event(&mut s, &mut rune::Tx::default());
+        assert_eq!((s.cfg.events[0].text.as_str(), s.cfg.events[0].remote.is_none()), ("2026-01-01 New", true));
+        assert_eq!(s.cfg.nextcloud.deleted_events, ["/cal/a.ics"]);
+    }
 }

@@ -84,6 +84,7 @@ pub fn entered(s: &mut Island) {
         Tab::Tasks => s.nextcloud_sync(Kind::Tasks),
         Tab::Calendar => {
             (s.calendar.offset, s.calendar.day) = (0, None);
+            if s.calendar.editing.take().is_some() { s.calendar.event.clear() }
             s.nextcloud_sync(Kind::Events);
         }
         Tab::Plugins => s.plugins.scan(),
