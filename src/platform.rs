@@ -225,6 +225,36 @@ pub fn focused_window() -> Option<u64> {
     { crate::mac::frontmost_pid().map(|pid| pid as u64) }
 }
 
+/// The focused app is full screen (a game, a video, a presentation). Blocks; call it off the UI thread.
+pub fn fullscreen() -> bool {
+    #[cfg(target_os = "linux")]
+    { x11_fullscreen().unwrap_or(false) }
+    #[cfg(windows)]
+    {
+        #[link(name = "shell32")]
+        unsafe extern "system" { fn SHQueryUserNotificationState(state: *mut i32) -> i32; }
+        let mut state = 0;
+        // SAFETY: `state` is a valid out pointer. 2 QUNS_BUSY (a full screen app), 3 a full screen
+        // Direct3D app, 4 presentation mode.
+        unsafe { SHQueryUserNotificationState(&mut state) == 0 && matches!(state, 2..=4) }
+    }
+    #[cfg(target_os = "macos")]
+    { crate::mac::frontmost_fullscreen() }
+}
+
+/// _NET_WM_STATE_FULLSCREEN on the active window.
+// shortcut: native Wayland windows report nothing, so it stays false there; upgrade with a compositor-specific query.
+#[cfg(target_os = "linux")]
+fn x11_fullscreen() -> Result<bool, Box<dyn std::error::Error>> {
+    use x11rb::protocol::xproto::{AtomEnum, ConnectionExt};
+    let Some(window) = x11_active()? else { return Ok(false) };
+    let (conn, _) = x11rb::connect(None)?;
+    let state = conn.intern_atom(false, b"_NET_WM_STATE")?.reply()?.atom;
+    let full = conn.intern_atom(false, b"_NET_WM_STATE_FULLSCREEN")?.reply()?.atom;
+    let reply = conn.get_property(false, window, state, AtomEnum::ATOM, 0, 32)?.reply()?;
+    Ok(reply.value32().is_some_and(|mut v| v.any(|a| a == full)))
+}
+
 /// Gives keyboard focus to a window `focused_window` or `gnome_focused_window` returned.
 pub fn focus_window(window: u64) {
     #[cfg(target_os = "linux")]
