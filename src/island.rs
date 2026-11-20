@@ -457,7 +457,10 @@ impl Island {
         let [x, y, w, h] = self.rect();
         let (mut right, mut left) = (x + w, x);
         kinds.into_iter().enumerate().map(|(i, kind)| {
-            let x = if match self.placement.align { -1 => true, 1 => false, _ => i % 2 == 0 } {
+            let want_right = match self.placement.align { -1 => true, 1 => false, _ => i % 2 == 0 };
+            // A side with no room left in the window gives way to the other.
+            let (fits_right, fits_left) = (right + BUBBLE_GAP + h <= CANVAS.0, left - BUBBLE_GAP - h >= 0.0);
+            let x = if if want_right { fits_right || !fits_left } else { fits_right && !fits_left } {
                 right += BUBBLE_GAP + h;
                 right - h
             } else {
@@ -1640,6 +1643,13 @@ mod tests {
         s.pomodoro.ends = Some(60.0);
         let [x, _, w, h] = s.rect();
         assert_eq!(s.bubbles().iter().map(|b| b.1[0]).collect::<Vec<_>>(), [x + w + BUBBLE_GAP, x + w + 2.0 * BUBBLE_GAP + h]);
+
+        // Near the window's left edge, a centred Island's second bubble goes right too.
+        let mut s = island(Config { island_x: 0.0, ..Config::default() });
+        s.set_caps_lock(true);
+        s.set_track(Some(Track { name: "Song".into(), playing: true, ..Default::default() }), &mut tx);
+        s.pomodoro.ends = Some(60.0);
+        assert!(s.bubbles().iter().all(|b| b.1[0] >= 0.0 && b.1[0] + b.1[2] <= CANVAS.0));
 
         // A bubble that goes away under the pointer lets go of the hover.
         s.bubble_hovered = Some(Bubble::CapsLock);
