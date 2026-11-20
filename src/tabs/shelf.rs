@@ -218,7 +218,8 @@ pub fn view(s: &Island, layer: &mut Vec<El>) -> El {
             .drag_out(move |_: &Island| Some(DragItem::new().file(&out)))
             .on_drag_end(move |s: &mut Island, outcome, _| {
                 if outcome == DragOutcome::Moved { s.save(|c| c.shelf.retain(|f| *f != moved)); s.nextcloud_shelf_sync() }
-                s.set_mode(Mode::Still);
+                // Back over the Island, the drop decides.
+                if !s.dropping { s.set_mode(Mode::Still) }
             })
             .on_secondary_press(move |s: &mut Island, at, _| { s.shelf.menu = Some((target.clone(), at)); s.open_select = Some(MENU) })
             .child(
