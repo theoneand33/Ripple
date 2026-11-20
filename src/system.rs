@@ -481,8 +481,31 @@ pub fn camera_in_use() -> bool {
     }
     #[cfg(target_os = "macos")]
     {
-        output("ioreg", &["-l"]).is_some_and(|o| o.lines()
-            .any(|l| (l.contains("FrontCameraActive") || l.contains("FrontCameraStreaming")) && l.contains("= Yes")))
+        // Any CoreMediaIO device (built-in, USB or virtual) some process is capturing from.
+        #[repr(C)]
+        struct Address { selector: u32, scope: u32, element: u32 }
+        #[link(name = "CoreMediaIO", kind = "framework")]
+        unsafe extern "C" {
+            fn CMIOObjectGetPropertyDataSize(object: u32, address: *const Address, qualifier_size: u32, qualifier: *const std::ffi::c_void, size: *mut u32) -> i32;
+            fn CMIOObjectGetPropertyData(object: u32, address: *const Address, qualifier_size: u32, qualifier: *const std::ffi::c_void, size: u32, used: *mut u32, data: *mut std::ffi::c_void) -> i32;
+        }
+        // 'dev#' kCMIOHardwarePropertyDevices, 'gone' kCMIODevicePropertyDeviceIsRunningSomewhere, 'glob' global scope.
+        const GLOBAL: u32 = u32::from_be_bytes(*b"glob");
+        let devices_at = Address { selector: u32::from_be_bytes(*b"dev#"), scope: GLOBAL, element: 0 };
+        let running_at = Address { selector: u32::from_be_bytes(*b"gone"), scope: GLOBAL, element: 0 };
+        // SAFETY: 1 is kCMIOObjectSystemObject; every buffer is sized as the call is told.
+        unsafe {
+            let mut size = 0u32;
+            if CMIOObjectGetPropertyDataSize(1, &devices_at, 0, std::ptr::null(), &mut size) != 0 { return false }
+            let mut ids = vec![0u32; size as usize / 4];
+            let mut used = 0u32;
+            if CMIOObjectGetPropertyData(1, &devices_at, 0, std::ptr::null(), (ids.len() * 4) as u32, &mut used, ids.as_mut_ptr().cast()) != 0 { return false }
+            ids.truncate(used as usize / 4);
+            ids.iter().any(|&id| {
+                let mut running = 0u32;
+                CMIOObjectGetPropertyData(id, &running_at, 0, std::ptr::null(), 4, &mut used, (&raw mut running).cast()) == 0 && running != 0
+            })
+        }
     }
     #[cfg(windows)]
     { capability_in_use("webcam") }
@@ -494,8 +517,29 @@ pub fn microphone_in_use() -> bool {
     { output("pactl", &["list", "short", "source-outputs"]).is_some_and(|o| !o.is_empty()) }
     #[cfg(target_os = "macos")]
     {
-        output("ioreg", &["-l"]).is_some_and(|o| o.lines()
-            .any(|l| (l.contains("IOAudioStreamActive") || l.contains("IOAudioEngine") || l.contains("IOAudioStream")) && l.to_lowercase().contains("yes")))
+        #[repr(C)]
+        struct Address { selector: u32, scope: u32, element: u32 }
+        #[link(name = "CoreAudio", kind = "framework")]
+        unsafe extern "C" {
+            fn AudioObjectGetPropertyDataSize(object: u32, address: *const Address, qualifier_size: u32, qualifier: *const std::ffi::c_void, size: *mut u32) -> i32;
+            fn AudioObjectGetPropertyData(object: u32, address: *const Address, qualifier_size: u32, qualifier: *const std::ffi::c_void, size: *mut u32, data: *mut std::ffi::c_void) -> i32;
+        }
+        // 'dev#' kAudioHardwarePropertyDevices, 'stm#' kAudioDevicePropertyStreams, 'gone' kAudioDevicePropertyDeviceIsRunningSomewhere;
+        // scopes 'glob' (global) and 'inpt' (input). 1 is kAudioObjectSystemObject.
+        let at = |selector: &[u8; 4], scope: &[u8; 4]| Address { selector: u32::from_be_bytes(*selector), scope: u32::from_be_bytes(*scope), element: 0 };
+        // SAFETY (both closures): a size query, and a read into a buffer of the size it gave.
+        let size_of = |object: u32, a: &Address| { let mut n = 0u32; (unsafe { AudioObjectGetPropertyDataSize(object, a, 0, std::ptr::null(), &mut n) } == 0).then_some(n) };
+        let running = |device: u32| { let (mut v, mut n) = (0u32, 4u32); unsafe { AudioObjectGetPropertyData(device, &at(b"gone", b"glob"), 0, std::ptr::null(), &mut n, (&raw mut v).cast()) == 0 && v != 0 } };
+        let devices = at(b"dev#", b"glob");
+        let Some(mut n) = size_of(1, &devices) else { return false };
+        let mut ids = vec![0u32; n as usize / 4];
+        // SAFETY: `ids` holds `n` bytes; `n` is updated to the bytes written.
+        if unsafe { AudioObjectGetPropertyData(1, &devices, 0, std::ptr::null(), &mut n, ids.as_mut_ptr().cast()) } != 0 { return false }
+        ids.truncate(n as usize / 4);
+        // Any device that has input streams: an app may record from a mic that isn't the system default.
+        // shortcut: "running somewhere" is device-wide, so a headset playing music, or a loopback driver carrying audio,
+        // lights the dot; a missed recording is worse, so it is read at global scope too (the input scope may be refused).
+        ids.iter().any(|&d| size_of(d, &at(b"stm#", b"inpt")).is_some_and(|n| n > 0) && running(d))
     }
     #[cfg(windows)]
     { capability_in_use("microphone") }
