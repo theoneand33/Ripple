@@ -18,6 +18,7 @@ mod search;
 mod shelf;
 mod stocks;
 mod stremflix;
+mod sync;
 mod t3;
 mod tasks;
 mod weather;
@@ -37,8 +38,9 @@ pub use pomodoro::{Clock, Pomodoro, bubble as pomodoro_bubble, live as pomodoro_
 pub use search::Finder;
 pub use stocks::Stocks;
 pub use stremflix::Stremflix;
+pub use sync::SyncState;
 pub use t3::T3;
-pub use tasks::{Every, Task, TaskDraft};
+pub use tasks::TaskDraft;
 
 use rune::{Color, El, Key, KeyEvent, ScrollSpec, TextEdit, Tx, el, icon, row, text, text_input};
 

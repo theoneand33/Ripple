@@ -8,9 +8,9 @@ use super::{Scrolls, accent, card, empty, pill, ring, tool};
 use crate::config::{Tab, Tile, Widget};
 use crate::icons;
 use crate::island::{Island, SPRING, control, cover, estimate_width, marquee, visualizer};
-use crate::nextcloud::{event_day, leading_time};
+use crate::ics::{event_day, leading_time};
 use crate::net::Graph;
-use super::Task;
+use crate::task::Task;
 use crate::system::MediaCommand;
 
 const GAP: f32 = 10.0;

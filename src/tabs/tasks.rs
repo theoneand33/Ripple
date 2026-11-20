@@ -10,143 +10,11 @@ use rune::{El, Transition, Tx, col, el, row, text};
 
 use super::{Scrolls, accent, button, checkbox, chip, empty, field, tool};
 use crate::config::Item;
-use crate::date::{days_from_civil, days_in, format_date};
+use crate::date::{add_days, format_date};
+use crate::task::{Date, Every, Task, is_bangs};
 use crate::icons;
 use crate::island::Island;
 use crate::nextcloud::{self, Kind};
-
-pub type Date = (i32, u32, u32);
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Every {
-    Day,
-    Week,
-    Month,
-    /// A Nextcloud rule Ripple can't follow (an interval, set days, yearly): left as it is there.
-    Custom,
-}
-
-impl Every {
-    pub fn name(self) -> &'static str {
-        match self { Every::Day => "day", Every::Week => "week", Every::Month => "month", Every::Custom => "custom" }
-    }
-
-    fn parse(s: &str) -> Option<Every> {
-        match s.to_ascii_lowercase().as_str() {
-            "day" | "daily" => Some(Every::Day),
-            "week" | "weekly" => Some(Every::Week),
-            "month" | "monthly" => Some(Every::Month),
-            "custom" => Some(Every::Custom),
-            _ => None,
-        }
-    }
-}
-
-/// A task's text, read.
-#[derive(Clone, Debug, PartialEq, Eq, Default)]
-pub struct Task {
-    /// 0 for none, up to 3 for `!!!`.
-    pub priority: u8,
-    pub title: String,
-    /// The day, and the time on this clock if it has one.
-    pub due: Option<(Date, Option<(u32, u32)>)>,
-    pub every: Option<Every>,
-}
-
-fn shift_days((y, m, d): Date, days: i64) -> Date {
-    let t = LocalTime::at_offset((days_from_civil(y, m, d) + days) * 86_400_000, 0);
-    (t.year, t.month, t.day)
-}
-
-impl Task {
-    /// Reads a task's text; `today` is what `due:today` and `due:tomorrow` mean.
-    pub fn parse(text: &str, today: Date) -> Task {
-        let mut task = Task::default();
-        let mut title = Vec::new();
-        for (i, word) in text.split_whitespace().enumerate() {
-            if i == 0 && is_bangs(word) { task.priority = word.len() as u8; continue }
-            // `Display` escapes title words that would read as settings.
-            if let Some(word) = word.strip_prefix('\\').filter(|w| setting(w, title.is_empty())) { title.push(word); continue }
-            if let Some(due) = word.strip_prefix("due:").and_then(|v| parse_due(v, today)) { task.due = Some(due); continue }
-            if let Some(every) = word.strip_prefix("every:").and_then(Every::parse) { task.every = Some(every); continue }
-            title.push(word);
-        }
-        task.title = title.join(" ");
-        task
-    }
-
-    /// The due time reminders and order go by: a day without a time is due at 9:00.
-    pub fn due_key(&self) -> Option<String> {
-        let ((y, m, d), time) = self.due?;
-        let (h, min) = time.unwrap_or((9, 0));
-        Some(format!("{y:04}-{m:02}-{d:02}T{h:02}:{min:02}"))
-    }
-
-    /// The next one of a recurring task, due the first repeat after its due day that is not
-    /// before today; one with no due day is due a repeat from today.
-    pub fn next(&self, today: Date) -> Option<Task> {
-        let every = self.every?;
-        let (from, time) = self.due.unwrap_or((today, None));
-        // The nth repeat counts from the due day itself, so the 31st repeats on each month's last day without drifting.
-        let nth = |n: i32| match every {
-            Every::Day => shift_days(from, n.into()),
-            Every::Week => shift_days(from, i64::from(n) * 7),
-            Every::Month => { let (y, m) = crate::date::shift_month(from.0, from.1, n); (y, m, from.2.min(days_in(y, m))) }
-            Every::Custom => from,
-        };
-        if every == Every::Custom { return None }
-        let day = (1..).map(nth).find(|day| *day >= today)?;
-        Some(Task { due: Some((day, time)), ..self.clone() })
-    }
-}
-
-impl std::fmt::Display for Task {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if self.priority > 0 { write!(f, "{} ", "!".repeat(self.priority.into()))? }
-        // Title words that would read back as settings (`!`, `due:…`, `every:…`) are escaped.
-        for (i, word) in self.title.split_whitespace().enumerate() {
-            if i > 0 { f.write_str(" ")? }
-            if setting(word, i == 0) { f.write_str("\\")? }
-            f.write_str(word)?;
-        }
-        if let Some(((y, m, d), time)) = self.due {
-            write!(f, " due:{y:04}-{m:02}-{d:02}")?;
-            if let Some((h, min)) = time { write!(f, "T{h:02}:{min:02}")? }
-        }
-        if let Some(every) = self.every { write!(f, " every:{}", every.name())? }
-        Ok(())
-    }
-}
-
-/// `!`, `!!` or `!!!`: a priority, when a task's text starts with it.
-fn is_bangs(word: &str) -> bool { (1..=3).contains(&word.len()) && word.bytes().all(|b| b == b'!') }
-
-/// A word `parse` reads as a setting rather than title: bangs (first only), a due day, a repeat.
-fn setting(word: &str, first: bool) -> bool {
-    (first && is_bangs(word))
-        || word.strip_prefix("due:").is_some_and(|v| parse_due(v, (1970, 1, 1)).is_some())
-        || word.strip_prefix("every:").is_some_and(|v| Every::parse(v).is_some())
-}
-
-/// `2026-11-25`, `today` or `tomorrow`, then optionally `T17:00` or `@17:00`.
-fn parse_due(v: &str, today: Date) -> Option<(Date, Option<(u32, u32)>)> {
-    let (day, time) = match v.split_once(['T', '@']) { Some((d, t)) => (d, Some(t)), None => (v, None) };
-    let day = match day.to_ascii_lowercase().as_str() {
-        "today" => today,
-        "tomorrow" => shift_days(today, 1),
-        _ => crate::date::parse_ymd(day)?,
-    };
-    let time = match time {
-        Some(t) => {
-            let (h, m) = t.split_once(':')?;
-            let (h, m) = (h.parse::<u32>().ok()?, m.parse::<u32>().ok()?);
-            if h > 23 || m > 59 { return None }
-            Some((h, m))
-        }
-        None => None,
-    };
-    Some((day, time))
-}
 
 /// A time of day as typed: `9am`, `9:30pm`, `17:00`, `noon`. A bare number is no time.
 fn clock_time(w: &str) -> Option<(u32, u32)> {
@@ -184,15 +52,15 @@ pub fn natural_due(title: &str, today: Date, now: u32) -> (String, Option<(Date,
         if w == "every" { break }
         let mut used = 0;
         if day.is_none() {
-            let ahead = |target: i64| { let wd = i64::from(crate::date::weekday(today.0, today.1, today.2)); let n = (target - wd).rem_euclid(7); shift_days(today, if n == 0 { 7 } else { n }) };
+            let ahead = |target: i64| { let wd = i64::from(crate::date::weekday(today.0, today.1, today.2)); let n = (target - wd).rem_euclid(7); add_days(today, if n == 0 { 7 } else { n }) };
             (day, used) = match w {
                 "today" => (Some(today), 1),
                 "tonight" => { tonight = true; (Some(today), 1) }
-                "tomorrow" | "tmrw" => (Some(shift_days(today, 1)), 1),
+                "tomorrow" | "tmrw" => (Some(add_days(today, 1)), 1),
                 "next" | "on" | "this" if at(i + 1).and_then(weekday_named).is_some() => (at(i + 1).and_then(weekday_named).map(ahead), 2),
                 "in" => match (at(i + 1).and_then(|n| n.parse::<i64>().ok()), at(i + 2)) {
-                    (Some(n @ 0..=3650), Some("day" | "days")) => (Some(shift_days(today, n)), 3),
-                    (Some(n @ 0..=520), Some("week" | "weeks")) => (Some(shift_days(today, n * 7)), 3),
+                    (Some(n @ 0..=3650), Some("day" | "days")) => (Some(add_days(today, n)), 3),
+                    (Some(n @ 0..=520), Some("week" | "weeks")) => (Some(add_days(today, n * 7)), 3),
                     _ => (None, 0),
                 },
                 _ => match weekday_named(w) { Some(t) => (Some(ahead(t)), 1), None => (None, 0) },
@@ -226,14 +94,14 @@ pub fn natural_due(title: &str, today: Date, now: u32) -> (String, Option<(Date,
     if tonight && time.is_none() && now < 20 * 60 { time = Some((20, 0)) }
     let rest: Vec<&str> = words.iter().zip(&keep).filter(|(_, k)| **k).map(|(w, _)| *w).collect();
     if (day.is_none() && time.is_none()) || rest.is_empty() { return (title.to_string(), None) }
-    let day = day.unwrap_or_else(|| if time.is_some_and(|(h, m)| h * 60 + m <= now) { shift_days(today, 1) } else { today });
+    let day = day.unwrap_or_else(|| if time.is_some_and(|(h, m)| h * 60 + m <= now) { add_days(today, 1) } else { today });
     (rest.join(" "), Some((day, time)))
 }
 
 /// "Today 17:00", "Tomorrow", "Wed, Nov 25".
 fn due_label(task: &Task, today: Date) -> String {
     let Some((day, time)) = task.due else { return String::new() };
-    let name = if day == today { "Today".to_string() } else if day == shift_days(today, 1) { "Tomorrow".to_string() } else { format_date(day.0, day.1, day.2) };
+    let name = if day == today { "Today".to_string() } else if day == add_days(today, 1) { "Tomorrow".to_string() } else { format_date(day.0, day.1, day.2) };
     match time { Some((h, m)) => format!("{name} {h:02}:{m:02}"), None => name }
 }
 
@@ -429,7 +297,7 @@ fn controls(s: &Island) -> El {
             let d = &mut s.task_draft;
             (d.due, d.time) = if d.due.is_some() { (None, None) } else { (Some(s.today), None) };
         }),
-        d.due.is_some(), |s, by| if let Some(day) = s.task_draft.due { s.task_draft.due = Some(shift_days(day, by.into())) }));
+        d.due.is_some(), |s, by| if let Some(day) = s.task_draft.due { s.task_draft.due = Some(add_days(day, by.into())) }));
     if d.due.is_some() {
         let time = d.time.map_or("Time".to_string(), |(h, m)| format!("{h:02}:{m:02}"));
         row_ = row_.child(stepper(s, "task-time",
@@ -445,23 +313,6 @@ fn controls(s: &Island) -> El {
 #[cfg(test)]
 mod tests {
     use super::{Every, Task};
-
-    #[test]
-    fn task_text_reads_and_writes_priority_due_and_repeat() {
-        let today = (2026, 11, 20);
-        let t = Task::parse("!! Pay  rent due:tomorrow@7:05 every:monthly", today);
-        assert_eq!(t, Task { priority: 2, title: "Pay rent".into(), due: Some(((2026, 11, 21), Some((7, 5)))), every: Some(Every::Month) });
-        assert_eq!(t.to_string(), "!! Pay rent due:2026-11-21T07:05 every:month");
-        assert_eq!(Task::parse(&t.to_string(), today), t, "the written form reads back the same");
-        assert_eq!(Task::parse("!!!! loud due:2026-02-30 every:year", today).title, "!!!! loud due:2026-02-30 every:year", "what isn't valid stays in the title");
-        assert_eq!(Task::parse("Buy milk due:2026-12-01", today).due_key().as_deref(), Some("2026-12-01T09:00"));
-        for title in ["! call mom", "!", "!!! now", "Read every:week article", "Call due:2026-01-05 mum", "due:today"] {
-            for priority in [0, 2] {
-                let t = Task { priority, title: title.into(), ..Task::default() };
-                assert_eq!(Task::parse(&t.to_string(), today), t, "{t}");
-            }
-        }
-    }
 
     #[test]
     fn a_title_says_when_a_task_is_due_in_words() {
@@ -489,17 +340,6 @@ mod tests {
         for plain in ["Read Monday's paper", "Buy 3 apples", "Tomorrow", "Fix bug 1:5", "Buy sun cream", "Sat exam prep"] {
             assert_eq!(due(plain), (plain.into(), None), "{plain}");
         }
-    }
-
-    #[test]
-    fn a_recurring_task_moves_to_its_next_due_day_not_before_today() {
-        let today = (2026, 11, 20);
-        let next = |text: &str| Task::parse(text, today).next(today).map(|t| t.to_string());
-        assert_eq!(next("Rent due:2026-01-31 every:month").as_deref(), Some("Rent due:2026-11-30 every:month"));
-        assert_eq!(Task::parse("Rent due:2026-01-31 every:month", (2026, 2, 1)).next((2026, 2, 1)).unwrap().due, Some(((2026, 2, 28), None)));
-        assert_eq!(next("Standup due:2026-11-20T09:30 every:day").as_deref(), Some("Standup due:2026-11-21T09:30 every:day"));
-        assert_eq!(next("Bins every:week").as_deref(), Some("Bins due:2026-11-27 every:week"));
-        assert_eq!(next("Once due:2026-11-20"), None);
     }
 
     #[test]
@@ -565,7 +405,6 @@ mod tests {
         super::tick(&mut s, key);
         assert_eq!(s.cfg.tasks.len(), 1);
         assert!(s.nextcloud[crate::nextcloud::Kind::Tasks as usize].error.is_some());
-        assert_eq!(Task::parse("Bins every:custom", (2026, 1, 1)).next((2026, 1, 1)), None);
     }
 
     #[test]

@@ -10,10 +10,8 @@ use base64::Engine;
 use serde_json::{Value, json};
 
 use crate::config::{Config, Item, Nextcloud, Remote};
-use crate::date::days_from_civil;
-use crate::island::Island;
 use crate::net::{percent_decode, percent_encode};
-use crate::tabs::{Every, Task};
+use crate::ics::*;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Kind {
@@ -60,16 +58,6 @@ pub fn restore(c: &mut Config, kind: Kind, at: usize, item: Item, syncing: bool)
         None => item,
     };
     items.insert(at.min(items.len()), item);
-}
-
-/// One kind's sync: whether one runs, whether another was asked for meanwhile, and the last error.
-#[derive(Default)]
-pub struct SyncState {
-    pub running: bool,
-    again: bool,
-    /// Shelf only: names dropped while a sync ran.
-    pub dropped: Vec<String>,
-    pub error: Option<String>,
 }
 
 #[derive(Debug, Default, PartialEq)]
@@ -121,114 +109,8 @@ pub fn apply(items: &mut Vec<Item>, pending: &mut Vec<String>, out: Outcome) {
     }
 }
 
-impl Island {
-    /// Syncs one kind with Nextcloud in the background; a request while one runs queues one more.
-    pub fn nextcloud_sync(&mut self, kind: Kind) {
-        if !self.cfg.nextcloud.enabled() { return }
-        let Some(me) = self.me.clone() else { return };
-        let state = &mut self.nextcloud[kind as usize];
-        if state.running { state.again = true; return }
-        state.running = true;
-        let account = self.cfg.nextcloud.account();
-        let nc = self.cfg.nextcloud.clone();
-        let (items, pending) = kind.lists(&mut self.cfg);
-        let (mut items, mut pending) = (items.clone(), pending.clone());
-        // Ids from another account mean nothing to this one: everything uploads as new. The saved
-        // ids are only dropped once this account answers, so a half-typed URL loses nothing.
-        let fresh = nc.synced_with != account;
-        if fresh {
-            for i in &mut items { i.remote = None }
-            pending.clear();
-        }
-        me.spawn(move || sync(&nc, kind, &items, &pending), move |s, out| s.nextcloud_synced(kind, &account, fresh, out));
-    }
-
-    fn nextcloud_synced(&mut self, kind: Kind, account: &str, fresh: bool, out: Outcome) {
-        self.nextcloud[kind as usize].running = false;
-        let current = self.cfg.nextcloud.account() == account;
-        self.nextcloud[kind as usize].error = out.error.clone();
-        // A new account that failed at once has nothing of ours: keep the old ids.
-        let answered = !fresh || out.server.is_some() || !out.pushed.is_empty();
-        // Otherwise the account changed while it ran, or a new one never answered.
-        if current && answered {
-            let open = self.cfg.notes.get(self.notes.index).map(|n| (n.key, n.text.clone()));
-            self.save(|c| {
-                adopt(c, account);
-                let (items, pending) = kind.lists(c);
-                apply(items, pending, out);
-            });
-            // Keep the open note open where it went, and show Nextcloud's text if it changed.
-            if kind == Kind::Notes {
-                let at = open.as_ref().and_then(|(key, _)| self.cfg.notes.iter().position(|n| n.key == *key));
-                match at {
-                    Some(i) if open.as_ref().is_some_and(|(_, text)| self.cfg.notes[i].text == *text) => self.notes.index = i,
-                    Some(i) => { let focused = self.notes.editor.focused; self.open_note(i); self.notes.editor.focused = focused }
-                    None => self.open_note(self.notes.index),
-                }
-            }
-        }
-        // A changed account waits for the next sync asked of it, so no resync chases a URL that is still being typed.
-        if std::mem::take(&mut self.nextcloud[kind as usize].again) && current { self.nextcloud_sync(kind) }
-    }
-
-    /// Syncs the Shelf with its Nextcloud folder in the background, as `nextcloud_sync` does a kind.
-    pub fn nextcloud_shelf_sync(&mut self) {
-        if !self.cfg.nextcloud.enabled() { self.shelf_sync.error = None; return }
-        let (Some(me), Some(dir)) = (self.me.clone(), self.store.dir()) else { return };
-        if self.shelf_sync.running { self.shelf_sync.again = true; return }
-        self.shelf_sync.running = true;
-        let account = self.cfg.nextcloud.account();
-        let nc = self.cfg.nextcloud.clone();
-        let folder = nc.shelf_folder();
-        // Another account's folder says nothing of this one's: nothing counts as removed.
-        let base: Vec<String> = if nc.synced_with == account { nc.shelf_synced.iter().filter_map(|e| in_folder(e, &folder)).map(str::to_string).collect() } else { Vec::new() };
-        let files = self.cfg.shelf.clone();
-        let at = folder.clone();
-        me.spawn(move || sync_shelf(&nc, &at, &files, &base, &dir.join("Shelf")), move |s, out| s.nextcloud_shelf_synced(&account, &folder, out));
-    }
-
-    /// Files just put on the Shelf (dropped, renamed, compressed, extracted), then a sync. A name
-    /// the sync record knows is a new file now, not one Nextcloud since removed.
-    pub fn shelf_new_files(&mut self, files: &[PathBuf]) {
-        let names: Vec<_> = files.iter().filter_map(|f| f.file_name().map(|n| n.to_string_lossy().into_owned())).collect();
-        self.save(|c| c.nextcloud.shelf_synced.retain(|e| !names.iter().any(|n| e.rsplit('/').next() == Some(n.as_str()))));
-        if self.shelf_sync.running { self.shelf_sync.dropped.extend(names) }
-        self.nextcloud_shelf_sync();
-    }
-
-    fn nextcloud_shelf_synced(&mut self, account: &str, folder: &str, out: ShelfOutcome) {
-        self.shelf_sync.running = false;
-        let current = self.cfg.nextcloud.account() == account;
-        if current { self.shelf_sync.error = out.error }
-        let changed = self.shelf_sync.again;
-        // Dropped while it ran: new files whose names this run's record would wrongly mark as synced.
-        let dropped = std::mem::take(&mut self.shelf_sync.dropped);
-        if current && let Some(mut both) = out.both {
-            self.save(|c| {
-                adopt(c, account);
-                if changed {
-                    // The Shelf changed while it ran, so a file it found gone may have been dropped
-                    // again: it stays on, and the rerun decides.
-                    for f in &out.gone {
-                        let Some(name) = f.file_name().map(|n| n.to_string_lossy().into_owned()) else { continue };
-                        both.push(name);
-                    }
-                }
-                both.retain(|n| !dropped.contains(n));
-                if !changed {
-                    c.shelf.retain(|f| !out.gone.contains(f));
-                }
-                for f in out.downloaded { if !c.shelf.contains(&f) { c.shelf.push(f) } }
-                // Only this folder's: a stale record of another would make its files look removed on a switch back.
-                c.nextcloud.shelf_synced = both.into_iter().map(|n| format!("{folder}/{n}")).collect();
-            });
-        }
-        if std::mem::take(&mut self.shelf_sync.again) && current { self.nextcloud_shelf_sync() }
-    }
-}
-
 /// Starts afresh with another account: the old one's ids mean nothing to it.
-fn adopt(c: &mut Config, account: &str) {
+pub fn adopt(c: &mut Config, account: &str) {
     if c.nextcloud.synced_with == account { return }
     for k in Kind::ALL {
         let (items, pending) = k.lists(c);
@@ -240,7 +122,7 @@ fn adopt(c: &mut Config, account: &str) {
 }
 
 /// The file name a `shelf_synced` entry has in `folder`, if it is in that folder.
-fn in_folder<'a>(entry: &'a str, folder: &str) -> Option<&'a str> {
+pub fn in_folder<'a>(entry: &'a str, folder: &str) -> Option<&'a str> {
     entry.strip_prefix(folder)?.strip_prefix('/').filter(|n| !n.contains('/'))
 }
 
@@ -461,143 +343,6 @@ fn upload_edits(c: &Client, items: &[Item], out: &mut Outcome, rewrite: impl Fn(
     Ok(())
 }
 
-/// The calendar object with its first `comp`'s properties named in `drop` taken out and `add`
-/// put in. Alarms and everything else stay as they were.
-fn rewrite(ics: &str, comp: &str, drop: &[&str], add: &[String]) -> String {
-    let (begin, end) = (format!("BEGIN:{comp}"), format!("END:{comp}"));
-    let (mut out, mut inside, mut nested, mut done) = (String::new(), false, 0, false);
-    for line in unfold(ics).lines() {
-        let upper = line.to_ascii_uppercase();
-        if !done && upper == begin { inside = true }
-        else if inside && upper == end {
-            for a in add { out += a; out += "\r\n" }
-            (inside, done) = (false, true);
-        }
-        else if inside && upper.starts_with("BEGIN:") { nested += 1 }
-        else if inside && upper.starts_with("END:") { nested -= 1 }
-        else if inside && nested == 0 && drop.iter().any(|d| upper.split([':', ';']).next() == Some(d)) { continue }
-        out += line;
-        out += "\r\n";
-    }
-    out
-}
-
-/// A property of the first `comp`, outside its alarms: (parameters, value).
-fn property(ics: &str, comp: &str, name: &str) -> Option<(String, String)> {
-    let (mut inside, mut nested) = (false, 0);
-    for line in unfold(ics).lines() {
-        let upper = line.to_ascii_uppercase();
-        if upper == format!("BEGIN:{comp}") { inside = true; continue }
-        if !inside { continue }
-        if upper == format!("END:{comp}") { return None }
-        if upper.starts_with("BEGIN:") { nested += 1; continue }
-        if upper.starts_with("END:") { nested -= 1; continue }
-        let Some((head, value)) = line.split_once(':') else { continue };
-        let (prop, params) = head.split_once(';').unwrap_or((head, ""));
-        if nested == 0 && prop.eq_ignore_ascii_case(name) { return Some((params.to_string(), value.to_string())) }
-    }
-    None
-}
-
-/// Minutes since 1970 on this clock, as `ics_time` reads a value.
-fn minutes(((y, m, d), time): ((i32, u32, u32), Option<(u32, u32)>)) -> i64 {
-    let (h, min) = time.unwrap_or((0, 0));
-    days_from_civil(y, m, d) * 1440 + i64::from(h * 60 + min)
-}
-
-/// Minutes since 1970 on this clock as UTC minutes, at that moment's offset.
-fn to_utc(local: i64) -> i64 {
-    let offset = |m: i64| i64::from(rune::time::LocalTime::at(m * 60_000).offset) / 60;
-    local - offset(local - offset(local))
-}
-
-/// Today on this clock, for the `today` and `tomorrow` a hand-edited task may hold.
-fn today() -> (i32, u32, u32) {
-    let t = rune::time::LocalTime::at(crate::date::now_ms());
-    (t.year, t.month, t.day)
-}
-
-/// A DATE (`all_day`) or local DATE-TIME value at `at` minutes since 1970.
-fn ics_value(at: i64, all_day: bool) -> String {
-    let t = rune::time::LocalTime::at_offset(at * 60_000, 0);
-    if all_day { format!("{:04}{:02}{:02}", t.year, t.month, t.day) } else { format!("{:04}{:02}{:02}T{:02}{:02}00", t.year, t.month, t.day, t.hour, t.minute) }
-}
-
-/// An event's object with its text's edit made: the title, or the day and time. A moved event
-/// keeps its length and time zone.
-fn edited_event(ics: &str, text: &str) -> Option<String> {
-    let old = event(ics)?;
-    let ((oday, otitle), (day, title)) = (event_day(&old)?, event_day(text)?);
-    let ((mut otime, mut osummary), (mut time, mut summary)) = (leading_time(otitle), leading_time(title));
-    let start = property(ics, "VEVENT", "DTSTART")?;
-    let old_start = ics_time(&start.1)?;
-    // An all-day event whose title starts with a time: that time is its title's, not its start.
-    if old_start.1.is_none() && otime.is_some() && otime == time { (otime, osummary, time, summary) = (None, otitle, None, title) }
-    let (mut drop, mut add) = (Vec::new(), Vec::new());
-    if osummary != summary { drop.push("SUMMARY"); add.push(format!("SUMMARY:{}", escape_text(summary))) }
-    if (oday, otime) != (day, time) {
-        // Ripple shows a series once, on its first day: moving that would move every occurrence.
-        if property(ics, "VEVENT", "RRULE").is_some() || property(ics, "VEVENT", "RECURRENCE-ID").is_some() { return None }
-        // DTEND, or DURATION's days and hours; an all-day event without either lasts a day.
-        let length = property(ics, "VEVENT", "DTEND").and_then(|(_, v)| Some(minutes(ics_time(&v)?) - minutes(old_start)))
-            .or_else(|| property(ics, "VEVENT", "DURATION").and_then(|(_, v)| duration(&v)))
-            .or(otime.is_none().then_some(1440));
-        let timed = time.is_some() && otime.is_some();
-        let tz = start.0.split(';').find(|p| p.to_ascii_uppercase().starts_with("TZID=")).filter(|_| timed && !start.1.ends_with('Z'));
-        let params = tz.map_or(String::new(), |tz| format!(";{tz}"));
-        // A UTC time stays UTC; others are written on this clock.
-        let utc = timed && start.1.trim().ends_with('Z');
-        let value = |local: i64| if utc { format!("{}Z", ics_value(to_utc(local), false)) } else { ics_value(local, false) };
-        let at = minutes((day, time));
-        drop.extend(["DTSTART", "DTEND", "DURATION"]);
-        match time {
-            Some(_) => {
-                add.push(format!("DTSTART{params}:{}", value(at)));
-                // Timed to timed keeps its length; an all-day event made timed has none, as new ones.
-                if let Some(len) = length.filter(|_| otime.is_some()) { add.push(format!("DTEND{params}:{}", value(at + len))) }
-            }
-            None => {
-                let days = length.filter(|_| otime.is_none()).map_or(1, |l| (l / 1440).max(1));
-                add.push(format!("DTSTART;VALUE=DATE:{}", ics_value(at, true)));
-                add.push(format!("DTEND;VALUE=DATE:{}", ics_value(at + days * 1440, true)));
-            }
-        }
-    }
-    Some(rewrite(ics, "VEVENT", &drop, &add))
-}
-
-/// A DURATION's length in minutes: weeks, days, hours and minutes (`P1DT2H`, `PT45M`).
-fn duration(v: &str) -> Option<i64> {
-    let v = v.trim().strip_prefix('P')?;
-    let (mut total, mut n) = (0i64, 0i64);
-    for c in v.chars() {
-        match c {
-            '0'..='9' => n = n * 10 + i64::from(c as u8 - b'0'),
-            'W' => { total += n * 10_080; n = 0 }
-            'D' => { total += n * 1440; n = 0 }
-            'H' => { total += n * 60; n = 0 }
-            'M' => { total += n; n = 0 }
-            'T' | 'S' => n = 0,
-            _ => return None,
-        }
-    }
-    Some(total)
-}
-
-/// A to-do's object with its text's edit made: only the parts that changed are written.
-fn edited_task(ics: &str, text: &str) -> Option<String> {
-    let (old, new) = (Task::parse(&open_task(ics)?, today()), Task::parse(text, today()));
-    let fresh = new_task("", text, "");
-    let line = |name: &str| fresh.lines().find(|l| l.split([':', ';']).next() == Some(name)).map(str::to_string);
-    let (mut drop, mut add) = (Vec::new(), Vec::new());
-    for (name, changed) in [("SUMMARY", old.title != new.title), ("PRIORITY", old.priority != new.priority), ("DUE", old.due != new.due), ("RRULE", old.every != new.every)] {
-        if !changed { continue }
-        drop.push(name);
-        add.extend(line(name));
-    }
-    Some(rewrite(ics, "VTODO", &drop, &add))
-}
-
 /// The user's calendar or Tasks list that `want` names and that holds `comp`, which `out` then scopes to.
 fn find_list(c: &Client, want: &str, comp: &str, out: &mut Outcome) -> Result<String, String> {
     let home = format!("{}/remote.php/dav/calendars/{}/", c.base, percent_encode(&c.user));
@@ -694,121 +439,6 @@ fn unescape(s: &str) -> String {
     out + rest
 }
 
-/// iCalendar lines with their folds joined.
-fn unfold(ics: &str) -> String { ics.replace("\r\n", "\n").replace("\n ", "").replace("\n\t", "") }
-
-/// The calendar object's to-do as a task's text (`tabs::Task`), unless it is done.
-fn open_task(ics: &str) -> Option<String> {
-    let (mut inside, mut summary, mut open) = (false, None, true);
-    let mut task = Task::default();
-    for line in unfold(ics).lines() {
-        let upper = line.to_ascii_uppercase();
-        // An alarm inside the to-do has a SUMMARY of its own.
-        if upper == "BEGIN:VTODO" || upper == "END:VALARM" { inside = true; continue }
-        if upper == "BEGIN:VALARM" { inside = false; continue }
-        if upper == "END:VTODO" { break }
-        let Some((name, value)) = line.split_once(':').filter(|_| inside) else { continue };
-        match name.split(';').next().unwrap_or_default().to_ascii_uppercase().as_str() {
-            "SUMMARY" => summary = Some(unescape_text(value)),
-            "STATUS" => open &= !matches!(value.trim().to_ascii_uppercase().as_str(), "COMPLETED" | "CANCELLED"),
-            "COMPLETED" => open = false,
-            // 1-4 high, 5 medium, 6-9 low; 0 none (RFC 5545 3.8.1.9).
-            "PRIORITY" => task.priority = match value.trim().parse::<u8>() { Ok(1..=4) => 3, Ok(5) => 2, Ok(6..=9) => 1, _ => 0 },
-            "DUE" => task.due = ics_time(value),
-            "RRULE" => task.every = Some(simple_rule(value).unwrap_or(Every::Custom)),
-            _ => {}
-        }
-    }
-    task.title = summary.filter(|_| open)?;
-    Some(task.to_string())
-}
-
-/// A repeat rule as Ripple's daily, weekly or monthly, when it is only that (plus a week start or
-/// an interval of 1); anything more is `Every::Custom`, which Ripple leaves to Nextcloud.
-fn simple_rule(rule: &str) -> Option<Every> {
-    let mut every = None;
-    for part in rule.split(';').map(|p| p.trim().to_ascii_uppercase()) {
-        match part.as_str() {
-            "FREQ=DAILY" => every = Some(Every::Day),
-            "FREQ=WEEKLY" => every = Some(Every::Week),
-            "FREQ=MONTHLY" => every = Some(Every::Month),
-            "INTERVAL=1" | "" => {}
-            p if p.starts_with("WKST=") => {}
-            _ => return None,
-        }
-    }
-    every
-}
-
-/// A DATE or DATE-TIME value: its day, and its time on this clock. UTC moves to this clock; a
-/// TZID time is taken as written, as it is usually this zone.
-fn ics_time(value: &str) -> Option<((i32, u32, u32), Option<(u32, u32)>)> {
-    let value = value.trim();
-    let num = |from: usize, to: usize| value.get(from..to)?.parse::<u32>().ok();
-    let (y, m, d) = (num(0, 4)? as i32, num(4, 6)?, num(6, 8)?);
-    match value.get(8..)? {
-        "" => Some(((y, m, d), None)),
-        t if t.starts_with('T') => {
-            let (h, min) = (num(9, 11)?, num(11, 13)?);
-            if !t.ends_with('Z') { return Some(((y, m, d), Some((h, min)))) }
-            let l = rune::time::LocalTime::at((days_from_civil(y, m, d) * 86_400 + i64::from(h * 3600 + min * 60)) * 1000);
-            Some(((l.year, l.month, l.day), Some((l.hour, l.minute))))
-        }
-        _ => None,
-    }
-}
-
-/// An iCalendar TEXT value; a line break becomes a space, as tasks are one line here.
-fn unescape_text(value: &str) -> String {
-    let mut out = String::with_capacity(value.len());
-    let mut chars = value.chars();
-    while let Some(c) = chars.next() {
-        out.push(match c {
-            '\\' => match chars.next() { Some('n' | 'N') => ' ', Some(c) => c, None => '\\' },
-            c => c,
-        });
-    }
-    out
-}
-
-/// A TEXT value for iCalendar.
-fn escape_text(value: &str) -> String { value.replace('\\', "\\\\").replace(';', "\\;").replace(',', "\\,").replace('\n', "\\n").replace('\r', "") }
-
-/// A to-do from a task's text; `open_task` reads it back as the same text.
-fn new_task(uid: &str, text: &str, stamp: &str) -> String {
-    let task = Task::parse(text, today());
-    let summary = escape_text(&task.title);
-    let mut extra = String::new();
-    if task.priority > 0 { extra += &format!("PRIORITY:{}\r\n", [0, 9, 5, 1][usize::from(task.priority)]) }
-    match task.due {
-        Some(((y, m, d), None)) => extra += &format!("DUE;VALUE=DATE:{y:04}{m:02}{d:02}\r\n"),
-        Some(((y, m, d), Some((h, min)))) => extra += &format!("DUE:{y:04}{m:02}{d:02}T{h:02}{min:02}00\r\n"),
-        None => {}
-    }
-    let freq = match task.every { Some(Every::Day) => Some("DAILY"), Some(Every::Week) => Some("WEEKLY"), Some(Every::Month) => Some("MONTHLY"), Some(Every::Custom) | None => None };
-    if let Some(freq) = freq { extra += &format!("RRULE:FREQ={freq}\r\n") }
-    format!("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Ripple//EN\r\nBEGIN:VTODO\r\nUID:{uid}\r\nDTSTAMP:{stamp}\r\nCREATED:{stamp}\r\nSUMMARY:{summary}\r\n{extra}STATUS:NEEDS-ACTION\r\nEND:VTODO\r\nEND:VCALENDAR\r\n")
-}
-
-/// The calendar object with its to-dos marked done, everything else kept.
-fn completed(ics: &str, stamp: &str) -> String {
-    let mut out = String::new();
-    let mut inside = false;
-    for line in unfold(ics).lines() {
-        let upper = line.to_ascii_uppercase();
-        let name = upper.split([':', ';']).next().unwrap_or_default();
-        if upper == "BEGIN:VTODO" { inside = true }
-        if inside && ["STATUS", "COMPLETED", "PERCENT-COMPLETE"].contains(&name) { continue }
-        if inside && upper == "END:VTODO" {
-            out.push_str(&format!("STATUS:COMPLETED\r\nCOMPLETED:{stamp}\r\nPERCENT-COMPLETE:100\r\n"));
-            inside = false;
-        }
-        out.push_str(line);
-        out.push_str("\r\n");
-    }
-    out
-}
-
 // --- Shelf: files in one Nextcloud Files folder, over WebDAV ---
 
 const FOLDER: &str = r#"<?xml version="1.0"?><d:propfind xmlns:d="DAV:"><d:prop><d:resourcetype/><d:getcontentlength/></d:prop></d:propfind>"#;
@@ -816,12 +446,12 @@ const FOLDER: &str = r#"<?xml version="1.0"?><d:propfind xmlns:d="DAV:"><d:prop>
 #[derive(Debug, Default, PartialEq)]
 pub struct ShelfOutcome {
     /// The names both sides have now; None when the folder couldn't be read.
-    both: Option<Vec<String>>,
+    pub both: Option<Vec<String>>,
     /// Shelf files removed on Nextcloud, so off the Shelf here too. The files themselves stay.
-    gone: Vec<PathBuf>,
+    pub gone: Vec<PathBuf>,
     /// Files new on Nextcloud, downloaded into the cache folder.
-    downloaded: Vec<PathBuf>,
-    error: Option<String>,
+    pub downloaded: Vec<PathBuf>,
+    pub error: Option<String>,
 }
 
 /// Two-way sync of the Shelf with `folder`, by file name, against `base`, what both had at the
@@ -999,79 +629,10 @@ fn sync_events(c: &Client, want: &str, items: &[Item], pending: &[String], out: 
     Ok(())
 }
 
-/// An event's day and title: its text is `YYYY-MM-DD title`, where the title starts with the
-/// time (`HH:MM`) when the event has one.
-pub fn event_day(text: &str) -> Option<((i32, u32, u32), &str)> {
-    let (date, title) = text.split_once(' ')?;
-    Some((crate::date::parse_ymd(date)?, title))
-}
-
-/// Every event of an ICS file, as events' texts, from `since` (`YYYY-MM-DD`) on.
-pub fn feed_events(ics: &str, since: &str) -> Vec<String> {
-    let mut events: Vec<String> = ics.split("BEGIN:VEVENT").skip(1).filter_map(|e| event(&format!("BEGIN:VEVENT{e}"))).filter(|t| t.as_str() >= since).collect();
-    events.sort();
-    events
-}
-
-/// The calendar object's first event as an event's text, unless it was cancelled.
-/// shortcut: a recurring event shows on its first day only; expand RRULEs if people ask.
-fn event(ics: &str) -> Option<String> {
-    let (mut inside, mut summary, mut start, mut open) = (false, String::new(), None, true);
-    for line in unfold(ics).lines() {
-        let upper = line.to_ascii_uppercase();
-        if upper == "BEGIN:VEVENT" || upper == "END:VALARM" { inside = true; continue }
-        if upper == "BEGIN:VALARM" { inside = false; continue }
-        if upper == "END:VEVENT" { break }
-        let Some((name, value)) = line.split_once(':').filter(|_| inside) else { continue };
-        match name.split(';').next().unwrap_or_default().to_ascii_uppercase().as_str() {
-            "SUMMARY" => summary = unescape_text(value),
-            "DTSTART" => start = Some(value.trim().to_string()),
-            "STATUS" => open = !value.trim().eq_ignore_ascii_case("CANCELLED"),
-            _ => {}
-        }
-    }
-    let ((y, m, d), time) = ics_time(&start?)?;
-    let summary = if summary.trim().is_empty() { "Untitled".to_string() } else { summary };
-    let text = match time {
-        None => format!("{y:04}-{m:02}-{d:02} {summary}"),
-        Some((h, min)) => format!("{y:04}-{m:02}-{d:02} {h:02}:{min:02} {summary}"),
-    };
-    open.then_some(text)
-}
-
-/// An event on `day`: at the title's leading `HH:MM`, on this clock, else all day. `event` reads
-/// either back as the same text.
-fn new_event(uid: &str, (y, m, d): (i32, u32, u32), title: &str, stamp: &str) -> String {
-    let (when, summary) = match leading_time(title) {
-        (Some((h, min)), rest) => (format!("DTSTART:{y:04}{m:02}{d:02}T{h:02}{min:02}00"), rest),
-        (None, _) => {
-            let next = rune::time::LocalTime::at_offset((days_from_civil(y, m, d) + 1) * 86_400_000, 0);
-            (format!("DTSTART;VALUE=DATE:{y:04}{m:02}{d:02}\r\nDTEND;VALUE=DATE:{:04}{:02}{:02}", next.year, next.month, next.day), title)
-        }
-    };
-    format!("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Ripple//EN\r\nBEGIN:VEVENT\r\nUID:{uid}\r\nDTSTAMP:{stamp}\r\nCREATED:{stamp}\r\n{when}\r\nSUMMARY:{}\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n", escape_text(summary))
-}
-
-/// An event title's leading `HH:MM`, and the rest.
-pub fn leading_time(title: &str) -> (Option<(u32, u32)>, &str) {
-    let time = title.split_once(' ').filter(|(t, _)| t.len() == 5 && t.as_bytes()[2] == b':')
-        .and_then(|(t, rest)| Some(((t[..2].parse::<u32>().ok().filter(|h| *h < 24)?, t[3..].parse::<u32>().ok().filter(|m| *m < 60)?), rest)));
-    match time { Some((t, rest)) => (Some(t), rest), None => (None, title) }
-}
-
 /// Now, or `days_ago` days back, in UTC.
 fn utc_stamp(days_ago: i64) -> String {
     let t = rune::time::LocalTime::at_offset(crate::date::now_ms() - days_ago * 86_400_000, 0);
     format!("{:04}{:02}{:02}T{:02}{:02}{:02}Z", t.year, t.month, t.day, t.hour, t.minute, t.second)
-}
-
-#[cfg(test)]
-mod feed_tests {
-    #[test]
-    fn a_feed_lists_its_events_from_a_day_on() {
-        let ics = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nDTSTART;VALUE=DATE:20260105\r\nSUMMARY:Dentist\r\nEND:VEVENT\r\nBEGIN:VEVENT\r\nDTSTART:20260102T093000\r\nSUMMARY:Stand\r\n up\r\nEND:VEVENT\r\nBEGIN:VEVENT\r\nDTSTART:20250101T100000\r\nSUMMARY:Old\r\nEND:VEVENT\r\nBEGIN:VEVENT\r\nDTSTART:20260103T100000\r\nSUMMARY:Off\r\nSTATUS:CANCELLED\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
-        assert_eq!(super::feed_events(ics, "2026-01-01"), ["2026-01-02 09:30 Standup", "2026-01-05 Dentist"]);
-    }
 }
 
 #[cfg(test)]

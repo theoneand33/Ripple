@@ -11,7 +11,8 @@ use crate::config::Item;
 use crate::icons;
 use crate::date::{days_in, format_date, shift_month, weekday};
 use crate::island::Island;
-use crate::nextcloud::{self, Kind, event_day};
+use crate::ics::{event_day, feed_events, leading_time};
+use crate::nextcloud::{self, Kind};
 
 #[derive(Default)]
 pub struct Calendar {
@@ -47,7 +48,7 @@ impl Island {
         me.spawn(move || {
             let (mut events, mut errors) = (Vec::new(), Vec::new());
             for url in &feeds {
-                match crate::net::calendar_feed(url) { Ok(ics) => events.extend(nextcloud::feed_events(&ics, &since)), Err(e) => errors.push(e) }
+                match crate::net::calendar_feed(url) { Ok(ics) => events.extend(feed_events(&ics, &since)), Err(e) => errors.push(e) }
             }
             (feeds, events, errors.into_iter().next())
         }, move |s, (feeds, events, error)| if s.cfg.calendar_feeds == feeds { (s.calendar.feed_events, s.calendar.feed_error) = (events, error) });
@@ -80,7 +81,7 @@ const EVENT_GRACE: i64 = 15;
 pub fn due_events(events: &[Item], now: i64, lead: i64, alerted: &[String]) -> Vec<(String, String, Option<String>)> {
     events.iter().filter_map(|e| {
         let ((y, m, d), title) = event_day(&e.text)?;
-        let (Some((h, min)), rest) = nextcloud::leading_time(title) else { return None };
+        let (Some((h, min)), rest) = leading_time(title) else { return None };
         let start = crate::date::days_from_civil(y, m, d) * 1440 + i64::from(h * 60 + min);
         let id = format!("{start} {rest}");
         if !(start - lead..=start + EVENT_GRACE).contains(&now) || alerted.contains(&id) { return None }

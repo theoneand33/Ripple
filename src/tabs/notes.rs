@@ -27,6 +27,17 @@ impl Notes {
 
 impl Island {
     /// Edits note `i`, or the last one when `i` is past the end.
+    /// After a sync: keeps the open note (`open`: its key and text before) open where it went,
+    /// and shows Nextcloud's text if it changed.
+    pub(super) fn notes_synced(&mut self, open: Option<(u64, String)>) {
+        let at = open.as_ref().and_then(|(key, _)| self.cfg.notes.iter().position(|n| n.key == *key));
+        match at {
+            Some(i) if open.as_ref().is_some_and(|(_, text)| self.cfg.notes[i].text == *text) => self.notes.index = i,
+            Some(i) => { let focused = self.notes.editor.focused; self.open_note(i); self.notes.editor.focused = focused }
+            None => self.open_note(self.notes.index),
+        }
+    }
+
     pub fn open_note(&mut self, i: usize) {
         self.notes.index = i.min(self.cfg.notes.len().saturating_sub(1));
         self.notes.editor = TextEdit::new(self.cfg.notes.get(self.notes.index).map_or("", |n| n.text.as_str()));

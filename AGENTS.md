@@ -16,7 +16,9 @@ Ripple is a Dynamic Island-style bar for Windows, Linux, and macOS. It is one Ru
 | `src/stocks.rs` | Stock quotes (Yahoo Finance) and the Sure portfolio |
 | `src/downloads.rs` | Download progress from each OS, shown as a live activity |
 | `src/stremflix.rs` | Stremflix-rs's local API: Continue Watching and playback |
-| `src/nextcloud.rs` | Nextcloud sync for Notes (Notes API) and Tasks (CalDAV), and the merge that keeps local edits |
+| `src/nextcloud.rs` | Nextcloud's protocols: Notes API, CalDAV and WebDAV, and the merge that keeps local edits. `tabs/sync.rs` starts syncs and applies their outcome |
+| `src/ics.rs` | iCalendar text: tasks and events to and from their one-line texts, and in-place edits |
+| `src/task.rs` | A task's one-line text (`!! Title due:… every:…`), read and written |
 | `src/limits.rs` | AI Limits: finds each coding agent's saved sign-in and reads its plan usage |
 | `src/plugins.rs` | Lua plugins: loading the plugins folder, the `ui.*` nodes, and `--test-plugin`. API in `PLUGINS.md` |
 | `src/t3.rs` | T3 Code client (HTTP, `/ws` RPC, `/mcp` sign-in) |

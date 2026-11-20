@@ -57,6 +57,12 @@ pub fn shift_month(year: i32, month: u32, offset: i32) -> (i32, u32) {
     (i.div_euclid(12), i.rem_euclid(12) as u32 + 1)
 }
 
+/// The day `days` days after (year, month, day).
+pub fn add_days((y, m, d): (i32, u32, u32), days: i64) -> (i32, u32, u32) {
+    let t = rune::time::LocalTime::at_offset((days_from_civil(y, m, d) + days) * 86_400_000, 0);
+    (t.year, t.month, t.day)
+}
+
 /// Days since 1970-01-01, from Howard Hinnant's `days_from_civil`.
 pub fn days_from_civil(y: i32, m: u32, d: u32) -> i64 {
     let y = i64::from(y) - i64::from(m <= 2);

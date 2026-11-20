@@ -356,9 +356,9 @@ pub struct Island {
     pub calendar: tabs::Calendar,
     pub notes: tabs::Notes,
     /// Nextcloud sync of Notes, Tasks and events, by `nextcloud::Kind`.
-    pub nextcloud: [crate::nextcloud::SyncState; 3],
+    pub nextcloud: [tabs::SyncState; 3],
     /// Nextcloud sync of the Shelf.
-    pub shelf_sync: crate::nextcloud::SyncState,
+    pub shelf_sync: tabs::SyncState,
     pub stremflix: tabs::Stremflix,
     /// The System tab's figures; None until the first sample.
     pub stats: Option<system::Stats>,
