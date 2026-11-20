@@ -130,6 +130,18 @@ pub fn unconstrain(ns_view: *mut c_void) {
     }
 }
 
+/// NSWindowSharingReadOnly, or NSWindowSharingNone to keep the window out of captures. Call it
+/// on the main thread with the window's NSView.
+pub fn set_sharing(ns_view: *mut c_void, shared: bool) {
+    if ns_view.is_null() { return }
+    // SAFETY: a live NSView on the main thread.
+    unsafe {
+        let window: *mut AnyObject = msg_send![ns_view.cast::<AnyObject>(), window];
+        if window.is_null() { return }
+        let _: () = msg_send![window, setSharingType: usize::from(shared)];
+    }
+}
+
 // --- Desktop drags ---
 
 /// `system::watch_drags`: a drag writes the drag pasteboard as it starts, with a mouse button down.
