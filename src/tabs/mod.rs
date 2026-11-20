@@ -28,7 +28,7 @@ pub use assistant::Assistant;
 pub use calculator::Calculator;
 pub use calendar::{link_host, Calendar};
 pub use clipboard::{Clipboard, Content};
-pub use overview::{Contributions, height as overview_height};
+pub use overview::{Contributions, height as overview_height, width as overview_width};
 pub use clocks::Clocks;
 pub use limits::Limits;
 pub use notes::Notes;

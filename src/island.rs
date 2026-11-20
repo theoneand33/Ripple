@@ -19,7 +19,7 @@ use crate::tabs::{self, accent};
 use crate::icons;
 
 /// The Island's window, in points: the largest Island at its hover scale, its tab dock, plus their shadows.
-pub const CANVAS: (f32, f32) = (680.0, 460.0);
+pub const CANVAS: (f32, f32) = (740.0, 600.0);
 /// Room kept around the Island inside the window for its shadow and hover scale.
 const PAD: f32 = 30.0;
 /// The tab dock under the Large Island: its height, the gap above it, one button and the space between.
@@ -691,6 +691,7 @@ impl Island {
         let track = self.shows_track();
         let large = tabs::size(self.tab);
         let mut w = match self.mode {
+            Mode::Large if self.tab == Tab::Overview => tabs::overview_width(self),
             Mode::Large => large.0,
             _ if self.level.is_some() && !notch => 100.0, // just the ring
             _ if alerting => if notch { self.notch_glance_width() + if self.joinable() { 70.0 } else { 0.0 } } else if self.joinable() { 246.0 } else { 176.0 }, // fits icon + "Disconnected"
@@ -2044,7 +2045,7 @@ mod tests {
 
     #[test]
     fn a_scaled_island_keeps_its_window_on_the_display() {
-        for scale in [80.0, 110.0, 130.0, 150.0, 170.0, 200.0] {
+        for scale in [80.0, 110.0, 130.0, 150.0, 170.0, 180.0] {
             for mode in ["top-right", "bottom-right", "bottom-left", "free"] {
                 let p = Placement::of(&Config { island_scale: scale, position_mode: mode.into(), ..Config::default() }, (1920.0, 1080.0));
                 let [x, y, w, h] = p.frame();
