@@ -196,9 +196,10 @@ impl Placement {
             }
         };
         // The window stays on the display; the Island moves inside it instead.
-        let wx = match align { -1 => x - PAD, 0 => x - CANVAS.0 / 2.0, _ => x + PAD - CANVAS.0 }.min(dw - CANVAS.0).max(0.0);
-        let wy = if top { y - PAD } else { y + PAD - CANVAS.1 }.min(dh - CANVAS.1).max(0.0);
-        Placement { window: (wx.round(), wy.round()), align, x: x - wx.round(), top, y: y - wy.round(), zoom }
+        // Round before the clamp, and floor the limit, so a fractional zoom never pushes the window past the edge.
+        let wx = match align { -1 => x - PAD, 0 => x - CANVAS.0 / 2.0, _ => x + PAD - CANVAS.0 }.round().min((dw - CANVAS.0).floor()).max(0.0);
+        let wy = if top { y - PAD } else { y + PAD - CANVAS.1 }.round().min((dh - CANVAS.1).floor()).max(0.0);
+        Placement { window: (wx, wy), align, x: x - wx, top, y: y - wy, zoom }
     }
 
     /// The window's rect on the display, in the display's points.
@@ -1615,11 +1616,11 @@ mod tests {
 
     #[test]
     fn a_scaled_island_keeps_its_window_on_the_display() {
-        for scale in [80.0, 150.0, 200.0] {
-            for mode in ["top-right", "bottom-left", "free"] {
+        for scale in [80.0, 110.0, 130.0, 150.0, 170.0, 200.0] {
+            for mode in ["top-right", "bottom-right", "bottom-left", "free"] {
                 let p = Placement::of(&Config { island_scale: scale, position_mode: mode.into(), ..Config::default() }, (1920.0, 1080.0));
                 let [x, y, w, h] = p.frame();
-                assert!(x >= 0.0 && y >= 0.0 && x + w <= 1920.5 && y + h <= 1080.5, "{scale}% {mode}: {:?}", p.frame());
+                assert!(x >= 0.0 && y >= 0.0 && x + w <= 1920.01 && y + h <= 1080.01, "{scale}% {mode}: {:?}", p.frame());
                 assert_eq!(w, CANVAS.0 * scale / 100.0);
             }
         }
