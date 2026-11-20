@@ -349,6 +349,10 @@ pub struct Config {
     pub weather_unit: String,
     pub location: String,
     pub theme: String,
+    /// Switch between `day_theme` and `night_theme` at sunrise and sunset at the weather location.
+    pub auto_theme: bool,
+    pub day_theme: String,
+    pub night_theme: String,
     pub bg_color: String,
     pub text_color: String,
     pub bg_image: String,
@@ -433,6 +437,9 @@ impl Default for Config {
             weather_unit: "f".into(),
             location: String::new(),
             theme: "none".into(),
+            auto_theme: false,
+            day_theme: "none".into(),
+            night_theme: "sleek-black".into(),
             bg_color: "#000000".into(),
             text_color: "#FFFFFF".into(),
             bg_image: "none".into(),
@@ -518,6 +525,13 @@ impl Config {
         self.theme = theme.into();
         self.bg_color = (*bg).into();
         self.text_color = (*text).into();
+    }
+
+    /// The theme the sun asks for at `now` (Unix seconds): the day theme from sunrise until
+    /// sunset, the night theme otherwise. None while off or with no sun times.
+    pub fn sun_theme(&self, sun: Option<(i64, i64)>, now: i64) -> Option<&str> {
+        let (rise, set) = sun.filter(|_| self.auto_theme)?;
+        Some(if (rise..set).contains(&now) { &self.day_theme } else { &self.night_theme })
     }
 
     pub fn win95(&self) -> bool { self.theme == "win95" }
@@ -727,6 +741,17 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(cfg, Config::default());
         assert!(backup.contains("keep me"));
+    }
+
+    #[test]
+    fn the_sun_picks_the_day_or_night_theme() {
+        let cfg = Config { auto_theme: true, ..Config::default() };
+        let sun = Some((1000, 2000));
+        assert_eq!(cfg.sun_theme(sun, 999), Some("sleek-black"));
+        assert_eq!(cfg.sun_theme(sun, 1000), Some("none"));
+        assert_eq!(cfg.sun_theme(sun, 2000), Some("sleek-black"));
+        assert_eq!(cfg.sun_theme(None, 1500), None);
+        assert_eq!(Config::default().sun_theme(sun, 1500), None, "off");
     }
 
     #[test]

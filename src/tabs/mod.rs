@@ -135,6 +135,8 @@ pub fn each_second(s: &mut Island, now: f64) -> bool {
     let plugins = shows(s, Tab::Plugins) && s.plugins.tick();
     s.notes_tick();
     s.task_reminders(now);
+    let theme = s.cfg.sun_theme(s.weather.sun, crate::date::now_secs()).filter(|t| *t != s.cfg.theme).map(str::to_string);
+    if let Some(theme) = theme { s.save(|c| c.set_theme(&theme)) }
     crate::system::WANT_PROCESSES.store(s.mode == Mode::Large && s.tab == Tab::System, std::sync::atomic::Ordering::Relaxed);
     match s.stocks.reload_in.take() {
         Some(n) if n > 1 => s.stocks.reload_in = Some(n - 1),
