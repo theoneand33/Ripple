@@ -42,18 +42,20 @@ pub enum Mode {
     Large,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+/// In the order they go over each other: a level answers a key just pressed, and Caps Lock
+/// may stay on for good.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub enum Alert {
+    Volume,
+    Brightness,
     Charging,
     Battery,
     Bluetooth,
+    /// A task fell due, an event starts, or a script's or agent's alert.
+    Reminder,
     Camera,
     Microphone,
-    Volume,
-    Brightness,
     CapsLock,
-    /// A task fell due.
-    Reminder,
 }
 
 impl Alert {
@@ -310,18 +312,14 @@ pub struct Island {
     caps_lock: bool,
     /// The focused app is full screen.
     fullscreen: bool,
-    /// The volume or brightness ring showing, and until when.
-    level: Option<(Alert, f64)>,
-
-    battery_alert_until: Option<f64>,
-    charging_alert_until: Option<f64>,
-    bluetooth_alert_until: Option<f64>,
-    /// The task that fell due, and until when its reminder shows.
-    pub reminder: Option<(String, f64)>,
+    /// The alerts showing for a while, each until when; `alert` picks the first in `Alert` order.
+    timed: Vec<(Alert, f64)>,
+    /// The reminder's text.
+    reminder: String,
     /// The reminder's meeting link, for its Join button.
-    pub reminder_link: Option<String>,
-    /// The script alert showing: until when, and how many alerts it stands for.
-    notified: (f64, usize),
+    reminder_link: Option<String>,
+    /// The reminder showing is `ripple notify`'s, standing for this many alerts.
+    notified: Option<usize>,
     /// The hour of rain or snow already alerted (Unix seconds).
     rain_alerted: Option<i64>,
     /// Seconds until each break reminder (eye, hourly), counted only while no app is full screen.
@@ -330,7 +328,7 @@ pub struct Island {
     break_tick: f64,
     /// The hour a water reminder last came, as (day, hour).
     water_mark: Option<(i64, u32)>,
-    capture: Option<(Alert, f64)>,
+    /// Camera and microphone alerts still to take their turn.
     capture_queue: Vec<Alert>,
     paused_until: Option<f64>,
     /// After a play/pause click: the state shown, and until when polls of the same track that
@@ -455,20 +453,16 @@ impl Island {
             microphone: false,
             volume: None,
             brightness: None,
-            level: None,
+            timed: Vec::new(),
             caps_lock: false,
             fullscreen: false,
-            battery_alert_until: None,
-            charging_alert_until: None,
-            bluetooth_alert_until: None,
-            reminder: None,
+            reminder: String::new(),
             reminder_link: None,
-            notified: (0.0, 0),
+            notified: None,
             water_mark: None,
             rain_alerted: None,
             break_left: [None; 2],
             break_tick: 0.0,
-            capture: None,
             capture_queue: Vec::new(),
             paused_until: None,
             expect_playing: None,
@@ -569,16 +563,22 @@ impl Island {
     pub fn hidden(&self) -> bool { self.hiding() && self.mode == Mode::Still && !self.shows_track() && !self.caps_lock && !self.pomodoro.active() && self.download.is_none() }
 
     pub fn alert(&self) -> Option<Alert> {
-        // The level answers a key just pressed, so it goes over the rest.
-        if let Some((level, _)) = self.level { Some(level) }
-        else if self.charging_alert_until.is_some() { Some(Alert::Charging) }
-        else if self.battery_alert_until.is_some() { Some(Alert::Battery) }
-        else if self.bluetooth_alert_until.is_some() { Some(Alert::Bluetooth) }
-        else if self.reminder.is_some() { Some(Alert::Reminder) }
-        // A playing track goes over Caps Lock, which may stay on for good.
-        // Beside another live activity, Caps Lock moves to a bubble.
-        else { self.capture.map(|c| c.0).or((self.caps_lock && !self.shows_track() && !self.pomodoro.active() && self.download.is_none()).then_some(Alert::CapsLock)) }
+        // A playing track goes over Caps Lock; beside another live activity, Caps Lock moves to a bubble.
+        let caps = self.caps_lock && !self.shows_track() && !self.pomodoro.active() && self.download.is_none();
+        self.timed.iter().map(|t| t.0).min().or(caps.then_some(Alert::CapsLock))
     }
+
+    /// Until when `alert` shows; None when it isn't.
+    fn shown_until(&self, alert: Alert) -> Option<f64> { self.timed.iter().find(|t| t.0 == alert).map(|t| t.1) }
+
+    /// Shows `alert` until `until`, in place of `replaces` (itself included) if one shows.
+    fn show_alert(&mut self, alert: Alert, until: f64, replaces: &[Alert]) {
+        self.timed.retain(|t| t.0 != alert && !replaces.contains(&t.0));
+        self.timed.push((alert, until));
+    }
+
+    /// A reminder shows: other alerts of its kind wait their turn.
+    pub fn reminding(&self) -> bool { self.shown_until(Alert::Reminder).is_some() }
 
     /// Live activities the compact Island has no room for, each in a circle of its own beside it:
     /// away from the display edge the Island hugs, or taking turns right then left when centred.
@@ -632,7 +632,7 @@ impl Island {
             Alert::CapsLock => "Caps Lock".into(),
             // Fits the alert's width.
             Alert::Reminder => {
-                let title = self.reminder.as_ref().map_or("", |r| r.0.as_str());
+                let title = self.reminder.as_str();
                 if title.chars().count() > 13 { format!("{}…", title.chars().take(12).collect::<String>()) } else { title.to_string() }
             }
         }
@@ -682,7 +682,7 @@ impl Island {
         let mut w = match self.mode {
             Mode::Large if self.tab == Tab::Overview => tabs::overview_width(self),
             Mode::Large => large.0,
-            _ if self.level.is_some() && !notch => 100.0, // just the ring
+            _ if matches!(self.alert(), Some(Alert::Volume | Alert::Brightness)) && !notch => 100.0, // just the ring
             _ if alerting => if notch { self.notch_glance_width() + if self.joinable() { 70.0 } else { 0.0 } } else if self.joinable() { 246.0 } else { 176.0 }, // fits icon + "Disconnected"
             _ if track => self.now_playing_width(),
             _ if notch => if self.mode == Mode::Quick || self.cfg.show_info_idle || self.pomodoro.active() || self.download.is_some() { self.notch_glance_width() } else { 210.0 },
@@ -1082,10 +1082,12 @@ impl Island {
 
     // --- What the pollers report ---
 
-    /// Shows a task's reminder for 6 seconds.
-    pub fn remind(&mut self, title: String, now: f64) {
-        self.reminder = Some((title, now + 6.0));
-        self.reminder_link = None;
+    /// Shows a reminder for 6 seconds.
+    pub fn remind(&mut self, title: String, now: f64) { self.remind_for(title, None, now + 6.0) }
+
+    fn remind_for(&mut self, title: String, link: Option<String>, until: f64) {
+        self.show_alert(Alert::Reminder, until, &[]);
+        (self.reminder, self.reminder_link, self.notified) = (title, link, None);
         if !self.large_open() { self.set_mode(Mode::Quick) }
     }
 
@@ -1107,7 +1109,7 @@ impl Island {
         if rune::is_headless() { return }
         let on = [self.cfg.eye_breaks, self.cfg.hourly_breaks];
         // While another reminder shows, the break waits rather than replace it.
-        let paused = self.fullscreen || self.large_open() || self.reminder.is_some() || self.quiet();
+        let paused = self.fullscreen || self.large_open() || self.reminding() || self.quiet();
         if let Some(i) = count_breaks(&mut self.break_left, on, elapsed, paused) {
             self.remind(["Look away 20s", "Take a break"][i].into(), now);
         }
@@ -1117,7 +1119,7 @@ impl Island {
     /// glasses are short of the goal.
     pub fn water_reminders(&mut self, now: f64) {
         // An alert doesn't show over an open Large or replace another: the hour stays due until then.
-        if rune::is_headless() || self.large_open() || self.reminder.is_some() || self.quiet() { return }
+        if rune::is_headless() || self.large_open() || self.reminding() || self.quiet() { return }
         let t = LocalTime::at(crate::date::now_ms());
         let mark = (crate::date::days_from_civil(t.year, t.month, t.day), t.hour);
         // Track the hour even while reminders are off, so turning them on or adding the widget mid-hour stays quiet.
@@ -1136,7 +1138,7 @@ impl Island {
     pub fn rain_alert(&mut self, now: f64) {
         // `rain_alerted` stays through a pause in the rain: `rain_due` lets only rain 3 hours away from it alert again.
         let Some((at, _)) = self.weather.precip else { return };
-        if rune::is_headless() || !self.cfg.rain_alerts || self.large_open() || self.reminder.is_some() || self.quiet() { return }
+        if rune::is_headless() || !self.cfg.rain_alerts || self.large_open() || self.reminding() || self.quiet() { return }
         if !rain_due(at, crate::date::now_secs(), self.rain_alerted) { return }
         self.rain_alerted = Some(at);
         self.remind(self.precip_label(), now);
@@ -1144,15 +1146,13 @@ impl Island {
 
     /// An event's alert: 30 seconds, so its Join button can be reached.
     pub fn remind_event(&mut self, title: String, link: Option<String>, now: f64) {
-        self.remind(title, now);
-        if let Some(r) = &mut self.reminder { r.1 = now + 30.0 }
-        self.reminder_link = link;
+        self.remind_for(title, link, now + 30.0);
     }
 
     /// The alert's Join button: opens the meeting and ends the alert.
     fn join(&mut self) {
         if let Some(link) = self.reminder_link.take() { system::open_external(&link) }
-        self.reminder = None;
+        self.timed.retain(|t| t.0 != Alert::Reminder);
         self.set_mode(Mode::Still);
     }
 
@@ -1163,10 +1163,10 @@ impl Island {
         // Resting in Large (Large standby) isn't open: `remind` shows the alert compact.
         if self.large_open() || self.quiet() { return }
         // An alert of ours showing counts as the alerts it merged; another reminder isn't replaced, so they wait.
-        let shown = match &self.reminder { Some(r) if now < r.1 => if r.1 == self.notified.0 { self.notified.1 } else { return }, _ => 0 };
+        let shown = match self.notified { _ if !self.reminding() => 0, Some(n) => n, None => return };
         if let Some((text, n)) = crate::notify::merge(shown, crate::notify::take(&dir)) {
             self.remind(text, now);
-            self.notified = (self.reminder.as_ref().map_or(0.0, |r| r.1), n);
+            self.notified = Some(n);
         }
     }
 
@@ -1176,11 +1176,11 @@ impl Island {
         let now = tx.clock();
         if charging && !self.charging && self.cfg.battery_alerts {
             self.set_mode(Mode::Quick);
-            self.charging_alert_until = Some(now + 1.5);
+            self.show_alert(Alert::Charging, now + 1.5, &[]);
         }
         if percent != self.percent && percent.is_some_and(|p| [20, 15, 10, 5, 3].contains(&p)) && self.cfg.battery_alerts {
             self.set_mode(Mode::Quick);
-            self.battery_alert_until = Some(now + 3.0);
+            self.show_alert(Alert::Battery, now + 3.0, &[]);
         }
         (self.percent, self.charging) = (percent, charging);
         self.schedule(tx);
@@ -1193,7 +1193,7 @@ impl Island {
         if connected == self.bluetooth || (!connected && !missed) { return false }
         self.bluetooth = connected;
         self.set_mode(Mode::Quick);
-        self.bluetooth_alert_until = Some(tx.clock() + 3.0);
+        self.show_alert(Alert::Bluetooth, tx.clock() + 3.0, &[]);
         self.schedule(tx);
         true
     }
@@ -1212,7 +1212,7 @@ impl Island {
         // A poll's commit lands at once otherwise: the Island would snap open with no ring entrance.
         tx.animated();
         if self.mode != Mode::Large { self.set_mode(Mode::Quick) }
-        self.level = Some((alert, tx.clock() + 1.5));
+        self.show_alert(alert, tx.clock() + 1.5, &[Alert::Volume, Alert::Brightness]);
         self.schedule(tx);
         true
     }
@@ -1270,10 +1270,13 @@ impl Island {
         true
     }
 
+    fn capturing(&self) -> bool { self.timed.iter().any(|t| matches!(t.0, Alert::Camera | Alert::Microphone)) }
+
     fn next_capture(&mut self, tx: &mut Tx) {
-        if self.capture.is_some() || self.capture_queue.is_empty() { return }
+        if self.capturing() || self.capture_queue.is_empty() { return }
         self.set_mode(Mode::Quick);
-        self.capture = Some((self.capture_queue.remove(0), tx.clock() + 3.0));
+        let alert = self.capture_queue.remove(0);
+        self.show_alert(alert, tx.clock() + 3.0, &[]);
         self.schedule(tx);
     }
 
@@ -1343,8 +1346,8 @@ impl Island {
 
     /// Asks for a poll at the next deadline any timer holds.
     fn schedule(&self, tx: &mut Tx) {
-        let deadlines = [self.level.map(|l| l.1), self.battery_alert_until, self.charging_alert_until, self.bluetooth_alert_until, self.reminder.as_ref().map(|r| r.1), self.capture.map(|c| c.1), self.paused_until, self.download_done, tabs::deadline(self), self.intro_at, self.close_at];
-        if let Some(due) = deadlines.into_iter().flatten().reduce(f64::min) { tx.wake_at(due) }
+        let deadlines = [self.paused_until, self.download_done, tabs::deadline(self), self.intro_at, self.close_at];
+        if let Some(due) = deadlines.into_iter().flatten().chain(self.timed.iter().map(|t| t.1)).reduce(f64::min) { tx.wake_at(due) }
     }
 
     /// Runs before every frame: the clock, the timers, the tabs' own and the input region.
@@ -1361,21 +1364,18 @@ impl Island {
         changed |= tabs::poll(self, now, tx);
 
         let due = |t: &mut Option<f64>| t.is_some_and(|d| now >= d) && { *t = None; true };
-        let mut alert_ended = due(&mut self.battery_alert_until);
-        alert_ended |= due(&mut self.charging_alert_until);
-        alert_ended |= due(&mut self.bluetooth_alert_until);
-        if self.reminder.as_ref().is_some_and(|r| now >= r.1) { (self.reminder, self.reminder_link) = (None, None); alert_ended = true }
-        if self.capture.is_some_and(|c| now >= c.1) {
-            self.capture = None;
-            self.next_capture(tx);
-            alert_ended |= self.capture.is_none();
+        let (ended, timed): (Vec<_>, Vec<_>) = std::mem::take(&mut self.timed).into_iter().partition(|t| now >= t.1);
+        self.timed = timed;
+        let mut alert_ended = false;
+        for (alert, _) in ended {
             changed = true;
-        }
-        if self.level.is_some_and(|l| now >= l.1) {
-            self.level = None;
-            // Leaves Large alone, as `set_levels` did.
-            alert_ended |= self.mode != Mode::Large;
-            changed = true;
+            alert_ended |= match alert {
+                // Leaves Large alone, as `set_levels` did.
+                Alert::Volume | Alert::Brightness => self.mode != Mode::Large,
+                Alert::Camera | Alert::Microphone => { self.next_capture(tx); !self.capturing() }
+                Alert::Reminder => { (self.reminder_link, self.notified) = (None, None); true }
+                _ => true,
+            };
         }
         // An alert ending leaves a Large the user opened meanwhile, by hand or under the pointer.
         if alert_ended && !self.large_open() {
@@ -2157,7 +2157,7 @@ mod tests {
         assert!(s.mode == Mode::Large && s.large_open(), "nor does one with a rule");
         s.remind("Look away 20s".into(), 0.0);
         s.poll(7.0, &mut Tx::default());
-        assert!(s.reminder.is_none() && s.mode == Mode::Large, "a reminder ending leaves it open too");
+        assert!(!s.reminding() && s.mode == Mode::Large, "a reminder ending leaves it open too");
     }
 
     #[test]
@@ -2376,11 +2376,11 @@ mod tests {
         s.time = "9:41".into();
         s.percent = Some(100);
         let quick = s.size().0;
-        s.capture = Some((Alert::Microphone, Default::default()));
+        s.show_alert(Alert::Microphone, 1.0, &[]);
         assert!(s.size().0 > quick, "a longer alert label widens it");
         s.cfg.notch_auto_size = false;
         let fixed = s.size().0;
-        s.capture = None;
+        s.timed.clear();
         assert_eq!(s.size().0, fixed, "without auto size the width stays put");
         // Mini notch keeps the notch height but drops the notch gap and the Large inset.
         s.cfg.notch_mini = true;

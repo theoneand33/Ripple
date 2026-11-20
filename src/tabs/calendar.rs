@@ -95,7 +95,7 @@ impl Island {
     /// Large draws no alerts, and a showing reminder isn't replaced, so one waits for both.
     pub fn event_alerts(&mut self, now: f64) {
         let lead = i64::from(self.cfg.event_alert_minutes);
-        if rune::is_headless() || lead == 0 || self.large_open() || self.reminder.is_some() { return }
+        if rune::is_headless() || lead == 0 || self.large_open() || self.reminding() { return }
         let quiet = self.quiet();
         if !quiet && let Some((title, link, _)) = self.calendar.held.take() { return self.remind_event(title, link, now) }
         let t = rune::time::LocalTime::at(crate::date::now_ms());
