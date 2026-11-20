@@ -47,6 +47,9 @@ pub struct Clipboard {
     pub copied: Option<(usize, f64)>,
     pub search: TextEdit,
     next_read: f64,
+    /// What the last read found: an unchanged clipboard is not pushed again, so a copy holding
+    /// both text and an image doesn't reshuffle the list every poll.
+    last_read: Option<ClipboardContent>,
     /// Where pinned images are saved; None keeps them only this run (headless).
     dir: Option<PathBuf>,
 }
@@ -72,6 +75,8 @@ impl Island {
             tx.wake_at(self.clipboard.next_read);
             // A copy from a spreadsheet or browser can carry both; the text goes on top.
             tx.read_clipboard(|s: &mut Island, content, _| {
+                if s.clipboard.last_read.as_ref() == Some(content) { return }
+                s.clipboard.last_read = Some(content.clone());
                 if let Some(image) = content.image() { s.clipboard_image(image.clone()); }
                 s.clipboard.push(Content::Text(content.text().to_string()));
             });
@@ -128,12 +133,13 @@ impl Clipboard {
 
     /// Adds a copy below the pinned items; one already listed moves up there, a pinned one stays.
     /// False when nothing changed.
-    pub fn push(&mut self, content: Content) -> bool {
+    pub fn push(&mut self, mut content: Content) -> bool {
         if matches!(&content, Content::Text(t) if t.is_empty()) { return false }
         let top = self.pinned();
         match self.items.iter().position(|c| c.content == content) {
             Some(i) if i <= top => return false,
-            Some(i) => { self.items.remove(i); }
+            // A known image keeps the pixels it already decoded.
+            Some(i) => if let (Content::Image(_, pixels @ None), Content::Image(_, Some(old))) = (&mut content, self.items.remove(i).content) { *pixels = Some(old) },
             None => {}
         }
         self.items.insert(top, Clip { content, pinned: false });
@@ -271,6 +277,18 @@ mod tests {
         assert_eq!(c.listed(), [0]);
         c.toggle_pin(0);
         assert!(c.pins().is_empty() && texts(&c)[0] == "keep");
+    }
+
+    #[test]
+    fn a_known_image_copied_again_keeps_its_pixels() {
+        let png = [&b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR"[..], &[0, 0, 0, 2, 0, 0, 0, 3]].concat();
+        let image = rune::ClipboardImage::from_png(png).unwrap();
+        let cache = rune::ImageCache::new(std::sync::Arc::new(|| {}));
+        let mut c = Clipboard::default();
+        c.push(Content::Image(image.clone(), Some(cache.load(image.png().to_vec()))));
+        c.push(Content::Text("after".into()));
+        assert!(c.push(Content::Image(image, None)));
+        assert!(matches!(&c.items[0].content, Content::Image(_, Some(_))));
     }
 
     #[test]

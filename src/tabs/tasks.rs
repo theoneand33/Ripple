@@ -60,7 +60,9 @@ impl Task {
         let mut task = Task::default();
         let mut title = Vec::new();
         for (i, word) in text.split_whitespace().enumerate() {
-            if i == 0 && (1..=3).contains(&word.len()) && word.bytes().all(|b| b == b'!') { task.priority = word.len() as u8; continue }
+            if i == 0 && is_bangs(word) { task.priority = word.len() as u8; continue }
+            // `Display` escapes a title that starts with bangs.
+            if let Some(bangs) = word.strip_prefix('\\').filter(|w| i == 0 && is_bangs(w)) { title.push(bangs); continue }
             if let Some(due) = word.strip_prefix("due:").and_then(|v| parse_due(v, today)) { task.due = Some(due); continue }
             if let Some(every) = word.strip_prefix("every:").and_then(Every::parse) { task.every = Some(every); continue }
             title.push(word);
@@ -95,6 +97,8 @@ impl Task {
 impl std::fmt::Display for Task {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if self.priority > 0 { write!(f, "{} ", "!".repeat(self.priority.into()))? }
+        // A title that starts with `!` would read back as a priority.
+        if self.title.split_whitespace().next().is_some_and(is_bangs) { f.write_str("\\")? }
         f.write_str(&self.title)?;
         if let Some(((y, m, d), time)) = self.due {
             write!(f, " due:{y:04}-{m:02}-{d:02}")?;
@@ -104,6 +108,9 @@ impl std::fmt::Display for Task {
         Ok(())
     }
 }
+
+/// `!`, `!!` or `!!!`: a priority, when a task's text starts with it.
+fn is_bangs(word: &str) -> bool { (1..=3).contains(&word.len()) && word.bytes().all(|b| b == b'!') }
 
 /// `2026-11-25`, `today` or `tomorrow`, then optionally `T17:00` or `@17:00`.
 fn parse_due(v: &str, today: Date) -> Option<(Date, Option<(u32, u32)>)> {
@@ -332,6 +339,12 @@ mod tests {
         assert_eq!(Task::parse(&t.to_string(), today), t, "the written form reads back the same");
         assert_eq!(Task::parse("!!!! loud due:2026-02-30 every:year", today).title, "!!!! loud due:2026-02-30 every:year", "what isn't valid stays in the title");
         assert_eq!(Task::parse("Buy milk due:2026-12-01", today).due_key().as_deref(), Some("2026-12-01T09:00"));
+        for title in ["! call mom", "!", "!!! now"] {
+            for priority in [0, 2] {
+                let t = Task { priority, title: title.into(), ..Task::default() };
+                assert_eq!(Task::parse(&t.to_string(), today), t, "{t}");
+            }
+        }
     }
 
     #[test]
