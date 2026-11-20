@@ -828,9 +828,34 @@ pub fn set_auto_launch(enable: bool) {
         if enable { output("reg", &["add", RUN, "/v", "Ripple", "/t", "REG_SZ", "/d", &value, "/f"]); }
         else { output("reg", &["delete", RUN, "/v", "Ripple", "/f"]); }
     }
-    // macOS: not offered, as before (Settings hides the row).
+    // A per-user LaunchAgent that starts the binary once at login; launchd ignores it once removed.
     #[cfg(target_os = "macos")]
-    let _ = (exe, enable);
+    {
+        let Some(dir) = rune::dirs::home().map(|h| h.join("Library/LaunchAgents")) else { return };
+        let file = dir.join("com.topmyster.ripple.plist");
+        let result = if enable {
+            std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&file, launch_agent(&exe.to_string_lossy())))
+        } else if file.exists() {
+            std::fs::remove_file(&file)
+        } else {
+            Ok(())
+        };
+        if let Err(e) = result { eprintln!("Ripple: failed to set launch at login: {e}") }
+    }
+}
+
+/// The LaunchAgent plist that runs `exe` at login, with the path escaped for XML.
+#[cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))]
+fn launch_agent(exe: &str) -> String {
+    let exe = exe.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
+    format!(r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.topmyster.ripple</string>
+  <key>ProgramArguments</key><array><string>{exe}</string></array>
+  <key>RunAtLoad</key><true/>
+</dict></plist>
+"#)
 }
 
 /// A path as one quoted Exec argument: `"`, `` ` ``, `$` and `\` take a backslash, `%` doubles,
@@ -1155,3 +1180,10 @@ mod tests {
         assert_eq!(parse_pmset("Now drawing from 'AC Power'"), None);
     }
 }
+    #[test]
+    fn launch_agent_paths_are_escaped_for_xml() {
+        let plist = launch_agent("/Applications/R&D <1>.app/Contents/MacOS/Ripple");
+        assert!(plist.contains("<string>/Applications/R&amp;D &lt;1&gt;.app/Contents/MacOS/Ripple</string>"));
+        assert!(plist.contains("<key>RunAtLoad</key><true/>"));
+    }
+
