@@ -39,15 +39,6 @@ fn command(program: &str) -> Command {
     cmd
 }
 
-/// A path typed by the user, with `~` for the home folder.
-pub fn expand_home(home: &std::path::Path, p: &str) -> std::path::PathBuf {
-    match p.strip_prefix("~/").or_else(|| p.strip_prefix("~\\")) {
-        Some(rest) => home.join(rest),
-        None if p == "~" => home.into(),
-        None => p.into(),
-    }
-}
-
 /// A status tool that runs longer than this is killed, so a hung one can't stall its poller.
 const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 

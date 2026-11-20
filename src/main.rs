@@ -16,6 +16,7 @@ mod mac;
 mod net;
 mod nextcloud;
 mod notify;
+mod paths;
 mod platform;
 mod plugins;
 mod settings;

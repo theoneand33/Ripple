@@ -47,7 +47,7 @@ pub fn all(extra_dirs: &[String], cliproxy_dir: &str) -> Vec<Usage> {
 
 fn accounts(home: &Path, extra_dirs: &[String], cliproxy_dir: &str) -> Vec<Account> {
     let mut out = Vec::new();
-    let extra: Vec<PathBuf> = extra_dirs.iter().map(|d| d.trim()).filter(|d| !d.is_empty()).map(|d| crate::system::expand_home(home, d)).collect();
+    let extra: Vec<PathBuf> = extra_dirs.iter().map(|d| d.trim()).filter(|d| !d.is_empty()).map(|d| crate::paths::expand_home(home, d)).collect();
     let claude_dirs = std::iter::once(dir("CLAUDE_CONFIG_DIR", home.join(".claude"))).chain(extra.iter().cloned());
     for (i, d) in claude_dirs.enumerate() {
         let Some(creds) = read_json(d.join(".credentials.json")).or_else(|| if i == 0 { claude_keychain() } else { None }) else { continue };
@@ -70,7 +70,7 @@ fn accounts(home: &Path, extra_dirs: &[String], cliproxy_dir: &str) -> Vec<Accou
         let id = t["account_id"].as_str().filter(|a| !a.is_empty()).map(|a| format!("codex:{a}"));
         out.push(Account { renews: id, ..codex(named("Codex", email.as_deref()), token, t["account_id"].as_str().unwrap_or_default(), Some(saved)) });
     }
-    let proxy = crate::system::expand_home(home, if cliproxy_dir.trim().is_empty() { "~/.cli-proxy-api" } else { cliproxy_dir.trim() });
+    let proxy = crate::paths::expand_home(home, if cliproxy_dir.trim().is_empty() { "~/.cli-proxy-api" } else { cliproxy_dir.trim() });
     let mut files: Vec<PathBuf> = std::fs::read_dir(proxy).into_iter().flatten().flatten().map(|e| e.path())
         .filter(|p| p.extension().is_some_and(|e| e == "json")).collect();
     files.sort();

@@ -427,7 +427,7 @@ fn t3_home() -> Option<PathBuf> {
     let home = rune::dirs::home();
     match (raw, home) {
         ("", home) => home.map(|h| h.join(".t3")),
-        (raw, Some(h)) => Some(crate::system::expand_home(&h, raw)),
+        (raw, Some(h)) => Some(crate::paths::expand_home(&h, raw)),
         (raw, None) => Some(PathBuf::from(raw)),
     }
 }

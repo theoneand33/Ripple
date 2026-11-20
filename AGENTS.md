@@ -13,6 +13,8 @@ Ripple is a Dynamic Island-style bar for Windows, Linux, and macOS. It is one Ru
 | `src/config.rs` | Every user setting, stored as one JSON value in `prefs.json`; the `Tab` list, themes and AI providers |
 | `src/system.rs` | OS queries: now playing, battery, Bluetooth, camera, mic, launching apps |
 | `src/net.rs` | Weather, the AI assistant stream, and images by URL |
+| `src/stocks.rs` | Stock quotes (Yahoo Finance) and the Sure portfolio |
+| `src/downloads.rs` | Download progress from each OS, shown as a live activity |
 | `src/stremflix.rs` | Stremflix-rs's local API: Continue Watching and playback |
 | `src/nextcloud.rs` | Nextcloud sync for Notes (Notes API) and Tasks (CalDAV), and the merge that keeps local edits |
 | `src/limits.rs` | AI Limits: finds each coding agent's saved sign-in and reads its plan usage |
@@ -23,6 +25,7 @@ Ripple is a Dynamic Island-style bar for Windows, Linux, and macOS. It is one Ru
 | `src/date.rs` | Calendar date maths and the wall clock |
 | `src/agents.rs` | `ripple hook <agent>`: records agent sessions and waits for the Island's answer to a permission or question. `integrations/opencode/ripple.ts` calls it from OpenCode |
 | `src/notify.rs` | `ripple notify "text"`: queues a script's alert as a file the Island picks up |
+| `src/paths.rs` | The app folder for the CLIs, `~` expansion, and atomic file writes |
 | `src/command.rs` | Splits a launch string into argv without a shell |
 | `src/icons.rs` | Lucide icons as Rune icon bodies |
 | `src/testserver.rs` | Local HTTP/WebSocket server for tests |
@@ -48,7 +51,7 @@ Ripple is a Dynamic Island-style bar for Windows, Linux, and macOS. It is one Ru
 ## Rules
 
 - Rune is pre-release. It is pinned to one git `rev`. If you bump it, change the `rev` in `[dependencies]` and in every `[patch.crates-io]` entry together.
-- `system.rs` and `net.rs` block. Call them off the UI thread, the way the existing callers do.
+- `system.rs`, `net.rs` and the service clients (`t3`, `limits`, `stocks`, `stremflix`, `nextcloud`) block. Call them off the UI thread, the way the existing callers do.
 - Run user-supplied launch strings through `command.rs`. Never pass them to a shell.
 - Code must build and test on all three OSes. Gate platform code with `#[cfg(target_os = ...)]`. CI builds macOS, Windows, and Linux and smoke-runs each one.
 - `Config` uses `#[serde(default)]`. When you add a field, give it a value in `Default` so that old `prefs.json` files still load.

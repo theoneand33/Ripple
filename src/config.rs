@@ -9,7 +9,7 @@ use rune::tok::{Family, TextStyle};
 use rune_kit::{Kit, PaletteSeed};
 use serde::{Deserialize, Deserializer, Serialize};
 
-const APP_ID: &str = "Ripple";
+pub const APP_ID: &str = "Ripple";
 
 /// Declares `Tab` and `Tab::ALL` from one list, in the default order.
 macro_rules! tabs {

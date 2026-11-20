@@ -17,6 +17,8 @@ use std::time::{Duration, Instant, SystemTime};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use crate::paths::write_atomic;
+
 /// How old `alive`, or a waiting hook's request, may get before it counts as gone.
 const GONE: Duration = Duration::from_secs(5);
 /// Sessions with no event for this long are dropped; so is one whose agent process is gone.
@@ -110,15 +112,6 @@ fn clip(text: &str, max: usize) -> String {
 fn summary(input: &Value) -> String {
     let field = ["command", "file_path", "path", "url", "pattern", "description"].iter().find_map(|k| input.get(*k).and_then(Value::as_str));
     clip(&field.map_or_else(|| if input.is_null() { String::new() } else { input.to_string() }, str::to_string), COMMAND)
-}
-
-/// Written under a temporary name, then renamed, so a reader never sees half a file.
-fn write_atomic(path: &Path, text: &str) -> std::io::Result<()> {
-    if let Some(parent) = path.parent() { fs::create_dir_all(parent)? }
-    // One name per process: hooks of the same session can run at once.
-    let tmp = path.with_extension(format!("{}.tmp", std::process::id()));
-    fs::write(&tmp, text)?;
-    fs::rename(tmp, path)
 }
 
 fn age(path: &Path) -> Option<Duration> {
@@ -241,7 +234,7 @@ pub fn cli(args: &[String]) -> i32 {
     let mut raw = String::new();
     let _ = std::io::stdin().read_to_string(&mut raw);
     let Ok(input) = serde_json::from_str::<Value>(&raw) else { eprintln!("Ripple: hook input is not JSON"); return 0 };
-    let Some(dir) = crate::config::Store::open().dir().map(|d| d.join("agents")) else { return 0 };
+    let Some(dir) = crate::paths::app_dir().map(|d| d.join("agents")) else { return 0 };
     let request = match record(&dir, &agent, &input) {
         Ok(r) => r,
         Err(e) => { eprintln!("Ripple: could not record the session: {e}"); return 0 }
