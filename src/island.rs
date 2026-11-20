@@ -19,11 +19,11 @@ use crate::tabs::{self, accent};
 use crate::icons;
 
 /// The Island's window, in points: the largest Island at its hover scale, its tab dock, plus their shadows.
-pub const CANVAS: (f32, f32) = (620.0, 460.0);
+pub const CANVAS: (f32, f32) = (660.0, 460.0);
 /// Room kept around the Island inside the window for its shadow and hover scale.
 const PAD: f32 = 30.0;
 /// The tab dock under the Large Island: its height, the gap above it, one button and the space between.
-// 3pt between buttons fits all 17 tabs in the canvas.
+// 3pt between buttons leaves room past all 18 tabs in the canvas.
 const DOCK: (f32, f32, f32, f32) = (44.0, 12.0, 32.0, 3.0);
 /// Room between the Large Island's edge and its tab's content.
 const LARGE_EDGE: f32 = 12.0;
@@ -276,6 +276,7 @@ pub struct Island {
     pub shelf: tabs::Shelf,
     pub task: TextEdit,
     pub task_draft: tabs::TaskDraft,
+    pub habit: TextEdit,
     pub calendar: tabs::Calendar,
     pub notes: tabs::Notes,
     /// Nextcloud sync of Notes, Tasks and events, by `nextcloud::Kind`.
@@ -391,6 +392,7 @@ impl Island {
             shelf: tabs::Shelf::default(),
             task: TextEdit::default(),
             task_draft: tabs::TaskDraft::default(),
+            habit: TextEdit::default(),
             calendar: tabs::Calendar::default(),
             notes: tabs::Notes::new(&cfg),
             nextcloud: Default::default(),
