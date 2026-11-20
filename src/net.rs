@@ -24,6 +24,16 @@ pub struct Weather {
     pub code: Option<u64>,
     /// The next days' forecast, from tomorrow.
     pub days: Vec<Day>,
+    /// Today's sunrise and sunset at the location, in Unix seconds.
+    pub sun: Option<(i64, i64)>,
+    /// Rain or snow starting within the next hours while it isn't falling now: the hour it starts
+    /// (Unix seconds), and whether it is snow.
+    pub precip: Option<(i64, bool)>,
+}
+
+/// Whether a WMO code is rain (false) or snow (true); None for neither.
+pub fn precip_kind(code: u64) -> Option<bool> {
+    match code { 51..=67 | 80..=82 | 95..=99 => Some(false), 71..=77 | 85 | 86 => Some(true), _ => None }
 }
 
 /// One day's forecast: its date, WMO code, and rounded high and low.
@@ -37,7 +47,7 @@ pub struct Day {
 
 /// The current weather from Open-Meteo, which needs no API key.
 pub fn weather(location: &str, unit: &str) -> Option<Weather> {
-    weather_from("https://geocoding-api.open-meteo.com", "https://api.open-meteo.com", location, unit)
+    weather_from("https://geocoding-api.open-meteo.com", "https://api.open-meteo.com", location, unit, crate::date::now_secs())
 }
 
 fn get_json(req: ureq::RequestBuilder<ureq::typestate::WithoutBody>) -> Option<Value> {
@@ -48,7 +58,7 @@ fn get_json(req: ureq::RequestBuilder<ureq::typestate::WithoutBody>) -> Option<V
 
 /// `location` is `lat,lon` or a place name; only the part before a comma is looked up
 /// ("Paris, France" finds Paris), as Open-Meteo's search takes one name.
-fn weather_from(geocoding: &str, forecast: &str, location: &str, unit: &str) -> Option<Weather> {
+fn weather_from(geocoding: &str, forecast: &str, location: &str, unit: &str, now: i64) -> Option<Weather> {
     let coords = location.split_once(',').and_then(|(a, b)| Some((a.trim().parse::<f64>().ok()?, b.trim().parse::<f64>().ok()?)));
     let (lat, lon) = match coords {
         Some(c) => c,
@@ -62,7 +72,10 @@ fn weather_from(geocoding: &str, forecast: &str, location: &str, unit: &str) -> 
     let data = get_json(agent().get(format!("{forecast}/v1/forecast"))
         .query("latitude", lat.to_string()).query("longitude", lon.to_string())
         .query("current", "temperature_2m,weather_code")
-        .query("daily", "weather_code,temperature_2m_max,temperature_2m_min")
+        .query("daily", "weather_code,temperature_2m_max,temperature_2m_min,sunrise,sunset")
+        .query("hourly", "weather_code")
+        // Starts at the current hour, which has already begun; four hours always cover the next 60 minutes.
+        .query("forecast_hours", "4")
         .query("forecast_days", "6")
         .query("timezone", "auto")
         .query("temperature_unit", if unit == "f" { "fahrenheit" } else { "celsius" }))?;
@@ -74,11 +87,118 @@ fn weather_from(geocoding: &str, forecast: &str, location: &str, unit: &str) -> 
         let date = (ymd.next()?.ok()? as i32, ymd.next()?.ok()?, ymd.next()?.ok()?);
         Some(Day { date, code: daily["weather_code"][i].as_u64(), high: at("temperature_2m_max", i)?, low: at("temperature_2m_min", i)? })
     }).take(5).collect();
+    // `2026-11-20T07:12` on the location's clock, as Unix seconds.
+    let unix = |t: &str| -> Option<i64> {
+        let (date, time) = t.split_once('T')?;
+        let mut d = date.splitn(3, '-').map(str::parse::<u32>);
+        let day = crate::date::days_from_civil(d.next()?.ok()? as i32, d.next()?.ok()?, d.next()?.ok()?);
+        let (h, m) = time.split_once(':')?;
+        Some(day * 86_400 + i64::from(h.parse::<u32>().ok()? * 3600 + m.get(..2)?.parse::<u32>().ok()? * 60) - data["utc_offset_seconds"].as_i64()?)
+    };
+    let sun = |field: &str| daily[field][0].as_str().and_then(unix);
+    let hourly = &data["hourly"];
+    let falling = current["weather_code"].as_u64().and_then(precip_kind).is_some();
+    // Hours run one real hour apart, so only the first is read on the clock: the offset is right for
+    // it, and a daylight saving change within the next hours doesn't shift the rest.
+    let first = hourly["time"][0].as_str().and_then(unix);
+    let precip = hourly["weather_code"].as_array().into_iter().flatten().enumerate().filter(|_| !falling)
+        .find_map(|(i, code)| Some((first? + i as i64 * 3600, precip_kind(code.as_u64()?)?)).filter(|&(at, _)| at > now));
     Some(Weather {
         temp: current["temperature_2m"].as_f64().map(|t| t.round() as i32),
         code: current["weather_code"].as_u64(),
         days,
+        sun: sun("sunrise").zip(sun("sunset")),
+        precip,
     })
+}
+
+/// A contribution graph: each active day (days since 1970) and its level, 1 to 4.
+pub type Graph = Vec<(i64, u8)>;
+
+/// A GitHub user's public contribution graph, read from the page github.com draws it from.
+pub fn github_graph(user: &str) -> Result<Graph, String> { github_graph_from("https://github.com", user) }
+
+fn github_graph_from(base: &str, user: &str) -> Result<Graph, String> {
+    let user = user.trim().trim_start_matches('@');
+    if user.is_empty() || !user.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') { return Err("Not a GitHub user name".into()) }
+    let mut res = agent().get(format!("{base}/users/{user}/contributions")).call().map_err(|e| e.to_string())?;
+    if !res.status().is_success() { return Err(format!("GitHub answered {}", res.status().as_u16())) }
+    Ok(github_cells(&res.body_mut().read_to_string().map_err(|e| e.to_string())?))
+}
+
+/// The active days of the graph's `<td data-date="…" data-level="…">` cells.
+fn github_cells(html: &str) -> Graph {
+    let attr = |tag: &str, name: &str| tag.split_once(&format!("{name}=\"")).and_then(|(_, rest)| rest.split_once('"')).map(|(v, _)| v.to_string());
+    let mut days: Graph = html.split("<td").skip(1).filter_map(|cell| {
+        let tag = cell.split_once('>')?.0;
+        let date = attr(tag, "data-date")?;
+        let level: u8 = attr(tag, "data-level")?.parse().ok().filter(|l| *l > 0)?;
+        let mut d = date.splitn(3, '-').map(str::parse::<u32>);
+        Some((crate::date::days_from_civil(d.next()?.ok()? as i32, d.next()?.ok()?, d.next()?.ok()?), level.min(4)))
+    }).collect();
+    days.sort_unstable();
+    days
+}
+
+/// A LeetCode user's accepted-submission calendar, from its public GraphQL API.
+pub fn leetcode_graph(user: &str) -> Result<Graph, String> { leetcode_graph_from("https://leetcode.com", user) }
+
+fn leetcode_graph_from(base: &str, user: &str) -> Result<Graph, String> {
+    let body = json!({ "query": "query($u: String!) { matchedUser(username: $u) { userCalendar { submissionCalendar } } }", "variables": { "u": user.trim() } });
+    let mut res = agent().post(format!("{base}/graphql")).header("content-type", "application/json").header("referer", format!("{base}/"))
+        .send(body.to_string()).map_err(|e| e.to_string())?;
+    if !res.status().is_success() { return Err(format!("LeetCode answered {}", res.status().as_u16())) }
+    let data: Value = serde_json::from_str(&res.body_mut().read_to_string().map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+    let calendar = data["data"]["matchedUser"]["userCalendar"]["submissionCalendar"].as_str().ok_or("No such LeetCode user")?;
+    let counts: std::collections::HashMap<String, u64> = serde_json::from_str(calendar).map_err(|e| e.to_string())?;
+    let mut days: Graph = counts.into_iter().filter_map(|(t, n)| {
+        let level = match n { 0 => return None, 1 => 1, 2..=3 => 2, 4..=6 => 3, _ => 4 };
+        Some((t.parse::<i64>().ok()?.div_euclid(86_400), level))
+    }).collect();
+    days.sort_unstable();
+    Ok(days)
+}
+
+/// An ICS calendar's text from its link; `webcal://` links are fetched over HTTPS.
+pub fn calendar_feed(url: &str) -> Result<String, String> {
+    let url = url.trim();
+    let url = match url.strip_prefix("webcal://") { Some(rest) => format!("https://{rest}"), None => url.to_string() };
+    if !(url.starts_with("https://") || url.starts_with("http://")) { return Err(format!("Not a calendar link: {url}")) }
+    let mut res = agent().get(&url).call().map_err(|e| e.to_string())?;
+    if !res.status().is_success() { return Err(format!("The calendar link answered {}", res.status().as_u16())) }
+    res.body_mut().with_config().limit(16 * 1024 * 1024).read_to_string().map_err(|e| e.to_string())
+}
+
+/// A world clock's city: its name as Open-Meteo has it, its UTC offset now, and today's sunrise
+/// and sunset there, in Unix seconds.
+#[derive(Clone, Debug, PartialEq)]
+pub struct City {
+    pub name: String,
+    pub offset: i64,
+    pub sun: Option<(i64, i64)>,
+}
+
+pub fn city(name: &str) -> Option<City> { city_from("https://geocoding-api.open-meteo.com", "https://api.open-meteo.com", name) }
+
+fn city_from(geocoding: &str, forecast: &str, name: &str) -> Option<City> {
+    let found = get_json(agent().get(format!("{geocoding}/v1/search")).query("name", name.split(',').next().unwrap_or(name).trim()).query("count", "1"))?;
+    let place = &found["results"][0];
+    let (lat, lon) = (place["latitude"].as_f64()?, place["longitude"].as_f64()?);
+    let data = get_json(agent().get(format!("{forecast}/v1/forecast"))
+        .query("latitude", lat.to_string()).query("longitude", lon.to_string())
+        .query("daily", "sunrise,sunset").query("forecast_days", "1").query("timezone", "auto"))?;
+    let offset = data["utc_offset_seconds"].as_i64()?;
+    let at = |field: &str| data["daily"][field][0].as_str().and_then(|t| local_secs(t)).map(|t| t - offset);
+    Some(City { name: place["name"].as_str().unwrap_or(name).to_string(), offset, sun: at("sunrise").zip(at("sunset")) })
+}
+
+/// `2026-11-20T07:12` as seconds since 1970 on that clock.
+pub fn local_secs(t: &str) -> Option<i64> {
+    let (date, time) = t.split_once('T')?;
+    let mut d = date.splitn(3, '-').map(str::parse::<u32>);
+    let (y, m, day) = (d.next()?.ok()?, d.next()?.ok()?, d.next()?.ok()?);
+    let (h, min) = time.split_once(':')?;
+    Some(crate::date::days_from_civil(y as i32, m, day) * 86_400 + i64::from(h.parse::<u32>().ok()? * 3600 + min.get(..2)?.parse::<u32>().ok()? * 60))
 }
 
 /// Units of each currency per US dollar, by upper-case code, from Frankfurter (ECB reference
@@ -106,12 +226,14 @@ pub fn ask_ai(base: &str, model: &str, api_key: &str, question: &str, mut on_del
         .build()
         .into();
     // OpenRouter credits the app by these; other services ignore them.
-    let request = agent
+    let mut request = agent
         .post(format!("{base}/chat/completions"))
         .header("content-type", "application/json")
-        .header("authorization", format!("Bearer {api_key}"))
         .header("http-referer", "https://github.com/TopMyster/Ripple")
         .header("x-title", "Ripple");
+    if !api_key.is_empty() {
+        request = request.header("authorization", format!("Bearer {api_key}"));
+    }
     let body = json!({
         "model": model,
         "messages": [
@@ -243,16 +365,67 @@ mod tests {
             "/v1/search?name=Paris&count=1" => json(200, json!({ "results": [{ "latitude": 48.85, "longitude": 2.35 }] })),
             "/v1/search?name=Nowhere&count=1" => json(200, json!({})),
             p if p.starts_with("/v1/forecast?latitude=48.85&longitude=2.35&") && p.contains("temperature_unit=celsius") =>
-                json(200, json!({ "current": { "temperature_2m": 17.6, "weather_code": 61 },
-                    "daily": { "time": ["2026-11-20", "2026-11-21", "2026-11-22"], "weather_code": [61, 3, null], "temperature_2m_max": [18.2, 12.6, 9.0], "temperature_2m_min": [10.0, 4.4, null] } })),
-            p if p.starts_with("/v1/forecast?latitude=1.5&longitude=-2&") && p.contains("temperature_unit=fahrenheit") =>
-                json(200, json!({ "current": { "temperature_2m": 70.2, "weather_code": 2 } })),
+                json(200, json!({ "current": { "temperature_2m": 17.6, "weather_code": 61 }, "utc_offset_seconds": 3600,
+                    "daily": { "time": ["2026-11-20", "2026-11-21", "2026-11-22"], "weather_code": [61, 3, null], "temperature_2m_max": [18.2, 12.6, 9.0], "temperature_2m_min": [10.0, 4.4, null],
+                        "sunrise": ["2026-11-20T08:10", "2026-11-21T08:11", null], "sunset": ["2026-11-20T17:00", "2026-11-21T16:59", null] } })),
+            p if p.starts_with("/v1/forecast?latitude=1.5&longitude=-2&") && p.contains("temperature_unit=fahrenheit") && p.contains("hourly=weather_code") =>
+                json(200, json!({ "current": { "temperature_2m": 70.2, "weather_code": 2 }, "utc_offset_seconds": -7200,
+                    "hourly": { "time": ["2026-11-20T10:00", "2026-11-20T11:00", "2026-11-20T12:00"], "weather_code": [2, 73, 61] } })),
             _ => json(404, json!({})),
         });
         let tomorrow = Day { date: (2026, 11, 21), code: Some(3), high: 13, low: 4 };
-        assert_eq!(weather_from(&base, &base, "Paris, France", "c"), Some(Weather { temp: Some(18), code: Some(61), days: vec![tomorrow] }), "a day missing a figure is left out");
-        assert_eq!(weather_from(&base, &base, "1.5, -2", "f"), Some(Weather { temp: Some(70), code: Some(2), days: vec![] }));
-        assert_eq!(weather_from(&base, &base, "Nowhere", "c"), None);
+        let day = crate::date::days_from_civil(2026, 11, 20) * 86_400;
+        let sun = Some((day + 7 * 3600 + 600, day + 16 * 3600));
+        let now = day + 12 * 3600 + 1800;
+        assert_eq!(weather_from(&base, &base, "Paris, France", "c", now), Some(Weather { temp: Some(18), code: Some(61), days: vec![tomorrow], sun, precip: None }), "a day missing a figure is left out");
+        let snow_at = crate::date::days_from_civil(2026, 11, 20) * 86_400 + 13 * 3600;
+        assert_eq!(weather_from(&base, &base, "1.5, -2", "f", now), Some(Weather { temp: Some(70), code: Some(2), days: vec![], sun: None, precip: Some((snow_at, true)) }), "the first rain or snow hour");
+        assert_eq!(weather_from(&base, &base, "1.5, -2", "f", snow_at + 1800).and_then(|w| w.precip), Some((snow_at + 3600, false)), "an hour already started is skipped");
+        assert_eq!(weather_from(&base, &base, "Nowhere", "c", now), None);
+    }
+
+    #[test]
+    fn contribution_graphs_read_github_cells_and_leetcode_counts() {
+        use crate::testserver::{Response, json as reply, serve};
+        let day = |m, d| crate::date::days_from_civil(2026, m, d);
+        let base = serve(move |r| match (r.method.as_str(), r.path.as_str()) {
+            ("GET", "/users/octo/contributions") => Response { status: 200, headers: vec![], body: r#"<td tabindex="0" data-ix="0" data-date="2026-01-02" id="c1" data-level="0" class="day"></td><td data-date="2026-01-03" data-level="3" class="day"></td><td data-date="2026-01-01" data-level="1"></td>"#.into() },
+            ("POST", "/graphql") if r.body.contains(r#""u":"ana""#) => reply(200, json!({ "data": { "matchedUser": { "userCalendar": { "submissionCalendar": format!(r#"{{"{}": 5, "{}": 1}}"#, day(1, 4) * 86_400 + 3600, day(1, 5) * 86_400) } } } })),
+            ("POST", "/graphql") => reply(200, json!({ "data": { "matchedUser": null } })),
+            _ => Response { status: 404, headers: vec![], body: String::new() },
+        });
+        assert_eq!(github_graph_from(&base, "@octo"), Ok(vec![(day(1, 1), 1), (day(1, 3), 3)]));
+        assert!(github_graph_from(&base, "nobody").unwrap_err().contains("404"));
+        assert!(github_graph_from(&base, "../x").is_err());
+        assert_eq!(leetcode_graph_from(&base, "ana"), Ok(vec![(day(1, 4), 3), (day(1, 5), 1)]));
+        assert!(leetcode_graph_from(&base, "ghost").is_err());
+    }
+
+    #[test]
+    fn a_calendar_link_is_fetched_and_webcal_needs_https() {
+        use crate::testserver::{Response, serve};
+        let base = serve(|r| match r.path.as_str() {
+            "/cal.ics" => Response { status: 200, headers: vec![], body: "BEGIN:VCALENDAR".into() },
+            _ => Response { status: 404, headers: vec![], body: String::new() },
+        });
+        assert_eq!(calendar_feed(&format!("{base}/cal.ics")).as_deref(), Ok("BEGIN:VCALENDAR"));
+        assert!(calendar_feed(&format!("{base}/gone.ics")).unwrap_err().contains("404"));
+        assert!(calendar_feed("file:///etc/passwd").is_err());
+    }
+
+    #[test]
+    fn a_city_comes_with_its_offset_and_sunrise_and_sunset() {
+        use crate::testserver::{json, serve};
+        let base = serve(|r| match r.path.as_str() {
+            "/v1/search?name=Tokyo&count=1" => json(200, json!({ "results": [{ "name": "Tokyo", "latitude": 35.69, "longitude": 139.69 }] })),
+            p if p.starts_with("/v1/forecast?latitude=35.69&longitude=139.69&") =>
+                json(200, json!({ "utc_offset_seconds": 32400, "daily": { "sunrise": ["2026-11-20T06:20"], "sunset": ["2026-11-20T16:31"] } })),
+            _ => json(200, json!({})),
+        });
+        let tokyo = city_from(&base, &base, "Tokyo, Japan").unwrap();
+        let day = crate::date::days_from_civil(2026, 11, 20) * 86_400;
+        assert_eq!(tokyo, City { name: "Tokyo".into(), offset: 32400, sun: Some((day + 6 * 3600 + 20 * 60 - 32400, day + 16 * 3600 + 31 * 60 - 32400)) });
+        assert_eq!(city_from(&base, &base, "Atlantis"), None);
     }
 
     #[test]
@@ -289,8 +462,10 @@ mod tests {
         use crate::testserver::{Response, serve};
         let base = serve(|r| {
             let body: serde_json::Value = serde_json::from_str(&r.body).unwrap_or_default();
-            let ok = r.path == "/v1/chat/completions" && r.header("authorization") == Some("Bearer gsk_test")
-                && body["stream"] == true && body["messages"][1]["content"] == "Hi?" && body["model"] == "m";
+            // A keyless (local) model gets no authorization header at all.
+            let auth = if body["model"] == "local" { None } else { Some("Bearer gsk_test") };
+            let ok = r.path == "/v1/chat/completions" && r.header("authorization") == auth
+                && body["stream"] == true && body["messages"][1]["content"] == "Hi?" && (body["model"] == "m" || body["model"] == "local");
             if !ok { return Response { status: 401, headers: vec![], body: String::new() } }
             let events = ["Hel", "lo **", "you** [DONE]"].iter()
                 .map(|d| format!("data: {}\n\n", json!({ "choices": [{ "delta": { "content": d } }] })))
@@ -302,6 +477,7 @@ mod tests {
         assert_eq!(answer, "Hello **you** [DONE]");
         let refused = ask_ai(&format!("{base}/v1"), "m", "wrong", "Hi?", |_| {});
         assert!(refused.unwrap_err().starts_with("API Error: 401"));
+        assert_eq!(ask_ai(&format!("{base}/v1"), "local", "", "Hi?", |_| {}), Ok(true), "no authorization header for an empty key");
     }
 
 }
