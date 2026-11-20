@@ -1,7 +1,7 @@
 //! Stocks: watchlist quotes from Yahoo Finance's chart API (no key), and the portfolio from a
 //! Sure server's API (`X-Api-Key`). Blocking; callers run them off the UI thread.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use serde_json::Value;
 
@@ -101,6 +101,8 @@ pub struct Portfolio {
     pub history: Vec<f64>,
     /// Each of those days' market gain or loss, without deposits and withdrawals.
     pub market: Vec<f64>,
+    /// Accounts left out of the totals, as "name (currency)": no rate converts them.
+    pub skipped: Vec<String>,
 }
 
 impl Portfolio {
@@ -164,28 +166,39 @@ fn days_ago(days: i64) -> String {
     format!("{:04}-{:02}-{:02}", t.year, t.month, t.day)
 }
 
-/// Sure's investment and crypto accounts, their positions, and their balances over `range`.
-pub fn portfolio(url: &str, key: &str, range: Range) -> Result<Portfolio, String> {
+/// Sure's investment and crypto accounts, their positions, and their balances over `range`, all
+/// in `base`. `rates` are units per US dollar (`net::rates`), needed once any money is in another currency.
+pub fn portfolio(url: &str, key: &str, range: Range, base: &str, rates: Option<&HashMap<String, f64>>) -> Result<Portfolio, String> {
+    // What one unit of `from` is worth in `base`.
+    let rate = |from: &str| -> Result<f64, String> {
+        if from == base { return Ok(1.0) }
+        let rates = rates.ok_or("Couldn't load exchange rates")?;
+        match (rates.get(from), rates.get(base)) {
+            (Some(f), Some(b)) if *f > 0.0 => Ok(b / f),
+            _ => Err(format!("No exchange rate from {from} to {base}")),
+        }
+    };
     let url = if url.trim().is_empty() { "https://app.sure.am" } else { url.trim().trim_end_matches('/') };
     // shortcut: up to 100 accounts, enough for a person's own; more is an error.
     let accounts: Vec<Value> = pages(url, key, "accounts", &[], "accounts", 1)?.into_iter()
         .filter(|a| matches!(a["account_type"].as_str(), Some("investment" | "crypto"))).collect();
-    let currency = accounts.first().and_then(|a| a["currency"].as_str()).unwrap_or("USD").to_string();
     let ids: Vec<&str> = accounts.iter().filter_map(|a| a["id"].as_str()).collect();
     // The last week's holdings: each account's latest day of them is what it holds now.
     let holdings = if ids.is_empty() { Vec::new() } else { pages(url, key, "holdings", &[("start_date", days_ago(7))], "holdings", 50)? };
     // Per day: the balance, and its net market flows.
     let mut history: BTreeMap<String, [f64; 2]> = BTreeMap::new();
     let mut out = Vec::new();
+    let mut skipped = Vec::new();
     for a in &accounts {
         let id = a["id"].as_str().unwrap_or_default();
-        let cur = a["currency"].as_str().unwrap_or(&currency);
+        let cur = a["currency"].as_str().unwrap_or(base);
+        let Ok(k) = rate(cur) else { skipped.push(format!("{} ({cur})", a["name"].as_str().unwrap_or_default())); continue };
         let mine: Vec<&Value> = holdings.iter().filter(|h| h["account"]["id"].as_str() == Some(id)).collect();
         let latest = mine.iter().filter_map(|h| h["date"].as_str()).max().unwrap_or_default();
         let mut acct = Account {
             name: a["name"].as_str().unwrap_or_default().into(),
-            balance: a["balance_cents"].as_f64().unwrap_or(0.0) / minor(cur),
-            cash: a["cash_balance_cents"].as_f64().unwrap_or(0.0) / minor(cur),
+            balance: a["balance_cents"].as_f64().unwrap_or(0.0) / minor(cur) * k,
+            cash: a["cash_balance_cents"].as_f64().unwrap_or(0.0) / minor(cur) * k,
             ..Account::default()
         };
         for h in mine.iter().filter(|h| h["date"].as_str() == Some(latest)) {
@@ -194,22 +207,23 @@ pub fn portfolio(url: &str, key: &str, range: Range) -> Result<Portfolio, String
             acct.positions += 1;
             let hc = h["currency"].as_str().unwrap_or(cur);
             if let (Some(avg), Some(amount)) = (h["avg_cost"].as_str().and_then(|m| money(m, hc)), h["amount"].as_str().and_then(|m| money(m, hc))) {
-                (acct.cost, acct.value) = (acct.cost + qty * avg, acct.value + amount);
+                // A holding in a currency with no rate stays out of cost and value.
+                let Ok(hk) = rate(hc) else { continue };
+                (acct.cost, acct.value) = (acct.cost + qty * avg * hk, acct.value + amount * hk);
             }
         }
         let query = [("account_id", id.to_string()), ("start_date", days_ago(range.days()))];
         for b in pages(url, key, "balances", &query, "balances", 20)? {
             if let (Some(day), Some(cents)) = (b["date"].as_str(), b["end_balance_cents"].as_f64()) {
                 let d = history.entry(day.into()).or_default();
-                d[0] += cents / minor(cur);
-                d[1] += b["net_market_flows_cents"].as_f64().unwrap_or(0.0) / minor(cur);
+                d[0] += cents / minor(cur) * k;
+                d[1] += b["net_market_flows_cents"].as_f64().unwrap_or(0.0) / minor(cur) * k;
             }
         }
         out.push(acct);
     }
-    // shortcut: totals add each account in its own currency; right while they share one.
     let (history, market) = history.into_values().map(|[b, m]| (b, m)).unzip();
-    Ok(Portfolio { currency, accounts: out, history, market })
+    Ok(Portfolio { currency: base.into(), accounts: out, history, market, skipped })
 }
 
 /// "€34,721.55": the currency's sign, thousands grouped, two decimals.
@@ -300,13 +314,22 @@ mod tests {
                 p => json(404, serde_json::json!({"error": "not_found", "message": format!("no {p}")})),
             }
         });
-        let p = portfolio(&format!("{base}/"), "k", Range::Week).unwrap();
+        let p = portfolio(&format!("{base}/"), "k", Range::Week, "EUR", None).unwrap();
         assert_eq!(p.accounts.len(), 1);
         let a = &p.accounts[0];
         assert_eq!((a.balance, a.cash, a.positions, a.cost, a.value), (1000.0, 100.0, 1, 700.0, 900.0));
         assert_eq!((p.history.clone(), p.changes(), p.open()), (vec![900.0, 1000.0], (40.0, 40.0), 200.0));
-        assert_eq!(portfolio(&base, "bad", Range::Day), Err("Sure refused the API key".into()));
+        assert_eq!(p.currency, "EUR");
+        // In dollars, at 0.8 EUR to the dollar: every figure converts before it is summed.
+        let rates: HashMap<String, f64> = [("USD".to_string(), 1.0), ("EUR".to_string(), 0.8)].into();
+        let usd = portfolio(&base, "k", Range::Week, "USD", Some(&rates)).unwrap();
+        let a = &usd.accounts[0];
+        assert_eq!((usd.currency.as_str(), a.balance, a.cash, a.cost, a.value, usd.history.clone()), ("USD", 1250.0, 125.0, 875.0, 1125.0, vec![1125.0, 1250.0]));
+        let none = portfolio(&base, "k", Range::Week, "USD", None).unwrap();
+        assert_eq!((none.accounts.len(), none.skipped.clone(), none.history.len()), (0, vec!["Broker (EUR)".to_string()], 0), "no rates: left out, named");
+        assert_eq!(portfolio(&base, "k", Range::Week, "XYZ", Some(&rates)).unwrap().skipped, ["Broker (EUR)"]);
+        assert_eq!(portfolio(&base, "bad", Range::Day, "EUR", None), Err("Sure refused the API key".into()));
         let html = serve(|_| crate::testserver::Response { status: 200, headers: Vec::new(), body: "<html>Sign in</html>".into() });
-        assert_eq!(portfolio(&html, "k", Range::Day), Err(format!("{html} isn't Sure's API")));
+        assert_eq!(portfolio(&html, "k", Range::Day, "EUR", None), Err(format!("{html} isn't Sure's API")));
     }
 }

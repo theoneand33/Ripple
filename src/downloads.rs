@@ -17,6 +17,8 @@ pub struct Progress {
     /// The mean share done, 0 to 1; None while no source knows it.
     pub fraction: Option<f32>,
     pub count: usize,
+    /// The downloads just ended and their files are there: the Island shows its tick.
+    pub done: bool,
 }
 
 impl Progress {
@@ -65,6 +67,8 @@ pub fn watch(on: impl Fn(Option<Progress>)) {
             r.extend(fractions.into_iter().enumerate().map(|(i, f)| (format!("mac:{i}"), (f, now))));
         }));
     }
+    // While downloads run: when they started, how many, and whether a source last called one complete.
+    let mut running: Option<(SystemTime, usize, bool)> = None;
     loop {
         let partial = scan.as_deref().map_or(0, |d| partial_files(d, SystemTime::now()));
         let reported: Vec<Option<f64>> = {
@@ -72,7 +76,17 @@ pub fn watch(on: impl Fn(Option<Progress>)) {
             r.retain(|_, (_, at)| at.elapsed() < STALE);
             r.values().map(|v| v.0).collect()
         };
-        on(merge(&reported, partial));
+        // A source that calls a download complete (macOS NSProgress) ends it then, not when it unpublishes.
+        let full = reported.contains(&Some(1.0));
+        let now = merge(&reported.iter().copied().filter(|f| *f != Some(1.0)).collect::<Vec<_>>(), partial);
+        let ended = match (now, running) {
+            (Some(p), _) => { running = Some((running.map_or_else(SystemTime::now, |r| r.0), p.count, full)); None }
+            (None, Some(r)) => { running = None; Some((r.0, r.1, r.2 || full)) }
+            (None, None) => None,
+        };
+        // Not on macOS, which reads no folder: there NSProgress says it finished, not cancelled.
+        let done = ended.filter(|&(since, _, full)| scan.as_deref().map_or(full, |d| finished_file(d, since)));
+        on(done.map(|(_, count, _)| Progress { fraction: Some(1.0), count, done: true }).or(now));
         std::thread::sleep(Duration::from_secs(1));
     }
 }
@@ -95,13 +109,28 @@ fn partial_files(dir: &Path, now: SystemTime) -> usize {
     }).count()
 }
 
+/// A whole file in `dir` written since `since`: a download that finished, not one cancelled
+/// (its partial file is deleted and nothing takes its name).
+// shortcut: only the Downloads folder is checked, so a file saved elsewhere ends without a tick.
+fn finished_file(dir: &Path, since: SystemTime) -> bool {
+    let Ok(entries) = std::fs::read_dir(dir) else { return false };
+    // Filesystem times can be a moment coarse.
+    let since = since - Duration::from_secs(2);
+    entries.flatten().any(|e| {
+        let p = e.path();
+        let partial = p.extension().and_then(|x| x.to_str()).is_some_and(|x| PARTIAL.iter().any(|s| x.eq_ignore_ascii_case(s)));
+        let hidden = e.file_name().to_string_lossy().starts_with('.');
+        !partial && !hidden && e.metadata().is_ok_and(|m| m.is_file() && m.modified().is_ok_and(|t| t >= since))
+    })
+}
+
 /// One activity for every source. An app's report covers its partial files, so they are not
 /// counted twice; partial files alone have no percent.
 fn merge(reported: &[Option<f64>], partial: usize) -> Option<Progress> {
-    if reported.is_empty() { return (partial > 0).then_some(Progress { fraction: None, count: partial }) }
+    if reported.is_empty() { return (partial > 0).then_some(Progress { fraction: None, count: partial, done: false }) }
     let known: Vec<f64> = reported.iter().flatten().copied().collect();
     let fraction = (!known.is_empty()).then(|| (known.iter().sum::<f64>() / known.len() as f64).clamp(0.0, 1.0) as f32);
-    Some(Progress { fraction, count: reported.len().max(partial) })
+    Some(Progress { fraction, count: reported.len().max(partial), done: false })
 }
 
 /// Follows `busctl monitor` for LauncherEntry updates, restarting it if it exits.
@@ -194,11 +223,12 @@ mod tests {
     #[test]
     fn sources_merge_into_one_activity() {
         assert_eq!(merge(&[], 0), None);
-        assert_eq!(merge(&[], 2), Some(Progress { fraction: None, count: 2 }));
-        assert_eq!(merge(&[Some(0.2), Some(0.6)], 1), Some(Progress { fraction: Some(0.4), count: 2 }));
-        assert_eq!(merge(&[None, Some(0.5)], 3), Some(Progress { fraction: Some(0.5), count: 3 }));
-        assert_eq!(Progress { fraction: Some(0.426), count: 1 }.label(), "42%");
-        assert_eq!(Progress { fraction: None, count: 2 }.label(), "2 files");
+        let p = |fraction, count| Progress { fraction, count, done: false };
+        assert_eq!(merge(&[], 2), Some(p(None, 2)));
+        assert_eq!(merge(&[Some(0.2), Some(0.6)], 1), Some(p(Some(0.4), 2)));
+        assert_eq!(merge(&[None, Some(0.5)], 3), Some(p(Some(0.5), 3)));
+        assert_eq!(p(Some(0.426), 1).label(), "42%");
+        assert_eq!(p(None, 2).label(), "2 files");
     }
 
     #[test]
@@ -211,5 +241,21 @@ mod tests {
         let later = partial_files(&dir, now + IDLE + Duration::from_secs(1));
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!((fresh, later), (3, 0));
+    }
+
+    #[test]
+    fn only_a_new_whole_file_finishes_a_download() {
+        let dir = std::env::temp_dir().join(format!("ripple-finished-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let start = SystemTime::now() + Duration::from_secs(60);
+        for name in ["movie.mkv.crdownload", ".hidden"] { std::fs::write(dir.join(name), "x").unwrap() }
+        let cancelled = finished_file(&dir, start - Duration::from_secs(120));
+        std::fs::write(dir.join("old.zip"), "x").unwrap();
+        let old = finished_file(&dir, start);
+        let fresh = finished_file(&dir, start - Duration::from_secs(120));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(!cancelled, "a partial or hidden file isn't a finished one");
+        assert!(!old, "a file from before the download started doesn't count");
+        assert!(fresh);
     }
 }

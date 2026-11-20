@@ -18,6 +18,10 @@ pub struct Agents {
     pub picks: HashMap<(String, usize), Vec<String>>,
     /// Answered, but the hook may not have taken the answer yet: hidden so it doesn't come back.
     answered: HashSet<String>,
+    /// A new request that came in quiet hours: its alert shows once they end.
+    held: bool,
+    /// When the agents' processes were last looked up: the process table is too dear to read each second.
+    processes_at: f64,
 }
 
 impl Island {
@@ -26,19 +30,26 @@ impl Island {
         // A hidden tab can't be answered: without `alive`, hooks leave agents to ask in their terminals.
         if rune::is_headless() || !self.visible_tabs().contains(&Tab::Agents) { return false }
         let Some(dir) = self.store.dir().map(|d| d.join("agents")) else { return false };
-        let (sessions, mut requests) = agents::scan(&dir);
+        let processes = now - self.agents.processes_at >= 10.0;
+        if processes { self.agents.processes_at = now }
+        let (sessions, mut requests) = agents::scan(&dir, processes);
         self.agents.answered.retain(|key| requests.iter().any(|r| &r.key == key));
         requests.retain(|r| !self.agents.answered.contains(&r.key));
-        if (&sessions, &requests) == (&self.agents.sessions, &self.agents.requests) { return false }
-        let fresh = requests.iter().find(|r| !self.agents.requests.iter().any(|o| o.key == r.key)).cloned();
+        let changed = (&sessions, &requests) != (&self.agents.sessions, &self.agents.requests);
+        let fresh = requests.iter().find(|r| !self.agents.requests.iter().any(|o| o.key == r.key)).map(|r| r.key.clone());
         self.agents.picks.retain(|(key, _), _| requests.iter().any(|r| &r.key == key));
         (self.agents.sessions, self.agents.requests) = (sessions, requests);
-        if let Some(r) = fresh && !self.large_open() {
+        // Quiet hours: the request waits on this tab, and its alert until they end.
+        // Requests held over quiet hours share one alert, for the first still waiting.
+        let key = fresh.or_else(|| std::mem::take(&mut self.agents.held).then(|| self.agents.requests.first().map(|r| r.key.clone())).flatten());
+        if key.is_some() && self.quiet() { self.agents.held = true; return changed }
+        if let Some(r) = key.and_then(|k| self.agents.requests.iter().find(|r| r.key == k).cloned()) && !self.large_open() {
             let agent = self.agents.sessions.iter().find(|s| s.key == r.session).map_or("An agent", |s| agents::name(&s.agent)).to_string();
             if self.visible_tabs().contains(&Tab::Agents) { self.set_tab(Tab::Agents) }
             self.remind(format!("{agent} needs you"), now);
+            return true
         }
-        true
+        changed
     }
 
     pub fn agents_answer(&mut self, key: &str, answer: Answer) {

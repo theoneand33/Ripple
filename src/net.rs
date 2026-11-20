@@ -213,6 +213,21 @@ fn rates_from(base: &str) -> Option<std::collections::HashMap<String, f64>> {
     Some(rates)
 }
 
+/// The newest release's tag on GitHub ("v0.7.0"); None when GitHub can't say.
+pub fn latest_release() -> Option<String> { latest_release_from("https://api.github.com/repos/theoneand33/Ripple") }
+
+fn latest_release_from(repo: &str) -> Option<String> {
+    // GitHub refuses requests without a User-Agent.
+    let data = get_json(agent().get(format!("{repo}/releases/latest")).header("User-Agent", "Ripple").header("Accept", "application/vnd.github+json"))?;
+    data["tag_name"].as_str().map(str::to_string)
+}
+
+/// Whether the release `tag` ("v0.7.0") is a later version than `current` ("0.6.0").
+pub fn newer(tag: &str, current: &str) -> bool {
+    let version = |v: &str| v.trim().trim_start_matches('v').split(['-', '+']).next()?.split('.').map(|p| p.parse::<u64>().ok()).collect::<Option<Vec<_>>>();
+    matches!((version(tag), version(current)), (Some(t), Some(c)) if t > c)
+}
+
 const SYSTEM_PROMPT: &str = "You are Ripple, a sleek and helpful desktop AI assistant. Your goal is to provide accurate, concise, and beautifully formatted answers that fit well in a compact desktop widget. \n- For general inquiries: Keep it to 2-4 sentences.\n- For complex or code-related questions: Provide detailed answers with Markdown code blocks, but stay as efficient as possible.\n- Use Markdown for bolding, lists, and headers to make information easy to scan.";
 
 /// Streams a chat completion from the OpenAI-compatible API at `base`, calling `on_delta` with
@@ -509,6 +524,19 @@ mod tests {
         let rates = rates_from(&format!("{base}/v1")).unwrap();
         assert_eq!((rates["EUR"], rates["USD"], rates.len()), (0.9, 1.0, 3));
         assert_eq!(rates_from(&format!("{base}/nope")), None);
+    }
+
+    #[test]
+    fn the_latest_release_is_compared_with_this_version() {
+        use crate::testserver::{json, serve};
+        let base = serve(|r| match (r.path.as_str(), r.header("user-agent")) {
+            ("/repos/r/releases/latest", Some("Ripple")) => json(200, json!({ "tag_name": "v0.7.0", "name": "Ripple v0.7.0" })),
+            _ => json(404, json!({ "message": "Not Found" })),
+        });
+        assert_eq!(latest_release_from(&format!("{base}/repos/r")).as_deref(), Some("v0.7.0"));
+        assert_eq!(latest_release_from(&format!("{base}/repos/none")), None);
+        assert!(newer("v0.7.0", "0.6.0") && newer("v0.6.10", "0.6.9") && newer("1.0", "0.9.9"));
+        assert!(!newer("v0.6.0", "0.6.0") && !newer("v0.5.9", "0.6.0") && !newer("v0.6.0-beta", "0.6.0") && !newer("nightly", "0.6.0"));
     }
 
     #[test]

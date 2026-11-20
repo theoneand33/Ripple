@@ -30,9 +30,9 @@ https://github.com/user-attachments/assets/a7b9ed8a-97b5-4603-bad7-6f4c4bef1f5d
 
 - Search works like Spotlight: it lists matching apps first, then files from the OS search index (Spotlight, Windows Search, or on Linux GNOME LocalSearch or KDE Baloo), then a web search on Google, DuckDuckGo, Brave Search, Bing, or Startpage. Pick the engine in Settings.
 - Workflows & QA opens a saved set of URLs with one click and keeps quick-access apps.
-- Overview shows the time, weather, and battery. While music plays, it also shows the current track with playback controls. Long titles scroll with soft blurred edges, and the track stays on screen for 3 seconds after you pause.
+- Overview shows the time, weather, and battery. While music plays, it also shows the current track with playback controls. Long titles scroll with soft blurred edges, and the track stays on screen for 3 seconds after you pause. Turn on synced lyrics in its settings to see the current line under the player; Ripple looks them up on [LRCLIB](https://lrclib.net) by title and artist.
 - Weather shows the current conditions and a five-day forecast for the location set in Settings.
-- AI Assistant answers questions using Groq.
+- AI Assistant answers questions using Groq, OpenRouter, Ollama or LM Studio. Groq and OpenRouter need an API key; Ollama and LM Studio run on your own computer and need none. Pick the provider, model and base URL in its settings.
 - Clipboard keeps your clipboard history, images included. Search it, and pin items with the star to keep them on top and across restarts.
 - Tasks is a to-do list. The controls under the field set a task's priority, due date and time (the arrows step a day or 30 minutes), and whether it repeats daily, weekly or monthly. Press a task to edit it. Ticking a repeating task brings it back due next time, and the Island shows a reminder when a task falls due (9:00 for a day without a time). One that fell due while Ripple was closed shows when it next runs. Tasks can sync with Nextcloud Tasks (CalDAV), where these are its priority, due date and repeat; ticking a task marks it done there. A repeat Ripple can't follow (every 2 weeks, set days) is left to Nextcloud: tick that task there.
 - Calendar shows a month with today marked, and the picked day's events beside it. Type an event to add it to the picked day (start it with a time, like `09:30 Standup`), and press an event to edit it. Page through months, and press Today to jump back. Events can sync with a Nextcloud calendar (CalDAV); a recurring or multi-day event shows on its first day only, and events that ended over a year ago drop out. An edit is written over the event there, so its description, alarms and length are kept. A repeating event can be renamed here but only moved in Nextcloud.
@@ -46,6 +46,8 @@ https://github.com/user-attachments/assets/a7b9ed8a-97b5-4603-bad7-6f4c4bef1f5d
 - Pomodoro runs 25-minute focus rounds with 5-minute breaks, and has a timer and a stopwatch beside it. While one runs, the compact Island shows its time beside a ring; a finished timer stays there until you open the tab.
 - Downloads show as a live activity: a ring fills as they progress. On Linux the percent comes from the app's launcher progress (Firefox, Chrome and KDE apps, on Wayland or X11, under Plasma, GNOME and others), on macOS from what browsers report to Finder. On Windows, and for Linux apps that report nothing, partial files in the Downloads folder show, without a percent. A download that finishes turns its ring into a tick for a moment.
 - Calculator shows the answer as you type a sum (+ - × ÷ ^, % as remainder, and brackets). It also converts units and currencies, like `5 km to mi`, `100 °F to C` or `20 usd in eur` (reference rates from Frankfurter, fetched when the tab first opens). Press Enter to keep it on the history tape, which is kept across restarts.
+- Stocks shows a watchlist of tickers from Yahoo Finance, and your portfolio from a [Sure](https://sure.am) server's investment and crypto accounts. Every account converts into one currency (USD unless you set another) at Frankfurter's reference rates before the totals.
+- World Clocks shows the time in the cities you add on the tab, with today's sunrise and sunset there and the moon's phase. Open-Meteo looks each city up.
 - Habits tracks things to do every day. Tick off today or any of the last six days; each habit shows its streak of days in a row.
 - Plugins shows panels you write in Lua: drop a `.lua` file in the `plugins` folder next to `prefs.json`. See [PLUGINS.md](PLUGINS.md) for the API and how to test a plugin without a display.
 
@@ -57,9 +59,13 @@ Ripple alerts you when a charger connects or the battery runs low, when a Blueto
 
 Scripts can raise their own alert: `ripple notify "Build passed"`.
 
+Quiet hours hold back the alerts that can wait between the times you set, and can also hold them while an app is full screen. Water, break, rain, event and coding agent alerts show once quiet hours end, and the update check waits for them. Downloads don't show, and a `ripple notify` alert is dropped after waiting 5 minutes. Low battery still shows.
+
+Once a day Ripple checks GitHub for a newer release and shows an alert when there is one. Turn it off in Settings → General.
+
 ### Settings
 
-Settings open in their own window from the gear button on the Island. Changes apply to the Island right away.
+Settings open in their own window from the gear button on the Island. Changes apply to the Island right away. The search box at the top lists only the settings whose names match. Settings → General exports every setting to a file and imports one back; an import that isn't a whole Ripple settings file changes nothing. The file holds your API keys and passwords, so keep it private.
 
 ## Quick start
 
@@ -122,7 +128,8 @@ Large Mode opens when you click the Island. It shows the full interface with eve
 
 - Arrow keys move between tabs.
 - The mouse wheel scrolls between tabs.
-- Ctrl + 1 to 8 jumps to a tab.
+- Ctrl + 1 to 8 jumps to a tab, and Ctrl + 9 to the last tab (Cmd on macOS).
+- While a button in the tab bar has focus, type a tab's name to jump to it. Letters typed within a second add up, so `ca` picks Calendar.
 
 ## Build and development
 
