@@ -185,6 +185,8 @@ pub fn natural_due(title: &str, today: Date, now: u32) -> (String, Option<(Date,
     let mut i = 0;
     while i < words.len() {
         let w = lower[i].as_str();
+        // "every monday 9am" is a repeat, which the Repeat control sets: the rest stays in the title.
+        if w == "every" { break }
         let mut used = 0;
         if day.is_none() {
             let ahead = |target: i64| { let wd = i64::from(crate::date::weekday(today.0, today.1, today.2)); let n = (target - wd).rem_euclid(7); shift_days(today, if n == 0 { 7 } else { n }) };
@@ -198,8 +200,6 @@ pub fn natural_due(title: &str, today: Date, now: u32) -> (String, Option<(Date,
                     (Some(n @ 0..=520), Some("week" | "weeks")) => (Some(shift_days(today, n * 7)), 3),
                     _ => (None, 0),
                 },
-                // "every monday" is a repeat, which the Repeat control sets: left in the title.
-                _ if i > 0 && lower[i - 1] == "every" => (None, 0),
                 _ => match weekday_named(w) { Some(t) => (Some(ahead(t)), 1), None => (None, 0) },
             };
         }
@@ -213,7 +213,9 @@ pub fn natural_due(title: &str, today: Date, now: u32) -> (String, Option<(Date,
                     Some(t) => (Some(t), 3),
                     None => match clock_time(next) {
                         Some(t) => (Some(t), 2),
-                        // `at 5` means 5pm: the working day, not before dawn.
+                        // `at 5` means 5pm: the working day, not before dawn. Only as the title's last
+                        // words, so "look at 3 options" stays as it is.
+                        None if i + 2 < words.len() => (None, 0),
                         None => match next.parse::<u32>() { Ok(h @ 1..=7) => (Some((h + 12, 0)), 2), Ok(h @ 8..=23) => (Some((h, 0)), 2), _ => (None, 0) },
                     },
                 },
@@ -221,6 +223,8 @@ pub fn natural_due(title: &str, today: Date, now: u32) -> (String, Option<(Date,
             };
         }
         for k in &mut keep[i..i + used] { *k = false }
+        // The word that brought it in goes with it: "by friday", "due tomorrow", "on 9am".
+        if used > 0 && i > 0 && keep[i - 1] && matches!(lower[i - 1].as_str(), "by" | "due" | "on") { keep[i - 1] = false }
         i += used.max(1);
     }
     // Tonight is 20:00, or no time at all once that has passed.
@@ -483,6 +487,10 @@ mod tests {
         assert_eq!(super::natural_due("Dinner tonight", (2026, 11, 20), 21 * 60), ("Dinner".into(), Some(((2026, 11, 20), None))), "no time already passed");
         assert_eq!(due("Call Bob in -200000000000 days"), ("Call Bob in -200000000000 days".into(), None));
         assert_eq!(due("Water plants every monday"), ("Water plants every monday".into(), None));
+        assert_eq!(due("Water plants every monday 9am"), ("Water plants every monday 9am".into(), None));
+        assert_eq!(due("Submit report by friday"), ("Submit report".into(), Some(((2026, 11, 27), None))));
+        assert_eq!(due("Pay rent due tomorrow"), ("Pay rent".into(), Some(((2026, 11, 21), None))));
+        assert_eq!(due("Look at 3 options"), ("Look at 3 options".into(), None));
         for plain in ["Read Monday's paper", "Buy 3 apples", "Tomorrow", "Fix bug 1:5", "Buy sun cream", "Sat exam prep"] {
             assert_eq!(due(plain), (plain.into(), None), "{plain}");
         }
