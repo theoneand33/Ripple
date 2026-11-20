@@ -288,6 +288,7 @@ pub struct Island {
     pub stats: Option<system::Stats>,
     pub limits: tabs::Limits,
     pub stocks: tabs::Stocks,
+    pub contributions: tabs::Contributions,
     /// A file drag is over the Island.
     pub dropping: bool,
     /// A drag started elsewhere on the desktop opened the Shelf; it rests when the drag ends.
@@ -402,6 +403,7 @@ impl Island {
             stats: None,
             limits: tabs::Limits::default(),
             stocks: tabs::Stocks::default(),
+            contributions: tabs::Contributions::default(),
             dropping: false,
             desktop_drag: false,
             t3: tabs::T3::new(store.dir().as_deref()),

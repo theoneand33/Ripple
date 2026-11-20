@@ -72,6 +72,8 @@ pub struct Settings {
     nc_shelf: TextEdit,
     sure_url: TextEdit,
     sure_key: TextEdit,
+    github_user: TextEdit,
+    leetcode_user: TextEdit,
 }
 
 impl Settings {
@@ -104,6 +106,8 @@ impl Settings {
             nc_shelf: edit(&cfg.nextcloud.shelf_folder),
             sure_url: edit(&cfg.sure_url),
             sure_key: TextEdit::new("").secure(),
+            github_user: edit(&cfg.github_user),
+            leetcode_user: edit(&cfg.leetcode_user),
             screens: screens.iter().map(|s| s.name.clone()).collect(),
             open: None,
             dragging: None,
@@ -314,6 +318,14 @@ fn panel(s: &Settings, k: &Kit, layer: &mut Vec<El>, tab: Tab) -> Vec<El> {
                     .binds(|s| &mut s.location, |c, v| c.location = v.into()).build(k)),
                 setting(s, "Unit", choice(s, k, layer, "unit", "Unit", &[("f", "Fahrenheit (°F)"), ("c", "Celsius (°C)")], &cfg.weather_unit, |c, v| c.weather_unit = v.into())),
             ]));
+            if tab == Tab::Overview {
+                sections.push(section(s, "contributions", "Contribution graphs", vec![
+                    setting(s, "GitHub user", TextInput::new(&s.github_user).label("GitHub user").placeholder("octocat").width(Some(200.0))
+                        .binds(|s| &mut s.github_user, |c, v| c.github_user = v.trim().into()).build(k)),
+                    setting(s, "LeetCode user", TextInput::new(&s.leetcode_user).label("LeetCode user").placeholder("User name").width(Some(200.0))
+                        .binds(|s| &mut s.leetcode_user, |c, v| c.leetcode_user = v.trim().into()).build(k)),
+                ]));
+            }
         }
         Tab::Workflows => {
             let mut apps = vec![

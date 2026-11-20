@@ -105,11 +105,13 @@ pub enum Widget {
     Battery,
     /// Today's events and the tasks left.
     Today,
+    /// GitHub and LeetCode contribution graphs, with streaks.
+    Contributions,
     Panel(Tab),
 }
 
 impl Widget {
-    pub const OWN: [Widget; 5] = [Widget::Clock, Widget::Media, Widget::Weather, Widget::Battery, Widget::Today];
+    pub const OWN: [Widget; 6] = [Widget::Clock, Widget::Media, Widget::Weather, Widget::Battery, Widget::Today, Widget::Contributions];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -118,6 +120,7 @@ impl Widget {
             Widget::Weather => "Weather",
             Widget::Battery => "Battery",
             Widget::Today => "Today",
+            Widget::Contributions => "Contributions",
             Widget::Panel(tab) => tab.name(),
         }
     }
@@ -139,7 +142,7 @@ impl Tile {
 
     /// Panels open full width and tall: they were drawn for the whole Island.
     pub fn new(widget: Widget) -> Tile {
-        let (w, h) = match widget { Widget::Media => (4, 3), Widget::Panel(_) => (4, 4), _ => (2, 2) };
+        let (w, h) = match widget { Widget::Media => (4, 3), Widget::Panel(_) | Widget::Contributions => (4, 4), _ => (2, 2) };
         Tile { widget, w, h }
     }
 
@@ -370,6 +373,9 @@ pub struct Config {
     pub workflows: Vec<Workflow>,
     pub tasks: Vec<Item>,
     pub habits: Vec<Habit>,
+    /// Contributions: the GitHub and LeetCode user names whose graphs show; empty leaves one out.
+    pub github_user: String,
+    pub leetcode_user: String,
     /// Each note's first line is its title.
     pub notes: Vec<Item>,
     /// Calendar events; each one's text is `YYYY-MM-DD title` (`nextcloud::event_day`).
@@ -449,6 +455,8 @@ impl Default for Config {
             workflows: Vec::new(),
             tasks: Vec::new(),
             habits: Vec::new(),
+            github_user: String::new(),
+            leetcode_user: String::new(),
             notes: Vec::new(),
             events: Vec::new(),
             nextcloud: Nextcloud::default(),

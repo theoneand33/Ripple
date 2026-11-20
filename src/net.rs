@@ -81,6 +81,53 @@ fn weather_from(geocoding: &str, forecast: &str, location: &str, unit: &str) -> 
     })
 }
 
+/// A contribution graph: each active day (days since 1970) and its level, 1 to 4.
+pub type Graph = Vec<(i64, u8)>;
+
+/// A GitHub user's public contribution graph, read from the page github.com draws it from.
+pub fn github_graph(user: &str) -> Result<Graph, String> { github_graph_from("https://github.com", user) }
+
+fn github_graph_from(base: &str, user: &str) -> Result<Graph, String> {
+    let user = user.trim().trim_start_matches('@');
+    if user.is_empty() || !user.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') { return Err("Not a GitHub user name".into()) }
+    let mut res = agent().get(format!("{base}/users/{user}/contributions")).call().map_err(|e| e.to_string())?;
+    if !res.status().is_success() { return Err(format!("GitHub answered {}", res.status().as_u16())) }
+    Ok(github_cells(&res.body_mut().read_to_string().map_err(|e| e.to_string())?))
+}
+
+/// The active days of the graph's `<td data-date="…" data-level="…">` cells.
+fn github_cells(html: &str) -> Graph {
+    let attr = |tag: &str, name: &str| tag.split_once(&format!("{name}=\"")).and_then(|(_, rest)| rest.split_once('"')).map(|(v, _)| v.to_string());
+    let mut days: Graph = html.split("<td").skip(1).filter_map(|cell| {
+        let tag = cell.split_once('>')?.0;
+        let date = attr(tag, "data-date")?;
+        let level: u8 = attr(tag, "data-level")?.parse().ok().filter(|l| *l > 0)?;
+        let mut d = date.splitn(3, '-').map(str::parse::<u32>);
+        Some((crate::date::days_from_civil(d.next()?.ok()? as i32, d.next()?.ok()?, d.next()?.ok()?), level.min(4)))
+    }).collect();
+    days.sort_unstable();
+    days
+}
+
+/// A LeetCode user's accepted-submission calendar, from its public GraphQL API.
+pub fn leetcode_graph(user: &str) -> Result<Graph, String> { leetcode_graph_from("https://leetcode.com", user) }
+
+fn leetcode_graph_from(base: &str, user: &str) -> Result<Graph, String> {
+    let body = json!({ "query": "query($u: String!) { matchedUser(username: $u) { userCalendar { submissionCalendar } } }", "variables": { "u": user.trim() } });
+    let mut res = agent().post(format!("{base}/graphql")).header("content-type", "application/json").header("referer", format!("{base}/"))
+        .send(body.to_string()).map_err(|e| e.to_string())?;
+    if !res.status().is_success() { return Err(format!("LeetCode answered {}", res.status().as_u16())) }
+    let data: Value = serde_json::from_str(&res.body_mut().read_to_string().map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+    let calendar = data["data"]["matchedUser"]["userCalendar"]["submissionCalendar"].as_str().ok_or("No such LeetCode user")?;
+    let counts: std::collections::HashMap<String, u64> = serde_json::from_str(calendar).map_err(|e| e.to_string())?;
+    let mut days: Graph = counts.into_iter().filter_map(|(t, n)| {
+        let level = match n { 0 => return None, 1 => 1, 2..=3 => 2, 4..=6 => 3, _ => 4 };
+        Some((t.parse::<i64>().ok()?.div_euclid(86_400), level))
+    }).collect();
+    days.sort_unstable();
+    Ok(days)
+}
+
 /// Units of each currency per US dollar, by upper-case code, from Frankfurter (ECB reference
 /// rates, no API key).
 pub fn rates() -> Option<std::collections::HashMap<String, f64>> { rates_from("https://api.frankfurter.dev/v1") }
@@ -253,6 +300,23 @@ mod tests {
         assert_eq!(weather_from(&base, &base, "Paris, France", "c"), Some(Weather { temp: Some(18), code: Some(61), days: vec![tomorrow] }), "a day missing a figure is left out");
         assert_eq!(weather_from(&base, &base, "1.5, -2", "f"), Some(Weather { temp: Some(70), code: Some(2), days: vec![] }));
         assert_eq!(weather_from(&base, &base, "Nowhere", "c"), None);
+    }
+
+    #[test]
+    fn contribution_graphs_read_github_cells_and_leetcode_counts() {
+        use crate::testserver::{Response, json as reply, serve};
+        let day = |m, d| crate::date::days_from_civil(2026, m, d);
+        let base = serve(move |r| match (r.method.as_str(), r.path.as_str()) {
+            ("GET", "/users/octo/contributions") => Response { status: 200, headers: vec![], body: r#"<td tabindex="0" data-ix="0" data-date="2026-01-02" id="c1" data-level="0" class="day"></td><td data-date="2026-01-03" data-level="3" class="day"></td><td data-date="2026-01-01" data-level="1"></td>"#.into() },
+            ("POST", "/graphql") if r.body.contains(r#""u":"ana""#) => reply(200, json!({ "data": { "matchedUser": { "userCalendar": { "submissionCalendar": format!(r#"{{"{}": 5, "{}": 1}}"#, day(1, 4) * 86_400 + 3600, day(1, 5) * 86_400) } } } })),
+            ("POST", "/graphql") => reply(200, json!({ "data": { "matchedUser": null } })),
+            _ => Response { status: 404, headers: vec![], body: String::new() },
+        });
+        assert_eq!(github_graph_from(&base, "@octo"), Ok(vec![(day(1, 1), 1), (day(1, 3), 3)]));
+        assert!(github_graph_from(&base, "nobody").unwrap_err().contains("404"));
+        assert!(github_graph_from(&base, "../x").is_err());
+        assert_eq!(leetcode_graph_from(&base, "ana"), Ok(vec![(day(1, 4), 3), (day(1, 5), 1)]));
+        assert!(leetcode_graph_from(&base, "ghost").is_err());
     }
 
     #[test]

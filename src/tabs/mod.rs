@@ -25,6 +25,7 @@ pub use assistant::Assistant;
 pub use calculator::Calculator;
 pub use calendar::Calendar;
 pub use clipboard::{Clipboard, Content};
+pub use overview::Contributions;
 pub use limits::Limits;
 pub use notes::Notes;
 pub use shelf::Shelf;
@@ -96,6 +97,7 @@ pub fn entered(s: &mut Island) {
     load(s, s.tab);
     if s.tab == Tab::Overview {
         for tile in s.cfg.dashboard.clone() { if let Widget::Panel(tab) = tile.widget { load(s, tab) } }
+        if s.cfg.dashboard.iter().any(|t| t.widget == Widget::Contributions) { s.contributions_load() }
     }
 }
 
