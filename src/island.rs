@@ -179,7 +179,8 @@ pub struct Placement {
 
 impl Placement {
     pub fn of(cfg: &Config, display: (f32, f32)) -> Placement {
-        let zoom = cfg.zoom();
+        // Only as large as fits the display, though never below 100%.
+        let zoom = cfg.zoom().min((display.0 / CANVAS.0).min(display.1 / CANVAS.1).max(1.0));
         let (dw, dh) = (display.0 / zoom, display.1 / zoom);
         // (align, x on the display, top?, y on the display)
         let (align, x, top, y) = if cfg.notch_mode {
@@ -1624,6 +1625,9 @@ mod tests {
                 assert!((w - CANVAS.0 * scale / 100.0).abs() < 0.01, "{scale}%: {w}");
             }
         }
+        let small = Placement::of(&Config { island_scale: 200.0, ..Config::default() }, (1366.0, 768.0));
+        let [x, y, w, h] = small.frame();
+        assert!(x >= 0.0 && y >= 0.0 && x + w <= 1366.01 && y + h <= 768.01, "a small display caps the zoom: {:?}", small.frame());
         let free = |scale| { let p = Placement::of(&Config { island_scale: scale, ..Config::default() }, (1920.0, 1080.0)); (p.window.1 + p.y) * p.zoom };
         assert_eq!(free(100.0), free(200.0), "free placement keeps the Island's top on the display");
         let s = island(Config { compact_opacity: 50.0, large_opacity: 25.0, ..Config::default() });
