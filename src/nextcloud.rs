@@ -1049,7 +1049,7 @@ fn new_event(uid: &str, (y, m, d): (i32, u32, u32), title: &str, stamp: &str) ->
 }
 
 /// An event title's leading `HH:MM`, and the rest.
-fn leading_time(title: &str) -> (Option<(u32, u32)>, &str) {
+pub fn leading_time(title: &str) -> (Option<(u32, u32)>, &str) {
     let time = title.split_once(' ').filter(|(t, _)| t.len() == 5 && t.as_bytes()[2] == b':')
         .and_then(|(t, rest)| Some(((t[..2].parse::<u32>().ok().filter(|h| *h < 24)?, t[3..].parse::<u32>().ok().filter(|m| *m < 60)?), rest)));
     match time { Some((t, rest)) => (Some(t), rest), None => (None, title) }

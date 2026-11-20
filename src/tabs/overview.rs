@@ -7,7 +7,8 @@ use super::{Scrolls, accent, card, empty, pill, ring, tool};
 use crate::config::{Tab, Tile, Widget};
 use crate::icons;
 use crate::island::{Island, SPRING, control, cover, estimate_width, marquee, visualizer};
-use crate::nextcloud::event_day;
+use crate::nextcloud::{event_day, leading_time};
+use super::Task;
 use crate::system::MediaCommand;
 
 const GAP: f32 = 10.0;
@@ -153,6 +154,7 @@ fn tile(s: &Island, i: usize, t: Tile, [x, y, w, h]: [f32; 4], layer: &mut Vec<E
         Widget::Battery => battery(s, h),
         Widget::Today => today(s),
         Widget::Quote => quote(s),
+        Widget::Day => day(s, w),
         Widget::Panel(tab) => super::panel(s, tab, layer),
     };
     let name = t.widget.name();
@@ -295,6 +297,57 @@ fn quote(s: &Island) -> El {
         .child(text(format!("— {author}")).font(s.cfg.font(12.0, 500.0)).color(fg.alpha(0.6 * fg.a)).truncate().a11y_hidden())
 }
 
+/// Today's timed events and the tasks due today, as (minutes since midnight, title, a task?),
+/// in time order. A task due without a time counts at 9:00, as its reminder does.
+fn timeline(s: &Island) -> Vec<(u32, String, bool)> {
+    let events = s.cfg.events.iter().filter_map(|e| {
+        let (_, title) = event_day(&e.text).filter(|(d, _)| *d == s.today)?;
+        let (Some((h, m)), rest) = leading_time(title) else { return None };
+        Some((h * 60 + m, rest.to_string(), false))
+    });
+    let tasks = s.cfg.tasks.iter().filter_map(|t| {
+        let task = Task::parse(&t.text, s.today);
+        let (_, time) = task.due.filter(|(d, _)| *d == s.today)?;
+        let (h, m) = time.unwrap_or((9, 0));
+        Some((h * 60 + m, task.title, true))
+    });
+    let mut items: Vec<_> = events.chain(tasks).collect();
+    items.sort_by_key(|i| i.0);
+    items
+}
+
+/// One line for the whole day: the share gone, a mark for each event and task, and what is next.
+fn day(s: &Island, w: f32) -> El {
+    let fg = s.cfg.text();
+    let muted = fg.alpha(0.6 * fg.a);
+    let items = timeline(s);
+    let gone = s.minutes as f32 / 1440.0;
+    let bar_w = (w - 24.0).max(0.0);
+    let tint = |task: bool| if task { accent::teal() } else { accent::indigo() };
+    let mut bar = el().key("day-bar").role("progressbar").label(format!("{:.0}% of the day gone", gone * 100.0)).w(bar_w).h(10.0)
+        .radius(5.0).fill(fg.alpha(0.12 * fg.a))
+        .child(el().h_full().w_frac(gone).radius(5.0).fill(accent::orange().alpha(0.7)).a11y_hidden());
+    for (i, (at, _, task)) in items.iter().enumerate() {
+        bar = bar.child(el().key(format!("mark-{i}")).a11y_hidden().absolute(*at as f32 / 1440.0 * bar_w - 3.0, 2.0).size(6.0, 6.0).radius(3.0).fill(tint(*task)));
+    }
+    let hours = row().key("day-hours").w(bar_w).justify_between().a11y_hidden()
+        .children([0, 6, 12, 18, 24].map(|h| text(format!("{h}")).font(s.cfg.font(10.0, 500.0).features("'tnum' 1")).color(muted)));
+    let next: Vec<_> = items.iter().filter(|i| i.0 >= s.minutes).take(2).collect();
+    let mut c = col().key("day").w_full().h_full().padding(12.0).gap(6.0)
+        .child(row().w_full().justify_between()
+            .child(text("Day Progress").font(s.cfg.font(13.0, 700.0)).color(accent::orange()))
+            .child(text(format!("{:.0}%", gone * 100.0)).font(s.cfg.font(13.0, 700.0).features("'tnum' 1")).color(fg)))
+        .child(bar).child(hours);
+    if next.is_empty() { c = c.child(text("Nothing left today").font(s.cfg.font(12.0, 500.0)).color(muted)) }
+    for (i, (at, title, task)) in next.into_iter().enumerate() {
+        c = c.child(row().key(format!("next-{i}")).w_full().gap(6.0).center_y()
+            .child(el().size(6.0, 6.0).radius(3.0).fill(tint(*task)).a11y_hidden())
+            .child(text(format!("{:02}:{:02}", at / 60, at % 60)).font(s.cfg.font(12.0, 600.0).features("'tnum' 1")).color(muted))
+            .child(text(title).font(s.cfg.font(12.0, 500.0)).color(fg).grow(1.0).min_w(0.0).truncate()));
+    }
+    c
+}
+
 /// Droppy's player: cover and title on top, the progress bar with both times, then the controls.
 fn media(s: &Island, w: f32) -> El {
     let fg = s.cfg.text();
@@ -352,6 +405,17 @@ mod tests {
         assert_ne!(quote_of(10), quote_of(11));
         assert_eq!(quote_of(0), quote_of(QUOTES.len() as i64));
         assert_eq!(quote_of(-1), QUOTES[QUOTES.len() - 1]);
+    }
+
+    #[test]
+    fn the_day_lines_up_timed_events_and_tasks_due_today() {
+        use crate::config::{Config, Item, Store};
+        let mut cfg = Config::default();
+        cfg.events = ["2026-01-01 13:00 Lunch", "2026-01-01 All day", "2026-01-02 09:00 Tomorrow"].map(Item::new).into();
+        cfg.tasks = ["Ship due:2026-01-01T17:30", "Plan due:2026-01-01", "Later due:2026-01-03"].map(Item::new).into();
+        let mut s = Island::new(Store::memory(cfg), Vec::new());
+        s.today = (2026, 1, 1);
+        assert_eq!(timeline(&s), [(540, "Plan".into(), true), (780, "Lunch".into(), false), (1050, "Ship".into(), true)]);
     }
 
     #[test]
