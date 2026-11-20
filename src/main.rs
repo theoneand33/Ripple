@@ -337,6 +337,12 @@ fn island_spec() -> AppSpec<Island> {
                 s.cfg.dashboard = [config::Widget::Clock, config::Widget::Battery, config::Widget::Panel(Tab::Tasks), config::Widget::Panel(Tab::System)].map(config::Tile::new).into();
                 s.cfg.tasks = vec![config::Item::new("Ship the dashboard"), config::Item::new("Water the plants")];
             }),
+            ("overview-water", |s| {
+                s.mode = Mode::Large;
+                s.set_tab(Tab::Overview);
+                s.cfg.dashboard = [config::Widget::Clock, config::Widget::Water].map(config::Tile::new).into();
+                (s.cfg.water_day, s.cfg.water_count) = (date::days_from_civil(s.today.0, s.today.1, s.today.2), 3);
+            }),
             ("overview-contributions", |s| {
                 s.mode = Mode::Large;
                 s.set_tab(Tab::Overview);

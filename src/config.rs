@@ -107,6 +107,8 @@ pub enum Widget {
     Battery,
     /// Today's events and the tasks left.
     Today,
+    /// Glasses of water drunk today, against a goal.
+    Water,
     /// GitHub and LeetCode contribution graphs, with streaks.
     Contributions,
     /// A quote, a new one each day.
@@ -117,7 +119,7 @@ pub enum Widget {
 }
 
 impl Widget {
-    pub const OWN: [Widget; 8] = [Widget::Clock, Widget::Media, Widget::Weather, Widget::Battery, Widget::Today, Widget::Day, Widget::Quote, Widget::Contributions];
+    pub const OWN: [Widget; 9] = [Widget::Clock, Widget::Media, Widget::Weather, Widget::Battery, Widget::Today, Widget::Day, Widget::Quote, Widget::Water, Widget::Contributions];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -126,6 +128,7 @@ impl Widget {
             Widget::Weather => "Weather",
             Widget::Battery => "Battery",
             Widget::Today => "Today",
+            Widget::Water => "Water",
             Widget::Contributions => "Contributions",
             Widget::Quote => "Quote of the Day",
             Widget::Day => "Day Progress",
@@ -397,6 +400,15 @@ pub struct Config {
     pub workflows: Vec<Workflow>,
     pub tasks: Vec<Item>,
     pub habits: Vec<Habit>,
+    /// Water: glasses a day.
+    pub water_goal: u32,
+    /// Water: the day counted (days since 1970) and its glasses; another day starts at 0.
+    pub water_day: i64,
+    pub water_count: u32,
+    /// Water: a reminder each hour from `water_from` until `water_to` (hours, 0-24) while short of the goal.
+    pub water_reminders: bool,
+    pub water_from: u32,
+    pub water_to: u32,
     /// Contributions: the GitHub and LeetCode user names whose graphs show; empty leaves one out.
     pub github_user: String,
     pub leetcode_user: String,
@@ -490,6 +502,12 @@ impl Default for Config {
             workflows: Vec::new(),
             tasks: Vec::new(),
             habits: Vec::new(),
+            water_goal: 8,
+            water_day: 0,
+            water_count: 0,
+            water_reminders: true,
+            water_from: 9,
+            water_to: 21,
             github_user: String::new(),
             leetcode_user: String::new(),
             notes: Vec::new(),
@@ -591,6 +609,9 @@ impl Config {
         kit.c.knob_on = bg;
         kit
     }
+
+    /// Glasses of water drunk on `day`.
+    pub fn water(&self, day: i64) -> u32 { if self.water_day == day { self.water_count } else { 0 } }
 
     pub fn provider(&self) -> &'static Provider {
         PROVIDERS.iter().find(|p| p.id == self.ai_provider).unwrap_or(&PROVIDERS[0])

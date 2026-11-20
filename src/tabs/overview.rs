@@ -158,6 +158,7 @@ fn tile(s: &Island, i: usize, t: Tile, [x, y, w, h]: [f32; 4], layer: &mut Vec<E
         Widget::Weather => weather(s, h),
         Widget::Battery => battery(s, h),
         Widget::Today => today(s),
+        Widget::Water => water(s, h),
         Widget::Contributions => contributions(s, w),
         Widget::Quote => quote(s),
         Widget::Day => day(s, w),
@@ -256,6 +257,26 @@ fn today(s: &Island) -> El {
     c.child(el().grow(1.0))
         .child(text(match tasks { 0 => "No tasks left".to_string(), 1 => "1 task left".to_string(), n => format!("{n} tasks left") })
             .font(s.cfg.font(12.0, 500.0)).color(muted))
+}
+
+/// Adds or takes away a glass of today's water.
+fn drink(s: &mut Island, by: i32) {
+    let today = crate::date::days_from_civil(s.today.0, s.today.1, s.today.2);
+    s.save(|c| { c.water_count = c.water(today).saturating_add_signed(by); c.water_day = today });
+}
+
+fn water(s: &Island, h: f32) -> El {
+    let fg = s.cfg.text();
+    let tint = accent::blue();
+    let n = s.cfg.water(crate::date::days_from_civil(s.today.0, s.today.1, s.today.2));
+    let goal = s.cfg.water_goal.max(1);
+    let gauge = ring(if h < CELL.1 * 2.0 { 32.0 } else { 52.0 }, n as f32 * 100.0 / goal as f32, tint, icon(&icons::DROPLET, 16.0).color(tint));
+    stack("water", h)
+        .child(row().gap(8.0).center_y()
+            .child(tool(s, "water-less", &icons::MINUS, "One glass less").on_press(|s: &mut Island| drink(s, -1)))
+            .child(gauge)
+            .child(tool(s, "water-more", &icons::PLUS, "One more glass").on_press(|s: &mut Island| drink(s, 1))))
+        .child(text(format!("{n} of {goal} glasses")).font(s.cfg.font(13.0, 600.0).features("'tnum' 1")).color(fg))
 }
 
 /// The GitHub and LeetCode graphs: for whom, and the graph or why it failed; None while loading.

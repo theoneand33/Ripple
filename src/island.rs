@@ -282,6 +282,8 @@ pub struct Island {
     break_tick: f64,
     /// The minute task reminders were last checked, as `YYYY-MM-DDTHH:MM`; empty until the first.
     pub task_mark: String,
+    /// The hour a water reminder last came, as (day, hour).
+    water_mark: Option<(i64, u32)>,
     capture: Option<(Alert, f64)>,
     capture_queue: Vec<Alert>,
     paused_until: Option<f64>,
@@ -406,6 +408,7 @@ impl Island {
             bluetooth_alert_until: None,
             reminder: None,
             task_mark: String::new(),
+            water_mark: None,
             rain_alerted: None,
             break_left: [None; 2],
             break_tick: 0.0,
@@ -996,6 +999,18 @@ impl Island {
         }
     }
 
+    /// On the hour within the set hours, while the Water widget is on the Overview and today's
+    /// glasses are short of the goal.
+    pub fn water_reminders(&mut self, now: f64) {
+        // An alert doesn't show over an open Large or replace another: the hour stays due until then.
+        if rune::is_headless() || self.large_open() || self.reminder.is_some() { return }
+        let t = LocalTime::at(crate::date::now_ms());
+        let mark = (crate::date::days_from_civil(t.year, t.month, t.day), t.hour);
+        // Track the hour even while reminders are off, so turning them on or adding the widget mid-hour stays quiet.
+        if !hour_turned(&mut self.water_mark, mark) || !self.cfg.water_reminders || !self.cfg.dashboard.iter().any(|t| t.widget == crate::config::Widget::Water) { return }
+        if water_due(&self.cfg, mark) { self.remind("Drink water".into(), now) }
+    }
+
     /// "Rain at 2:00": when the coming rain or snow starts, on the user's clock.
     pub fn precip_label(&self) -> String {
         let Some((at, snow)) = self.weather.precip else { return String::new() };
@@ -1322,6 +1337,16 @@ impl Island {
     pub fn set_window(&mut self, window: WindowHandle) {
         self.passthrough.set_window(window);
     }
+}
+
+/// Moves `last` to `mark`; true only when the hour changed since an earlier mark, so the first mark after launch just seeds it.
+fn hour_turned(last: &mut Option<(i64, u32)>, mark: (i64, u32)) -> bool {
+    last.replace(mark).is_some_and(|prev| prev != mark)
+}
+
+/// A water reminder is due at `(day, hour)`: within the set hours and short of the goal.
+fn water_due(cfg: &Config, (day, hour): (i64, u32)) -> bool {
+    (cfg.water_from..cfg.water_to).contains(&hour) && cfg.water(day) < cfg.water_goal
 }
 
 /// Rain starting at `at` is due an alert at `now` (Unix seconds): within the hour before, or up to
@@ -1701,6 +1726,25 @@ mod tests {
 
     fn island(cfg: Config) -> Island {
         Island::new(Store::memory(cfg), Vec::new())
+    }
+
+    #[test]
+    fn water_reminders_come_within_the_set_hours_until_the_goal() {
+        let cfg = Config { water_goal: 2, water_day: 100, water_count: 1, ..Config::default() };
+        assert!(water_due(&cfg, (100, 9)) && water_due(&cfg, (100, 20)));
+        assert!(!water_due(&cfg, (100, 8)) && !water_due(&cfg, (100, 21)), "outside 9 to 21");
+        assert!(water_due(&cfg, (101, 12)), "a new day starts at 0");
+        assert!(!water_due(&Config { water_count: 2, ..cfg }, (100, 12)), "the goal is met");
+    }
+
+    #[test]
+    fn water_reminders_wait_for_the_hour_to_change() {
+        let mut last = None;
+        assert!(!hour_turned(&mut last, (100, 15)), "launching mid-hour only seeds the mark");
+        assert!(!hour_turned(&mut last, (100, 15)), "the same hour stays quiet");
+        assert!(hour_turned(&mut last, (100, 16)), "the next hour reminds");
+        assert!(hour_turned(&mut last, (101, 16)), "a new day reminds");
+        assert_eq!(last, Some((101, 16)));
     }
 
     #[test]
