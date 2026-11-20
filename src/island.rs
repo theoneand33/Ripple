@@ -949,8 +949,9 @@ impl Island {
 
     /// Once a second: an alert once rain or snow is due within the hour; Large waits for compact.
     pub fn rain_alert(&mut self, now: f64) {
+        // Raining now or none coming: the rain alerted is over, so the next shower alerts afresh.
+        let Some((at, _)) = self.weather.precip else { self.rain_alerted = None; return };
         if rune::is_headless() || !self.cfg.rain_alerts || self.mode == Mode::Large { return }
-        let Some((at, _)) = self.weather.precip else { return };
         if !rain_due(at, crate::date::now_secs(), self.rain_alerted) { return }
         self.rain_alerted = Some(at);
         self.remind(self.precip_label(), now);
