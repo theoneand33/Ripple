@@ -448,8 +448,10 @@ impl Island {
     /// The compact view shows the track: while it plays, and for 3 seconds after a pause.
     pub fn shows_track(&self) -> bool { self.playing() || self.paused_until.is_some() }
 
-    /// Hide when inactive is on, or an app is full screen and its rule says hide.
-    pub fn hiding(&self) -> bool { self.cfg.hide_inactive || self.fullscreen_rule() == "hidden" }
+    /// Hide when inactive, unless an app is full screen and its rule says otherwise.
+    pub fn hiding(&self) -> bool {
+        match self.fullscreen_rule() { "hidden" => true, "standby" | "still" => false, _ => self.cfg.hide_inactive }
+    }
 
     /// The full screen rule in force now; "none" while no app is full screen.
     fn fullscreen_rule(&self) -> &str { if self.fullscreen { &self.cfg.fullscreen } else { "none" } }
@@ -1591,6 +1593,9 @@ mod tests {
         assert_eq!(full("none", Config::default()).mode, Mode::Quick);
         assert_eq!(full("still", Config::default()).mode, Mode::Still);
         assert_eq!(full("standby", Config { standby: false, ..Config::default() }).mode, Mode::Quick);
+        // The rule beats Hide when inactive, so the Island neither hides nor draws as hidden.
+        let s = full("standby", Config { hide_inactive: true, ..Config::default() });
+        assert!(s.mode == Mode::Quick && !s.hiding());
         let mut s = full("hidden", Config::default());
         assert!(s.mode == Mode::Still && s.hidden());
         s.set_fullscreen(false);
