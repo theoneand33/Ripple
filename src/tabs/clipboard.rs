@@ -1,16 +1,70 @@
-//! Clipboard: the last 50 texts copied anywhere, newest first, each one copyable again.
+//! Clipboard: the last 50 texts and 10 images copied anywhere, newest first, each one copyable
+//! again. Pinned items stay on top and are kept across restarts; pinned images are saved as PNG
+//! files in a `clipboard` folder beside prefs.json.
 
-use rune::{Color, El, Transition, Tx, col, el, row, text};
+use rune::{ClipboardContent, ClipboardImage, Color, El, Image, SurfaceFit, TextEdit, Transition, Tx, col, el, row, text};
 
-use super::{Scrolls, empty};
+use super::{Scrolls, empty, field, tool};
+use std::path::{Path, PathBuf};
+
+use sha2::{Digest, Sha256};
+
+use crate::config::{Config, Pin};
+use crate::icons;
 use crate::island::Island;
+
+const TEXTS: usize = 50;
+const IMAGES: usize = 10;
+
+#[derive(Clone)]
+pub enum Content {
+    Text(String),
+    /// The copied PNG, and its decoded pixels for the row (None until the window has an image cache).
+    Image(ClipboardImage, Option<Image>),
+}
+
+impl PartialEq for Content {
+    fn eq(&self, other: &Content) -> bool {
+        match (self, other) {
+            (Content::Text(a), Content::Text(b)) => a == b,
+            (Content::Image(a, _), Content::Image(b, _)) => a == b,
+            _ => false,
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct Clip {
+    pub content: Content,
+    pub pinned: bool,
+}
 
 #[derive(Default)]
 pub struct Clipboard {
-    pub items: Vec<String>,
+    /// Pinned items first, in the order pinned; then the rest, newest first.
+    pub items: Vec<Clip>,
     /// The row whose button reads "Copied", and until when.
     pub copied: Option<(usize, f64)>,
+    pub search: TextEdit,
     next_read: f64,
+    /// What the last read found: an unchanged clipboard is not pushed again, so a copy holding
+    /// both text and an image doesn't reshuffle the list every poll.
+    last_read: Option<ClipboardContent>,
+    /// Where pinned images are saved; None keeps them only this run (headless).
+    dir: Option<PathBuf>,
+}
+
+/// A pinned image's file name: its PNG's hash, so the same image is one file.
+fn file_name(image: &ClipboardImage) -> String {
+    let hash: String = Sha256::digest(image.png()).iter().take(16).map(|b| format!("{b:02x}")).collect();
+    format!("{hash}.png")
+}
+
+/// Only names `file_name` makes are read: the prefs file can be edited by hand.
+fn load_image(dir: &Path, name: &str) -> Option<ClipboardImage> {
+    let stem = name.strip_suffix(".png")?;
+    if stem.is_empty() || !stem.bytes().all(|b| b.is_ascii_hexdigit()) { return None }
+    ClipboardImage::from_png(std::fs::read(dir.join(name)).ok()?)
 }
 
 impl Island {
@@ -19,33 +73,135 @@ impl Island {
         if now >= self.clipboard.next_read && !rune::is_headless() {
             self.clipboard.next_read = now + 2.0;
             tx.wake_at(self.clipboard.next_read);
-            tx.read_clipboard(|s: &mut Island, content, _| { s.clipboard.push(content.text()); });
+            // A copy from a spreadsheet or browser can carry both; the text goes on top.
+            tx.read_clipboard(|s: &mut Island, content, _| {
+                if s.clipboard.last_read.as_ref() == Some(content) { return }
+                s.clipboard.last_read = Some(content.clone());
+                if let Some(image) = content.image() { s.clipboard_image(image.clone()); }
+                s.clipboard.push(Content::Text(content.text().to_string()));
+            });
         }
         let ended = self.clipboard.copied.is_some_and(|c| now >= c.1);
         if ended { self.clipboard.copied = None }
         ended
     }
+
+    /// Adds a copied image, decoding it only when it is new.
+    pub fn clipboard_image(&mut self, image: ClipboardImage) -> bool {
+        let known = self.clipboard.items.iter().any(|c| matches!(&c.content, Content::Image(i, _) if *i == image));
+        let pixels = if known { None } else { self.images.as_ref().map(|cache| cache.load(image.png().to_vec())) };
+        self.clipboard.push(Content::Image(image, pixels))
+    }
+
+    pub fn toggle_clip_pin(&mut self, i: usize) {
+        self.clipboard.toggle_pin(i);
+        let pins = self.clipboard.pins();
+        if pins == self.cfg.clipboard_pins { return }
+        // An image no longer pinned loses its file.
+        if let Some(dir) = &self.clipboard.dir {
+            for old in &self.cfg.clipboard_pins {
+                if let Pin::Image { image } = old && !pins.contains(old) && load_image(dir, image).is_some() { let _ = std::fs::remove_file(dir.join(image)); }
+            }
+        }
+        self.save(|c| c.clipboard_pins = pins);
+    }
+
+    /// Decodes the pinned images loaded at start, once the window has an image cache.
+    pub fn clipboard_decode(&mut self) {
+        let Some(cache) = &self.images else { return };
+        for clip in &mut self.clipboard.items {
+            if let Content::Image(image, pixels @ None) = &mut clip.content { *pixels = Some(cache.load(image.png().to_vec())) }
+        }
+    }
 }
 
 impl Clipboard {
-    /// Adds a copied text on top; one already listed moves up. False when nothing changed.
-    pub fn push(&mut self, text: &str) -> bool {
-        if text.is_empty() || self.items.first().is_some_and(|t| t == text) { return false }
-        self.items.retain(|t| t != text);
-        self.items.insert(0, text.to_string());
-        self.items.truncate(50);
+    /// The items pinned last time; `dir` is the settings folder. An image whose file is gone is left out.
+    pub fn new(cfg: &Config, dir: Option<&Path>) -> Clipboard {
+        let dir = dir.map(|d| d.join("clipboard"));
+        let items = cfg.clipboard_pins.iter().filter_map(|pin| Some(Clip {
+            content: match pin {
+                Pin::Text(t) => Content::Text(t.clone()),
+                Pin::Image { image } => Content::Image(load_image(dir.as_deref()?, image)?, None),
+            },
+            pinned: true,
+        })).collect();
+        Clipboard { items, dir, ..Clipboard::default() }
+    }
+
+    fn pinned(&self) -> usize { self.items.iter().take_while(|c| c.pinned).count() }
+
+    /// Adds a copy below the pinned items; one already listed moves up there, a pinned one stays.
+    /// False when nothing changed.
+    pub fn push(&mut self, mut content: Content) -> bool {
+        if matches!(&content, Content::Text(t) if t.is_empty()) { return false }
+        let top = self.pinned();
+        match self.items.iter().position(|c| c.content == content) {
+            Some(i) if i <= top => return false,
+            // A known image keeps the pixels it already decoded.
+            Some(i) => if let (Content::Image(_, pixels @ None), Content::Image(_, Some(old))) = (&mut content, self.items.remove(i).content) { *pixels = Some(old) },
+            None => {}
+        }
+        self.items.insert(top, Clip { content, pinned: false });
+        // Unpinned texts and images each keep their newest few.
+        let (mut texts, mut images) = (0, 0);
+        self.items.retain(|c| {
+            if c.pinned { return true }
+            let n = if matches!(c.content, Content::Text(_)) { &mut texts } else { &mut images };
+            *n += 1;
+            *n <= if matches!(c.content, Content::Text(_)) { TEXTS } else { IMAGES }
+        });
         self.copied = None;
         true
+    }
+
+    /// Pins an item at the end of the pinned ones, or unpins it to the top of the rest.
+    pub fn toggle_pin(&mut self, i: usize) {
+        if i >= self.items.len() { return }
+        let mut clip = self.items.remove(i);
+        clip.pinned = !clip.pinned;
+        // Unpinned, it goes first below the pins, which no longer count it.
+        let at = self.pinned();
+        self.items.insert(at, clip);
+        self.copied = None;
+    }
+
+    /// The pinned items to save, writing each pinned image's file if it isn't there yet. An
+    /// image that can't be written stays pinned only this run.
+    pub fn pins(&self) -> Vec<Pin> {
+        self.items.iter().filter(|c| c.pinned).filter_map(|c| match &c.content {
+            Content::Text(t) => Some(Pin::Text(t.clone())),
+            Content::Image(image, _) => {
+                let (dir, name) = (self.dir.as_ref()?, file_name(image));
+                let path = dir.join(&name);
+                if !path.exists() {
+                    std::fs::create_dir_all(dir).and_then(|_| std::fs::write(&path, image.png())).map_err(|e| eprintln!("Ripple: could not save a pinned image: {e}")).ok()?;
+                }
+                Some(Pin::Image { image: name })
+            }
+        }).collect()
+    }
+
+    /// The items the search matches, by index; images only show with no search.
+    pub fn listed(&self) -> Vec<usize> {
+        let query = self.search.text.trim().to_lowercase();
+        (0..self.items.len()).filter(|i| match &self.items[*i].content {
+            Content::Text(t) => query.is_empty() || t.to_lowercase().contains(&query),
+            Content::Image(..) => query.is_empty(),
+        }).collect()
     }
 }
 
 pub fn view(s: &Island) -> El {
     let fg = s.cfg.text();
-    let mut list = col().key("clipboard-list").w_full().px(14.0).py(14.0).gap(8.0);
+    let mut list = col().key("clipboard-list").w_full().gap(8.0);
+    let listed = s.clipboard.listed();
     if s.clipboard.items.is_empty() { list = list.child(empty(s, "Clipboard is empty")) }
-    for (i, item) in s.clipboard.items.iter().enumerate() {
+    else if listed.is_empty() { list = list.child(empty(s, "No matches")) }
+    for i in listed {
+        let clip = &s.clipboard.items[i];
         let copied = s.clipboard.copied.is_some_and(|c| c.0 == i);
-        let value = item.clone();
+        let content = clip.content.clone();
         let copy = el().key("copy").role("button").label("Copy").focusable(true)
             .px(10.0).h(24.0).center().radius(s.cfg.radius(12.0))
             .fill(if copied { Color { r: 0.03, g: 0.57, b: 0.1, a: 0.4 } } else { Color::WHITE.alpha(0.15) })
@@ -53,32 +209,103 @@ pub fn view(s: &Island) -> El {
             .child(text(if copied { "Copied" } else { "Copy" }).key(if copied { "copied" } else { "copy-label" }).font(s.cfg.font(11.0, 500.0)).color(fg).a11y_hidden()
                 .transition(Transition::blur_replace()))
             .on_press_tx(move |s: &mut Island, tx| {
-                tx.copy(value.clone());
+                match &content {
+                    Content::Text(t) => tx.copy(t.clone()),
+                    Content::Image(image, _) => tx.copy_rich(ClipboardContent::default().with_image(image.clone())),
+                }
                 s.clipboard.copied = Some((i, tx.clock() + 2.0));
             });
+        let pin = tool(s, "pin", &icons::STAR, if clip.pinned { "Unpin" } else { "Pin" }).checked(clip.pinned)
+            .on_press(move |s: &mut Island| s.toggle_clip_pin(i));
+        let pin = if clip.pinned { pin.fill(super::accent::orange().alpha(0.3)) } else { pin };
+        let body = match &clip.content {
+            Content::Text(t) => text(t).font(s.cfg.font(13.0, 400.0).lh(18.0)).color(fg).grow(1.0).min_w(0.0).wrap_anywhere().max_lines(4),
+            Content::Image(image, pixels) => {
+                let (w, h) = image.size();
+                let mut thumb = el().key("thumb").role("img").label(format!("Image, {w} × {h}")).h(64.0).w(96.0).radius(s.cfg.radius(8.0)).fill(fg.alpha(0.06 * fg.a));
+                if let Some(p) = pixels.as_ref().filter(|p| p.is_ready() && p.error().is_none()) { thumb = thumb.pixels_fit(p.pixels(), SurfaceFit::Fit) }
+                row().grow(1.0).min_w(0.0).gap(10.0).center_y().child(thumb)
+                    .child(text(format!("{w} × {h}")).font(s.cfg.font(12.0, 500.0).features("'tnum' 1")).color(fg.alpha(0.55 * fg.a)).a11y_hidden())
+            }
+        };
         list = list.child(
             row().key(format!("clip-{i}")).w_full().px(14.0).py(10.0).gap(8.0).items_start()
                 .radius(s.cfg.radius(16.0))
                 .fill(super::card(fg))
-                .child(text(item).font(s.cfg.font(13.0, 400.0).lh(18.0)).color(fg).grow(1.0).min_w(0.0).wrap_anywhere().max_lines(4))
+                .child(body)
+                .child(pin)
                 .child(copy),
         );
     }
-    col().key("clipboard").w_full().h_full().scrolls().scroll_edge_fade(12.0).child(list)
+    col().key("clipboard").w_full().h_full().px(14.0).pt(14.0).pb(14.0).gap(10.0)
+        .child(row().key("clipboard-search-row").w_full().child(field(s, "clipboard-search", &s.clipboard.search, "Search clipboard", |s: &mut Island| &mut s.clipboard.search, |_, _| {})))
+        .child(col().key("clipboard-scroll").w_full().grow(1.0).min_h(0.0).scrolls().scroll_edge_fade(12.0).child(list))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::Clipboard;
+    use super::{Clipboard, Content};
+
+    fn texts(c: &Clipboard) -> Vec<String> {
+        c.items.iter().map(|i| match &i.content { Content::Text(t) => t.clone(), Content::Image(..) => "<image>".into() }).collect()
+    }
 
     #[test]
     fn history_keeps_the_newest_first_without_repeats() {
+        let t = |s: &str| Content::Text(s.into());
         let mut c = Clipboard::default();
-        assert!(c.push("a") && c.push("b"));
-        assert!(!c.push("b") && !c.push(""));
-        assert!(c.push("a"));
-        assert_eq!(c.items, ["a", "b"]);
-        for i in 0..60 { c.push(&i.to_string()); }
+        assert!(c.push(t("a")) && c.push(t("b")));
+        assert!(!c.push(t("b")) && !c.push(t("")));
+        assert!(c.push(t("a")));
+        assert_eq!(texts(&c), ["a", "b"]);
+        for i in 0..60 { c.push(t(&i.to_string())); }
         assert_eq!(c.items.len(), 50);
+    }
+
+    #[test]
+    fn pinned_items_stay_on_top_past_the_limit_and_search_filters() {
+        let t = |s: &str| Content::Text(s.into());
+        let mut c = Clipboard::default();
+        c.push(t("keep"));
+        c.push(t("other"));
+        c.toggle_pin(1);
+        assert_eq!((texts(&c), c.pins()), (vec!["keep".to_string(), "other".into()], vec![crate::config::Pin::Text("keep".into())]));
+        for i in 0..60 { c.push(t(&format!("n{i}"))); }
+        assert_eq!((c.items.len(), texts(&c)[0].as_str(), texts(&c)[1].as_str()), (51, "keep", "n59"));
+        assert!(!c.push(t("keep")), "copying a pinned text again leaves it in place");
+        c.search.replace_text("KEE");
+        assert_eq!(c.listed(), [0]);
+        c.toggle_pin(0);
+        assert!(c.pins().is_empty() && texts(&c)[0] == "keep");
+    }
+
+    #[test]
+    fn a_known_image_copied_again_keeps_its_pixels() {
+        let png = [&b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR"[..], &[0, 0, 0, 2, 0, 0, 0, 3]].concat();
+        let image = rune::ClipboardImage::from_png(png).unwrap();
+        let cache = rune::ImageCache::new(std::sync::Arc::new(|| {}));
+        let mut c = Clipboard::default();
+        c.push(Content::Image(image.clone(), Some(cache.load(image.png().to_vec()))));
+        c.push(Content::Text("after".into()));
+        assert!(c.push(Content::Image(image, None)));
+        assert!(matches!(&c.items[0].content, Content::Image(_, Some(_))));
+    }
+
+    #[test]
+    fn pinned_images_are_saved_and_load_next_time() {
+        use crate::config::{Config, Pin};
+        let dir = std::env::temp_dir().join(format!("ripple-clips-{}", std::process::id()));
+        let png = [&b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR"[..], &[0, 0, 0, 2, 0, 0, 0, 3]].concat();
+        let image = rune::ClipboardImage::from_png(png).unwrap();
+        let mut c = Clipboard::new(&Config::default(), Some(&dir));
+        c.push(Content::Image(image.clone(), None));
+        c.toggle_pin(0);
+        let pins = c.pins();
+        let cfg = Config { clipboard_pins: [pins.clone(), vec![Pin::Image { image: "../prefs.json".into() }, Pin::Image { image: "ff.png".into() }]].concat(), ..Config::default() };
+        let again = Clipboard::new(&cfg, Some(&dir));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(matches!(&pins[..], [Pin::Image { image }] if image.len() == 36));
+        assert_eq!(again.items.len(), 1, "files outside the folder or gone are left out");
+        assert!(matches!(&again.items[0].content, Content::Image(i, None) if *i == image) && again.items[0].pinned);
     }
 }

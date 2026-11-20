@@ -1,9 +1,9 @@
 //! Notes: plain-text notes, each titled by its first line, saved as they are typed and synced
-//! with Nextcloud Notes when an account is set.
+//! with Nextcloud Notes when an account is set. Pinned notes list first; search filters the list.
 
-use rune::{Color, El, TextEdit, Transition, col, el, row, text, text_input};
+use rune::{Color, El, TextEdit, Transition, Tx, col, el, icon, row, text, text_input};
 
-use super::{Scrolls, Undo, empty, tool, undo_button};
+use super::{Scrolls, Undo, empty, field, tool, undo_button};
 use crate::config::{Config, Item};
 use crate::icons;
 use crate::island::Island;
@@ -16,11 +16,12 @@ pub struct Notes {
     pub index: usize,
     /// When the open note was last typed in, until Nextcloud gets the change.
     pub edited: Option<std::time::Instant>,
+    pub search: TextEdit,
 }
 
 impl Notes {
     pub fn new(cfg: &Config) -> Notes {
-        Notes { editor: TextEdit::new(cfg.notes.first().map_or("", |n| n.text.as_str())), index: 0, edited: None }
+        Notes { editor: TextEdit::new(cfg.notes.first().map_or("", |n| n.text.as_str())), index: 0, edited: None, search: TextEdit::default() }
     }
 }
 
@@ -38,9 +39,22 @@ impl Island {
         self.notes.editor.focused = true;
     }
 
+    pub fn toggle_pin(&mut self) {
+        let Some(key) = self.cfg.notes.get(self.notes.index).map(|n| n.key) else { return };
+        self.save(|c| if c.pinned_notes.contains(&key) { c.pinned_notes.retain(|k| *k != key) } else { c.pinned_notes.push(key) });
+    }
+
+    /// The notes the list shows, by index: pinned first, each matching the search.
+    pub fn listed_notes(&self) -> Vec<usize> {
+        let query = self.notes.search.text.trim().to_lowercase();
+        let mut shown: Vec<usize> = (0..self.cfg.notes.len()).filter(|i| query.is_empty() || self.cfg.notes[*i].text.to_lowercase().contains(&query)).collect();
+        shown.sort_by_key(|i| !self.cfg.pinned_notes.contains(&self.cfg.notes[*i].key));
+        shown
+    }
+
     pub fn delete_note(&mut self) {
         let mut gone = None;
-        if let Some(key) = self.cfg.notes.get(self.notes.index).map(|n| n.key) { self.save(|c| gone = nextcloud::remove(c, Kind::Notes, key)) }
+        if let Some(key) = self.cfg.notes.get(self.notes.index).map(|n| n.key) { self.save(|c| { gone = nextcloud::remove(c, Kind::Notes, key); c.pinned_notes.retain(|k| *k != key) }) }
         if let Some((i, item)) = gone { self.undo = Some(Undo::Item(Kind::Notes, i, item)) }
         self.open_note(self.notes.index);
         self.nextcloud_sync(Kind::Notes);
@@ -66,6 +80,11 @@ impl Island {
     }
 }
 
+/// Enter in the search opens the first note it lists.
+fn open_first_match(s: &mut Island, _: &mut Tx) {
+    if let Some(&i) = s.listed_notes().first() { s.open_note(i) }
+}
+
 /// A note's title is its first line; the lines after it, run together, preview it.
 fn note_heading(note: &str) -> (&str, String) {
     let mut lines = note.lines().map(str::trim).filter(|l| !l.is_empty());
@@ -84,7 +103,10 @@ pub fn view(s: &Island) -> El {
         header = header.child(text(e).font(s.cfg.font(12.0, 400.0)).color(muted).shrink().min_w(0.0).truncate());
     }
     if let Some(undo) = undo_button(s) { header = header.child(undo) }
-    if !s.cfg.notes.is_empty() {
+    if let Some(open) = s.cfg.notes.get(s.notes.index) {
+        let pinned = s.cfg.pinned_notes.contains(&open.key);
+        let pin = tool(s, "pin-note", &icons::STAR, if pinned { "Unpin note" } else { "Pin note" }).checked(pinned).on_press(Island::toggle_pin);
+        header = header.child(if pinned { pin.fill(accent.alpha(0.25)) } else { pin });
         header = header.child(tool(s, "delete-note", &icons::TRASH, "Delete note").on_press(Island::delete_note));
     }
     header = header.child(tool(s, "new-note", &icons::PLUS, "New note").on_press(Island::add_note));
@@ -92,8 +114,12 @@ pub fn view(s: &Island) -> El {
     if s.cfg.notes.is_empty() { return root.child(empty(s, "No notes yet, press + to write one")) }
 
     let mut list = col().key("note-list").w_full().gap(2.0);
-    for (i, note) in s.cfg.notes.iter().enumerate() {
+    let shown = s.listed_notes();
+    if shown.is_empty() { list = list.child(text("No matches").key("no-matches").font(s.cfg.font(12.0, 400.0)).color(muted).px(6.0).py(6.0)) }
+    for i in shown {
+        let note = &s.cfg.notes[i];
         let on = i == s.notes.index;
+        let pinned = s.cfg.pinned_notes.contains(&note.key);
         let (title, preview) = note_heading(&note.text);
         list = list.child(
             row().key(format!("note-{i}")).role("button").label(title.to_string()).checked(on).focusable(true)
@@ -102,7 +128,8 @@ pub fn view(s: &Island) -> El {
                 .fill(if on { fg.alpha(0.1 * fg.a) } else { Color::TRANSPARENT })
                 .hover(fg.alpha(0.06 * fg.a)).press(fg.alpha(0.12 * fg.a))
                 .on_press(move |s: &mut Island| s.open_note(i))
-                .child(el().mt(6.0).size(7.0, 7.0).radius(3.5).fill(if on { accent } else { fg.alpha(0.3 * fg.a) }).a11y_hidden())
+                .child(if pinned { icon(&icons::STAR, 11.0).mt(4.0).color(accent).a11y_hidden() }
+                    else { el().mt(6.0).mx(2.0).size(7.0, 7.0).radius(3.5).fill(if on { accent } else { fg.alpha(0.3 * fg.a) }).a11y_hidden() })
                 .child(
                     col().grow(1.0).min_w(0.0).gap(2.0).a11y_hidden()
                         .child(text(title).font(s.cfg.font(14.0, 600.0)).color(if on { accent } else { fg }).truncate())
@@ -118,7 +145,9 @@ pub fn view(s: &Island) -> El {
         .on_input_change(|s: &mut Island, _| s.note_edited());
     root.child(
         row().key("notes-body").w_full().grow(1.0).min_h(0.0).gap(12.0)
-            .child(col().key("note-scroll").w(160.0).h_full().scrolls().scroll_edge_fade(8.0).child(list))
+            .child(col().key("note-side").w(160.0).h_full().gap(8.0)
+                .child(row().key("note-search-row").w_full().child(field(s, "note-search", &s.notes.search, "Search", |s: &mut Island| &mut s.notes.search, open_first_match)))
+                .child(col().key("note-scroll").w_full().grow(1.0).min_h(0.0).scrolls().scroll_edge_fade(8.0).child(list)))
             .child(
                 col().key(format!("note-card-{}", s.notes.index)).grow(1.0).min_w(0.0).h_full().px(14.0).py(10.0)
                     .radius(s.cfg.radius(18.0)).fill(super::card(fg))
@@ -157,5 +186,21 @@ mod tests {
         assert_eq!((s.notes.index, s.notes.editor.text.as_str()), (1, "Old"));
         s.delete_note();
         assert_eq!((texts(&s.cfg.notes), s.notes.editor.text.clone()), (vec!["Groceries".to_string()], "Groceries".to_string()));
+    }
+
+    #[test]
+    fn pinned_notes_list_first_and_search_filters() {
+        let notes = ["Alpha", "Beta list", "Gamma list"].map(crate::config::Item::new).into();
+        let mut s = Island::new(Store::memory(Config { notes, ..Config::default() }), Vec::new());
+        s.open_note(2);
+        s.toggle_pin();
+        assert_eq!(s.listed_notes(), [2, 0, 1]);
+        s.notes.search.replace_text("LIST");
+        assert_eq!(s.listed_notes(), [2, 1]);
+        s.toggle_pin();
+        assert_eq!((s.listed_notes(), s.cfg.pinned_notes.len()), (vec![1, 2], 0));
+        s.toggle_pin();
+        s.delete_note();
+        assert!(s.cfg.pinned_notes.is_empty(), "a deleted note's pin goes with it");
     }
 }

@@ -23,7 +23,8 @@ pub const CANVAS: (f32, f32) = (660.0, 460.0);
 /// Room kept around the Island inside the window for its shadow and hover scale.
 const PAD: f32 = 30.0;
 /// The tab dock under the Large Island: its height, the gap above it, one button and the space between.
-const DOCK: (f32, f32, f32, f32) = (44.0, 12.0, 32.0, 4.0);
+// 3pt between buttons leaves room past all 18 tabs in the canvas.
+const DOCK: (f32, f32, f32, f32) = (44.0, 12.0, 32.0, 3.0);
 /// Room between the Large Island's edge and its tab's content.
 const LARGE_EDGE: f32 = 12.0;
 /// Framer's spring (stiffness 400, damping 40, mass 2.5) as duration and bounce.
@@ -50,6 +51,8 @@ pub enum Alert {
     Volume,
     Brightness,
     CapsLock,
+    /// A task fell due.
+    Reminder,
 }
 
 impl Alert {
@@ -61,6 +64,7 @@ impl Alert {
             Alert::Bluetooth => Some(accent::bluetooth()),
             Alert::Camera => Some(accent::camera()),
             Alert::Microphone => Some(accent::mic()),
+            Alert::Reminder => Some(accent::orange()),
             Alert::Volume | Alert::Brightness | Alert::CapsLock => None,
         }
     }
@@ -74,6 +78,7 @@ impl Alert {
             Alert::Volume => &icons::VOLUME,
             Alert::Brightness => &icons::SUN,
             Alert::CapsLock => &icons::CAPS_LOCK,
+            Alert::Reminder => &icons::BELL,
         }
     }
 
@@ -87,6 +92,7 @@ impl Alert {
             Alert::Volume => "volume",
             Alert::Brightness => "brightness",
             Alert::CapsLock => "caps-lock",
+            Alert::Reminder => "reminder",
         }
     }
 }
@@ -250,6 +256,10 @@ pub struct Island {
     battery_alert_until: Option<f64>,
     charging_alert_until: Option<f64>,
     bluetooth_alert_until: Option<f64>,
+    /// The task that fell due, and until when its reminder shows.
+    pub reminder: Option<(String, f64)>,
+    /// The minute task reminders were last checked, as `YYYY-MM-DDTHH:MM`; empty until the first.
+    pub task_mark: String,
     capture: Option<(Alert, f64)>,
     capture_queue: Vec<Alert>,
     paused_until: Option<f64>,
@@ -265,6 +275,7 @@ pub struct Island {
     pub calc: tabs::Calculator,
     pub shelf: tabs::Shelf,
     pub task: TextEdit,
+    pub task_draft: tabs::TaskDraft,
     pub habit: TextEdit,
     pub calendar: tabs::Calendar,
     pub notes: tabs::Notes,
@@ -366,6 +377,8 @@ impl Island {
             battery_alert_until: None,
             charging_alert_until: None,
             bluetooth_alert_until: None,
+            reminder: None,
+            task_mark: String::new(),
             capture: None,
             capture_queue: Vec::new(),
             paused_until: None,
@@ -373,11 +386,12 @@ impl Island {
             search: TextEdit::default(),
             finder: tabs::Finder::default(),
             ai: tabs::Assistant::default(),
-            clipboard: tabs::Clipboard::default(),
+            clipboard: tabs::Clipboard::new(&cfg, store.dir().as_deref()),
             pomodoro: tabs::Pomodoro::default(),
             calc: tabs::Calculator::default(),
             shelf: tabs::Shelf::default(),
             task: TextEdit::default(),
+            task_draft: tabs::TaskDraft::default(),
             habit: TextEdit::default(),
             calendar: tabs::Calendar::default(),
             notes: tabs::Notes::new(&cfg),
@@ -459,7 +473,7 @@ impl Island {
     fn fullscreen_rule(&self) -> &str { if self.fullscreen { &self.cfg.fullscreen } else { "none" } }
 
     /// Hide when inactive: resting with no track to show.
-    pub fn hidden(&self) -> bool { self.hiding() && self.mode == Mode::Still && !self.shows_track() && !self.caps_lock && !self.pomodoro.running() }
+    pub fn hidden(&self) -> bool { self.hiding() && self.mode == Mode::Still && !self.shows_track() && !self.caps_lock && !self.pomodoro.active() }
 
     pub fn alert(&self) -> Option<Alert> {
         // The level answers a key just pressed, so it goes over the rest.
@@ -467,9 +481,10 @@ impl Island {
         else if self.charging_alert_until.is_some() { Some(Alert::Charging) }
         else if self.battery_alert_until.is_some() { Some(Alert::Battery) }
         else if self.bluetooth_alert_until.is_some() { Some(Alert::Bluetooth) }
+        else if self.reminder.is_some() { Some(Alert::Reminder) }
         // A playing track goes over Caps Lock, which may stay on for good.
         // Beside another live activity, Caps Lock moves to a bubble.
-        else { self.capture.map(|c| c.0).or((self.caps_lock && !self.shows_track() && !self.pomodoro.running()).then_some(Alert::CapsLock)) }
+        else { self.capture.map(|c| c.0).or((self.caps_lock && !self.shows_track() && !self.pomodoro.active()).then_some(Alert::CapsLock)) }
     }
 
     /// Live activities the compact Island has no room for, each in a circle of its own beside it:
@@ -478,8 +493,8 @@ impl Island {
         if self.mode == Mode::Large { return Vec::new() }
         let track = self.shows_track();
         let mut kinds = Vec::new();
-        if track && self.pomodoro.running() { kinds.push(Bubble::Pomodoro) }
-        if self.caps_lock && (track || self.pomodoro.running()) { kinds.push(Bubble::CapsLock) }
+        if track && self.pomodoro.active() { kinds.push(Bubble::Pomodoro) }
+        if self.caps_lock && (track || self.pomodoro.active()) { kinds.push(Bubble::CapsLock) }
         let [x, y, w, h] = self.rect();
         let (mut right, mut left) = (x + w, x);
         kinds.into_iter().enumerate().map(|(i, kind)| {
@@ -511,6 +526,11 @@ impl Island {
             Alert::Microphone => "Microphone".into(),
             Alert::Volume | Alert::Brightness => String::new(),
             Alert::CapsLock => "Caps Lock".into(),
+            // Fits the alert's width.
+            Alert::Reminder => {
+                let title = self.reminder.as_ref().map_or("", |r| r.0.as_str());
+                if title.chars().count() > 13 { format!("{}…", title.chars().take(12).collect::<String>()) } else { title.to_string() }
+            }
         }
     }
 
@@ -539,7 +559,7 @@ impl Island {
         let percent = || label(&self.percent_label());
         let (left, right) = match self.alert() {
             Some(alert) => (20.0, label(&self.alert_label(alert))),
-            None if self.pomodoro.running() => (label(&self.time), 20.0 + label(&self.pomodoro.label())),
+            None if self.pomodoro.active() => (label(&self.time), 20.0 + label(&self.pomodoro.live_label())),
             None => (label(&self.time), match self.weather.temp {
                 Some(temp) if !(self.cfg.standby && self.percent.is_some()) => 16.0 + label(&format!("{temp}º")),
                 _ if self.charging && self.percent.is_some() => 16.0 + percent(),
@@ -559,8 +579,8 @@ impl Island {
             _ if self.level.is_some() && !notch => 100.0, // just the ring
             _ if alerting => if notch { self.notch_glance_width() } else { 176.0 }, // fits icon + "Disconnected"
             _ if track => self.now_playing_width(),
-            _ if notch => if self.mode == Mode::Quick || self.cfg.show_info_idle || self.pomodoro.running() { self.notch_glance_width() } else { 210.0 },
-            _ if self.pomodoro.running() => 168.0, // "23:59" + ring + "24:59"
+            _ if notch => if self.mode == Mode::Quick || self.cfg.show_info_idle || self.pomodoro.active() { self.notch_glance_width() } else { 210.0 },
+            _ if self.pomodoro.active() => (110.0 + estimate_width(&self.pomodoro.live_label(), 15.0)).ceil().max(168.0), // "23:59" + ring + "24:59"
             Mode::Quick | Mode::Still => 140.0, // fits "23:59" + weather/"100%"
         };
         if notch && track && !alerting && self.mode != Mode::Large { w = (w + 40.0).max(300.0) }
@@ -908,6 +928,12 @@ impl Island {
 
     // --- What the pollers report ---
 
+    /// Shows a task's reminder for 6 seconds.
+    pub fn remind(&mut self, title: String, now: f64) {
+        self.reminder = Some((title, now + 6.0));
+        if self.mode != Mode::Large { self.set_mode(Mode::Quick) }
+    }
+
     pub fn set_battery(&mut self, battery: Option<(u8, bool)>, tx: &mut Tx) -> bool {
         let (percent, charging) = battery.map_or((None, false), |(p, c)| (Some(p), c));
         if (percent, charging) == (self.percent, self.charging) { return false }
@@ -1044,7 +1070,7 @@ impl Island {
 
     /// Asks for a poll at the next deadline any timer holds.
     fn schedule(&self, tx: &mut Tx) {
-        let deadlines = [self.level.map(|l| l.1), self.battery_alert_until, self.charging_alert_until, self.bluetooth_alert_until, self.capture.map(|c| c.1), self.paused_until, tabs::deadline(self), self.intro_at, self.close_at];
+        let deadlines = [self.level.map(|l| l.1), self.battery_alert_until, self.charging_alert_until, self.bluetooth_alert_until, self.reminder.as_ref().map(|r| r.1), self.capture.map(|c| c.1), self.paused_until, tabs::deadline(self), self.intro_at, self.close_at];
         if let Some(due) = deadlines.into_iter().flatten().reduce(f64::min) { tx.wake_at(due) }
     }
 
@@ -1065,6 +1091,7 @@ impl Island {
         let mut alert_ended = due(&mut self.battery_alert_until);
         alert_ended |= due(&mut self.charging_alert_until);
         alert_ended |= due(&mut self.bluetooth_alert_until);
+        if self.reminder.as_ref().is_some_and(|r| now >= r.1) { self.reminder = None; alert_ended = true }
         if self.capture.is_some_and(|c| now >= c.1) {
             self.capture = None;
             self.next_capture(tx);
@@ -1137,6 +1164,7 @@ impl Island {
     /// Runs once the window exists: the pollers start here, after the first frame.
     pub fn start(&mut self, waker: Waker) {
         self.images = Some(ImageCache::new(waker));
+        self.clipboard_decode();
         self.begin();
     }
 
@@ -1281,7 +1309,7 @@ pub fn view(s: &Island, _: &mut Cx<Island>) -> El {
         if s.open_select.is_some() && let Some(menu) = layer.pop() {
             layer.push(menu.on_hover_change(|s: &mut Island, hovered, _| s.menu_hovered = hovered));
         }
-    } else if s.mode == Mode::Quick || s.alert().is_some() || s.shows_track() || cfg.show_info_idle || s.pomodoro.running() {
+    } else if s.mode == Mode::Quick || s.alert().is_some() || s.shows_track() || cfg.show_info_idle || s.pomodoro.active() {
         island = island.child(if s.shows_track() && s.alert().is_none() { now_playing(s, fg) } else { glance(s, fg) });
     }
 
@@ -1411,7 +1439,7 @@ fn glance(s: &Island, fg: Color) -> El {
     let right = match alert {
         Some(alert) => text(s.alert_label(alert)).key("label").font(style).color(color),
         // A running Pomodoro is a live activity: its ring and time left take the right side.
-        None if s.pomodoro.running() => tabs::pomodoro_live(&s.pomodoro, style),
+        None if s.pomodoro.active() => tabs::pomodoro_live(&s.pomodoro, style),
         None if cfg.standby && s.percent.is_some() => battery(),
         None => match s.weather.temp {
             Some(temp) => row().key("weather").gap(2.0).center_y()
@@ -1423,7 +1451,7 @@ fn glance(s: &Island, fg: Color) -> El {
     let row = row().key(alert.map_or("glance", Alert::key)).w_full().h_full().px(pad).center_y()
         .transition(Transition::blur_replace());
     // Mini notch centers the time when there is nothing to show beside it.
-    if cfg.notch_mode && cfg.notch_mini && alert.is_none() && s.weather.temp.is_none() && s.percent.is_none() && !s.pomodoro.running() {
+    if cfg.notch_mode && cfg.notch_mini && alert.is_none() && s.weather.temp.is_none() && s.percent.is_none() && !s.pomodoro.active() {
         return row.justify_center().child(left);
     }
     row.justify_between().child(left).child(right)

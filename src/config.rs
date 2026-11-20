@@ -44,6 +44,7 @@ tabs! {
     Calculator = 17,
     Habits = 18,
     Plugins = 15,
+    Weather = 19,
 }
 
 impl Tab {
@@ -53,6 +54,7 @@ impl Tab {
             Tab::Search => "Search",
             Tab::Workflows => "Workflows & QA",
             Tab::Overview => "Overview",
+            Tab::Weather => "Weather",
             Tab::Assistant => "AI Assistant",
             Tab::Clipboard => "Clipboard",
             Tab::Tasks => "Tasks",
@@ -269,6 +271,15 @@ impl Item {
     }
 }
 
+/// A pinned clipboard item: a text, or an image saved as `clipboard/<name>` beside prefs.json.
+/// Pins were plain texts before images could be pinned.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum Pin {
+    Text(String),
+    Image { image: String },
+}
+
 /// The Nextcloud account Notes, Tasks, Calendar events and the Shelf sync with.
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -362,6 +373,14 @@ pub struct Config {
     /// Calendar events; each one's text is `YYYY-MM-DD title` (`nextcloud::event_day`).
     pub events: Vec<Item>,
     pub nextcloud: Nextcloud,
+    /// Notes pinned to the top of the list, by key.
+    pub pinned_notes: Vec<u64>,
+    /// Clipboard items pinned to the top; they outlive the history's limit and restarts.
+    pub clipboard_pins: Vec<Pin>,
+    /// The Calculator's tape, (sum, answer), newest first.
+    pub calc_tape: Vec<(String, String)>,
+    /// Task reminders already shown, as `key@YYYY-MM-DDTHH:MM`, so a missed one shows once later.
+    pub reminded_tasks: Vec<String>,
     /// Files dropped on the Island, newest first.
     pub shelf: Vec<std::path::PathBuf>,
     pub ai_provider: String,
@@ -425,6 +444,10 @@ impl Default for Config {
             notes: Vec::new(),
             events: Vec::new(),
             nextcloud: Nextcloud::default(),
+            pinned_notes: Vec::new(),
+            clipboard_pins: Vec::new(),
+            calc_tape: Vec::new(),
+            reminded_tasks: Vec::new(),
             shelf: Vec::new(),
             ai_provider: "groq".into(),
             ai_model: PROVIDERS[0].model.into(),
@@ -637,7 +660,7 @@ mod tests {
     fn saved_orders_drop_retired_tabs_and_gain_new_ones() {
         use Tab::*;
         let cfg = serde_json::from_str::<Config>(r#"{"tab_order": [7, 2, 3, 0], "hidden_tabs": [3, 0], "default_tab": 7}"#).unwrap().normalized();
-        assert_eq!(cfg.tab_order, [Overview, Search, Workflows, Assistant, Clipboard, Tasks, T3, Notes, Stremflix, Shelf, System, Calendar, Limits, Pomodoro, Calculator, Habits, Plugins]);
+        assert_eq!(cfg.tab_order, [Overview, Search, Workflows, Assistant, Clipboard, Tasks, T3, Notes, Stremflix, Shelf, System, Calendar, Limits, Pomodoro, Calculator, Habits, Plugins, Weather]);
         assert_eq!((cfg.hidden_tabs.as_slice(), cfg.default_tab), ([Search].as_slice(), Overview));
     }
 
@@ -652,7 +675,7 @@ mod tests {
     fn the_last_visible_tab_cannot_be_hidden() {
         let mut cfg = Config { hidden_tabs: Vec::new(), ..Config::default() };
         for t in Tab::ALL { cfg.toggle_tab(t) }
-        assert!(!cfg.hidden_tabs.contains(&Tab::Plugins) && cfg.hidden_tabs.len() == Tab::ALL.len() - 1);
+        assert!(!cfg.hidden_tabs.contains(&Tab::Weather) && cfg.hidden_tabs.len() == Tab::ALL.len() - 1);
         cfg.toggle_tab(Tab::Search);
         assert!(!cfg.hidden_tabs.contains(&Tab::Search));
     }
@@ -700,6 +723,13 @@ mod tests {
         let cfg: Config = serde_json::from_str(r#"{"standby": false}"#).unwrap();
         assert!(!cfg.standby && cfg.battery_alerts && cfg.default_tab == Tab::Overview);
         assert!(serde_json::to_string(&Config::default()).unwrap().contains(r#""default_tab":2"#), "tabs save as their numbers");
+    }
+
+    #[test]
+    fn clipboard_pins_load_old_texts_and_new_images() {
+        let cfg: Config = serde_json::from_str(r#"{"clipboard_pins": ["old", {"image": "ab.png"}]}"#).unwrap();
+        assert_eq!(cfg.clipboard_pins, [Pin::Text("old".into()), Pin::Image { image: "ab.png".into() }]);
+        assert_eq!(serde_json::from_str::<Config>(&serde_json::to_string(&cfg).unwrap()).unwrap().clipboard_pins, cfg.clipboard_pins);
     }
 
     #[test]

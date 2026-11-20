@@ -17,19 +17,21 @@ mod shelf;
 mod stremflix;
 mod t3;
 mod tasks;
+mod weather;
 mod workflows;
 
 pub use assistant::Assistant;
 pub use calculator::Calculator;
 pub use calendar::Calendar;
-pub use clipboard::Clipboard;
+pub use clipboard::{Clipboard, Content};
 pub use limits::Limits;
 pub use notes::Notes;
 pub use shelf::Shelf;
-pub use pomodoro::{Pomodoro, bubble as pomodoro_bubble, live as pomodoro_live};
+pub use pomodoro::{Clock, Pomodoro, bubble as pomodoro_bubble, live as pomodoro_live};
 pub use search::Finder;
 pub use stremflix::Stremflix;
 pub use t3::T3;
+pub use tasks::{Every, Task, TaskDraft};
 
 use rune::{Color, El, Key, KeyEvent, ScrollSpec, TextEdit, Tx, el, icon, row, text, text_input};
 
@@ -46,6 +48,7 @@ fn panel(s: &Island, tab: Tab, layer: &mut Vec<El>) -> El {
         Tab::Search => search::view(s),
         Tab::Workflows => workflows::view(s),
         Tab::Overview => overview::view(s, layer),
+        Tab::Weather => weather::view(s),
         Tab::Assistant => assistant::view(s),
         Tab::Clipboard => clipboard::view(s),
         Tab::Tasks => tasks::view(s),
@@ -69,13 +72,17 @@ pub const fn size(tab: Tab) -> (f32, f32) {
         Tab::Search => (480.0, 330.0),
         Tab::Workflows => (520.0, 250.0),
         Tab::Notes | Tab::Stremflix | Tab::Limits => (520.0, 290.0),
-        Tab::Shelf | Tab::System => (520.0, 230.0),
-        Tab::Tasks | Tab::T3 | Tab::Plugins | Tab::Calculator => (420.0, 290.0),
+        Tab::Shelf => (520.0, 230.0),
+        Tab::System => (520.0, 342.0),
+        Tab::T3 | Tab::Plugins | Tab::Calculator => (420.0, 290.0),
+        Tab::Tasks => (480.0, 320.0),
         Tab::Habits => (520.0, 290.0),
-        Tab::Pomodoro => (440.0, 190.0),
+        Tab::Pomodoro => (440.0, 236.0),
         Tab::Calendar => (560.0, 280.0),
         Tab::Overview => (560.0, 320.0),
-        Tab::Assistant | Tab::Clipboard => (420.0, 230.0),
+        Tab::Assistant => (420.0, 230.0),
+        Tab::Clipboard => (420.0, 290.0),
+        Tab::Weather => (420.0, 190.0),
     }
 }
 
@@ -99,14 +106,21 @@ fn load(s: &mut Island, tab: Tab) {
         Tab::T3 => s.t3_load(),
         Tab::Stremflix => s.stremflix_load(),
         Tab::Limits => s.limits_load(),
+        Tab::Calculator => s.calc_load(),
         Tab::Notes => s.nextcloud_sync(Kind::Notes),
-        Tab::Tasks => s.nextcloud_sync(Kind::Tasks),
+        Tab::Tasks => {
+            if s.task_draft.editing.is_some() { tasks::reset_draft(s) }
+            s.nextcloud_sync(Kind::Tasks);
+        }
         Tab::Calendar => {
             (s.calendar.offset, s.calendar.day) = (0, None);
+            if s.calendar.editing.take().is_some() { s.calendar.event.clear() }
             s.nextcloud_sync(Kind::Events);
         }
         Tab::Shelf => s.nextcloud_shelf_sync(),
         Tab::Plugins => s.plugins.scan(),
+        // Seen: a rung timer leaves the compact Island.
+        Tab::Pomodoro => s.pomodoro.timer.rung = false,
         _ => {}
     }
 }
@@ -115,7 +129,9 @@ fn load(s: &mut Island, tab: Tab) {
 pub fn each_second(s: &mut Island, now: f64) -> bool {
     let plugins = shows(s, Tab::Plugins) && s.plugins.tick();
     s.notes_tick();
-    s.pomodoro.tick(now) | plugins
+    s.task_reminders(now);
+    crate::system::WANT_PROCESSES.store(s.mode == Mode::Large && s.tab == Tab::System, std::sync::atomic::Ordering::Relaxed);
+    s.pomodoro.tick_all(now) | plugins
 }
 
 /// Before every frame, from `Island::poll`.

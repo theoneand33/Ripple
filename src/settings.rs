@@ -286,7 +286,7 @@ fn drag_tab(s: &mut Settings, from: usize, d: &mut Drag, tx: &mut Tx) {
 /// Whether a tab has its own settings page: one `panel` has sections for.
 fn has_panel(tab: Tab) -> bool {
     match tab {
-        Tab::Search | Tab::Workflows | Tab::Overview | Tab::Assistant | Tab::T3 | Tab::Limits | Tab::Tasks | Tab::Notes | Tab::Calendar | Tab::Shelf => true,
+        Tab::Search | Tab::Workflows | Tab::Overview | Tab::Weather | Tab::Assistant | Tab::T3 | Tab::Limits | Tab::Tasks | Tab::Notes | Tab::Calendar | Tab::Shelf => true,
         Tab::Clipboard | Tab::Stremflix | Tab::System | Tab::Plugins | Tab::Pomodoro | Tab::Calculator | Tab::Habits => false,
     }
 }
@@ -303,7 +303,8 @@ fn panel(s: &Settings, k: &Kit, layer: &mut Vec<El>, tab: Tab) -> Vec<El> {
                 setting(s, "Search engine", choice(s, k, layer, "engine", "Search engine", &engines, &cfg.search_engine, |c, v| c.search_engine = v.into())),
             ]));
         }
-        Tab::Overview => {
+        // The Overview's weather and the Weather tab both read these.
+        Tab::Overview | Tab::Weather => {
             sections.push(section(s, "weather", "Weather", vec![
                 setting(s, "Location", TextInput::new(&s.location).label("Location").placeholder("City, ST, Country").width(Some(200.0))
                     .binds(|s| &mut s.location, |c, v| c.location = v.into()).build(k)),
@@ -661,7 +662,7 @@ mod tests {
         rt.pointer_up(x, y + 100.0);
         rt.frame(1.0 / 60.0);
         use Tab::*;
-        assert_eq!(store.get().tab_order, [Overview, Workflows, Assistant, Search, Clipboard, Tasks, T3, Notes, Stremflix, Shelf, System, Calendar, Limits, Pomodoro, Calculator, Habits, Plugins]);
+        assert_eq!(store.get().tab_order, [Overview, Workflows, Assistant, Search, Clipboard, Tasks, T3, Notes, Stremflix, Shelf, System, Calendar, Limits, Pomodoro, Calculator, Habits, Plugins, Weather]);
     }
 
     #[test]

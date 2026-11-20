@@ -97,6 +97,14 @@ fn island_spec() -> AppSpec<Island> {
             ("brightness", |s| { let tx = &mut rune::Tx::default(); s.set_levels(None, Some(40), tx); s.set_levels(None, Some(85), tx); }),
             ("caps-lock", |s| { s.set_caps_lock(true); }),
             ("large", |s| s.mode = Mode::Large),
+            ("weather-empty", |s| { s.mode = Mode::Large; s.set_tab(Tab::Weather) }),
+            ("weather", |s| {
+                s.mode = Mode::Large;
+                s.set_tab(Tab::Weather);
+                s.cfg.location = "Paris".into();
+                let day = |date, code, high, low| net::Day { date, code: Some(code), high, low };
+                s.weather = net::Weather { temp: Some(12), code: Some(3), days: vec![day((2026, 1, 2), 3, 13, 4), day((2026, 1, 3), 61, 9, 5), day((2026, 1, 4), 0, 15, 6), day((2026, 1, 5), 71, 2, -3), day((2026, 1, 6), 95, 11, 7)] };
+            }),
             ("search", |s| { s.mode = Mode::Large; s.set_tab(Tab::Search) }),
             ("search-results", |s| {
                 s.mode = Mode::Large;
@@ -107,8 +115,31 @@ fn island_spec() -> AppSpec<Island> {
             }),
             ("workflows", |s| { s.mode = Mode::Large; s.set_tab(Tab::Workflows) }),
             ("assistant", |s| { s.mode = Mode::Large; s.set_tab(Tab::Assistant); s.ai.asked = true; s.ai.answer = Some("**Rust** is a systems language.\n\n```rust\nfn main() {}\n```".into()) }),
-            ("clipboard", |s| { s.mode = Mode::Large; s.set_tab(Tab::Clipboard); s.clipboard.push("Hello from Ripple"); }),
+            ("clipboard", |s| { s.mode = Mode::Large; s.set_tab(Tab::Clipboard); s.clipboard.push(tabs::Content::Text("Hello from Ripple".into())); }),
+            ("clipboard-pinned", |s| {
+                s.mode = Mode::Large;
+                s.set_tab(Tab::Clipboard);
+                // A 2×1 PNG header is enough for the row's size; its pixels stay blank headless.
+                let png = [&b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR"[..], &[0, 0, 7, 128, 0, 0, 4, 56]].concat();
+                for t in ["ssh deploy@10.0.0.4", "https://github.com/TopMyster/Ripple"] { s.clipboard.push(tabs::Content::Text(t.into())); }
+                s.clipboard.toggle_pin(0);
+                if let Some(image) = rune::ClipboardImage::from_png(png) { s.clipboard_image(image); }
+            }),
             ("tasks", |s| { s.mode = Mode::Large; s.set_tab(Tab::Tasks) }),
+            ("tasks-due", |s| {
+                s.mode = Mode::Large;
+                s.set_tab(Tab::Tasks);
+                s.cfg.tasks = ["Water the plants due:2026-01-01 every:week", "!!! Ship v0.5 due:2026-01-02T17:00", "Read the RFC", "! Book flights due:2026-01-09"].map(config::Item::new).into();
+            }),
+            ("tasks-edit", |s| {
+                s.mode = Mode::Large;
+                s.set_tab(Tab::Tasks);
+                s.cfg.tasks = ["!!! Ship v0.5 due:2026-01-02T17:00", "Water the plants due:2026-01-01 every:week"].map(config::Item::new).into();
+                let key = s.cfg.tasks[0].key;
+                s.task_draft = tabs::TaskDraft { priority: 3, due: Some((2026, 1, 2)), time: Some((17, 0)), every: Some(tabs::Every::Week), editing: Some(key) };
+                s.task.replace_text("Ship v0.5");
+            }),
+            ("reminder", |s| s.remind("Ship v0.5 release notes".into(), 0.0)),
             ("tasks-sync-error", |s| {
                 s.mode = Mode::Large;
                 s.set_tab(Tab::Tasks);
@@ -121,6 +152,14 @@ fn island_spec() -> AppSpec<Island> {
                 s.mode = Mode::Large;
                 s.set_tab(Tab::Calendar);
                 s.cfg.events = ["2026-01-01 New Year's brunch", "2026-01-01 09:30 Standup", "2026-01-15 Dentist"].map(config::Item::new).into();
+            }),
+            ("calendar-edit", |s| {
+                s.mode = Mode::Large;
+                s.set_tab(Tab::Calendar);
+                s.cfg.events = ["2026-01-01 New Year's brunch", "2026-01-01 09:30 Standup"].map(config::Item::new).into();
+                let key = s.cfg.events[1].key;
+                s.calendar.editing = Some(key);
+                s.calendar.event.replace_text("09:30 Standup");
             }),
             ("habits", |s| {
                 s.mode = Mode::Large;
@@ -135,11 +174,15 @@ fn island_spec() -> AppSpec<Island> {
             ("t3", |s| { s.mode = Mode::Large; s.set_tab(Tab::T3) }),
             ("pomodoro", |s| { s.mode = Mode::Large; s.set_tab(Tab::Pomodoro); s.pomodoro.left = 18.0 * 60.0 + 42.0; s.pomodoro.rounds = 2 }),
             // Ends on the app clock, which starts near zero in a headless render.
+            ("timer", |s| { s.mode = Mode::Large; s.set_tab(Tab::Pomodoro); s.pomodoro.clock = tabs::Clock::Timer; s.pomodoro.timer.set(10.0, 0.0); s.pomodoro.timer.left = 4.0 * 60.0 + 12.0 }),
+            ("stopwatch", |s| { s.mode = Mode::Large; s.set_tab(Tab::Pomodoro); s.pomodoro.clock = tabs::Clock::Stopwatch; s.pomodoro.stopwatch.elapsed = 83.0 }),
+            ("timer-done", |s| { s.pomodoro.timer.rung = true; s.pomodoro.timer.left = 0.0 }),
+            ("stopwatch-live", |s| { s.pomodoro.stopwatch.toggle(0.0); s.pomodoro.stopwatch.elapsed = 3723.0; s.pomodoro.stopwatch.since = Some(-3723.0) }),
             ("pomodoro-live", |s| { s.pomodoro.ends = Some(15.0 * 60.0 + 23.0); s.pomodoro.tick(0.0); }),
             ("calculator", |s| {
                 s.mode = Mode::Large;
                 s.set_tab(Tab::Calculator);
-                s.calc.tape = vec![("1299 * 0.8".into(), "1039.2".into()), ("(12 + 30) / 7".into(), "6".into())];
+                s.cfg.calc_tape = vec![("5 km to mi".into(), "3.106856 mi".into()), ("1299 * 0.8".into(), "1039.2".into()), ("(12 + 30) / 7".into(), "6".into())];
                 s.calc.input.replace_text("1039.2 + 15%4");
             }),
             ("notes", |s| {
@@ -152,6 +195,14 @@ fn island_spec() -> AppSpec<Island> {
                 ].map(config::Item::new).into();
                 s.open_note(0);
             }),
+            ("notes-pinned-search", |s| {
+                s.mode = Mode::Large;
+                s.set_tab(Tab::Notes);
+                s.cfg.notes = ["Groceries\nMilk, eggs", "Sprint board\nMN-214", "Merge checklist\nCI green", "Board games\nCatan"].map(config::Item::new).into();
+                s.cfg.pinned_notes = vec![s.cfg.notes[2].key];
+                s.notes.search.replace_text("c");
+                s.open_note(2);
+            }),
             ("stremflix", |s| {
                 s.mode = Mode::Large;
                 s.set_tab(Tab::Stremflix);
@@ -163,7 +214,9 @@ fn island_spec() -> AppSpec<Island> {
                 s.set_tab(Tab::System);
                 s.percent = Some(57);
                 const GB: u64 = 1 << 30;
-                s.stats = Some(system::Stats { cpu: 7.0, mem_used: 29 * GB, mem_total: 48 * GB, disk_free: 810 * GB, disk_total: 990 * GB, down: 15_200, up: 3_100 });
+                s.stats = Some(system::Stats { cpu: 7.0, mem_used: 29 * GB, mem_total: 48 * GB, disk_free: 810 * GB, disk_total: 990 * GB, down: 15_200, up: 3_100,
+                    top_cpu: vec![("firefox".into(), 12.4), ("rust-analyzer".into(), 6.1), ("ripple".into(), 0.8)],
+                    top_mem: vec![("firefox".into(), 3 * GB + GB / 5), ("rust-analyzer".into(), 2 * GB), ("Slack".into(), 900 << 20)] });
             }),
             ("limits", |s| {
                 s.mode = Mode::Large;
