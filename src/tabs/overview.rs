@@ -19,10 +19,10 @@ const WIDTH: f32 = super::size(Tab::Overview).0 - 24.0;
 /// One grid cell: a quarter of the width, and a row.
 const CELL: (f32, f32) = ((WIDTH - 3.0 * GAP) / Tile::COLS as f32, 52.0);
 const HEADER: f32 = 28.0;
-/// The edit drawer: padding, its label, and two rows of widgets that scroll.
-const DRAWER: f32 = 8.0 + 16.0 + 6.0 + 62.0 + 8.0;
+/// The edit drawer's width: a column beside the grid, so it hides none of it.
+const DRAWER_W: f32 = 140.0;
 /// The tallest the Overview's content grows before its tiles scroll: room left for the dock in `CANVAS`.
-const MAX_H: f32 = 356.0;
+const MAX_H: f32 = 496.0;
 
 /// `n` cells and the gaps between them.
 fn span(n: u8, cell: f32) -> f32 { n as f32 * cell + (n as f32 - 1.0) * GAP }
@@ -69,11 +69,15 @@ fn grid_height(edit: bool, rects: &[[f32; 4]]) -> f32 {
     if edit || rects.is_empty() { h.max(span(2, CELL.1)) } else { h }
 }
 
-/// The Overview's content height: the header, the saved tiles, and the drawer while editing.
+/// The Overview's content height: the header and the saved tiles.
 /// Not the tiles a drag shows, so the Island holds still under the pointer.
 pub fn height(s: &Island) -> f32 {
-    let h = HEADER + 10.0 + grid_height(s.dashboard_edit, &layout(&s.cfg.dashboard));
-    (h + if s.dashboard_edit { GAP + DRAWER } else { 0.0 }).min(MAX_H)
+    (HEADER + 10.0 + grid_height(s.dashboard_edit, &layout(&s.cfg.dashboard))).min(MAX_H)
+}
+
+/// The Large Island's width on the Overview: wider while editing, for the drawer.
+pub fn width(s: &Island) -> f32 {
+    super::size(Tab::Overview).0 + if s.dashboard_edit { GAP + DRAWER_W } else { 0.0 }
 }
 
 /// The slot a widget dropped at `(x, y)` on the grid takes: after every tile before it in
@@ -203,11 +207,11 @@ pub fn view(s: &Island, layer: &mut Vec<El>) -> El {
     }
     let content = if tiles.is_empty() && !s.dashboard_edit { empty(s, "No widgets yet: press the pencil to add some") } else { grid };
 
-    let mut overview = col().key("overview").w_full().h_full().gap(10.0)
+    let overview = col().key("overview").w(WIDTH).h_full().gap(10.0)
         .child(header)
         .child(col().key("dashboard-scroll").w_full().grow(1.0).min_h(0.0).scrolls().child(content));
-    if s.dashboard_edit { overview = overview.child(drawer(s)) }
-    overview
+    if !s.dashboard_edit { return overview }
+    row().key("overview-edit").w_full().h_full().gap(GAP).child(overview).child(drawer(s))
 }
 
 /// Where a widget dragged from the drawer would land.
@@ -274,10 +278,10 @@ fn drawer(s: &Island) -> El {
         if dragging == Some(widget) { chip = chip.opacity(0.4) }
         chips = chips.child(chip);
     }
-    let hint = if widgets.is_empty() { "Every widget is on the dashboard" } else { "Drag a widget onto the dashboard" };
-    col().key("drawer").w_full().h(DRAWER).padding(8.0).gap(6.0).radius(s.cfg.radius(18.0)).fill(card(fg))
+    let hint = if widgets.is_empty() { "All added" } else { "Drag to add" };
+    col().key("drawer").w(DRAWER_W).h_full().padding(8.0).gap(6.0).radius(s.cfg.radius(18.0)).fill(card(fg))
         .transition(Transition::opacity())
-        .child(text(hint).font(s.cfg.font(12.0, 700.0)).color(fg.alpha(0.6 * fg.a)).h(16.0))
+        .child(text(hint).font(s.cfg.font(12.0, 700.0)).color(fg.alpha(0.6 * fg.a)))
         .child(col().key("drawer-scroll").w_full().grow(1.0).min_h(0.0).scrolls().child(chips))
 }
 
