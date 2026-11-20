@@ -314,6 +314,14 @@ fn panel(s: &Settings, k: &Kit, layer: &mut Vec<El>, tab: Tab) -> Vec<El> {
                     .binds(|s| &mut s.location, |c, v| c.location = v.into()).build(k)),
                 setting(s, "Unit", choice(s, k, layer, "unit", "Unit", &[("f", "Fahrenheit (°F)"), ("c", "Celsius (°C)")], &cfg.weather_unit, |c, v| c.weather_unit = v.into())),
             ]));
+            if tab == Tab::Overview {
+                sections.push(section(s, "water", "Water", vec![
+                    setting(s, &format!("Daily goal ({} glasses)", cfg.water_goal), slider(s, "water-goal", "Daily goal", (1.0, 20.0, 1.0), |c| c.water_goal as f32, |c, v| c.water_goal = v as u32)).key("water-goal-row"),
+                    toggle(s, k, "Hourly reminders", cfg.water_reminders, |c| c.water_reminders = !c.water_reminders),
+                    setting(s, &format!("From {}:00", cfg.water_from), slider(s, "water-from", "Reminders from", (0.0, 24.0, 1.0), |c| c.water_from as f32, |c, v| c.water_from = v as u32)).key("water-from-row"),
+                    setting(s, &format!("Until {}:00", cfg.water_to), slider(s, "water-to", "Reminders until", (0.0, 24.0, 1.0), |c| c.water_to as f32, |c, v| c.water_to = v as u32)).key("water-to-row"),
+                ]));
+            }
         }
         Tab::Workflows => {
             let mut apps = vec![

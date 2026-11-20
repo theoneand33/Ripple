@@ -105,11 +105,13 @@ pub enum Widget {
     Battery,
     /// Today's events and the tasks left.
     Today,
+    /// Glasses of water drunk today, against a goal.
+    Water,
     Panel(Tab),
 }
 
 impl Widget {
-    pub const OWN: [Widget; 5] = [Widget::Clock, Widget::Media, Widget::Weather, Widget::Battery, Widget::Today];
+    pub const OWN: [Widget; 6] = [Widget::Clock, Widget::Media, Widget::Weather, Widget::Battery, Widget::Today, Widget::Water];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -118,6 +120,7 @@ impl Widget {
             Widget::Weather => "Weather",
             Widget::Battery => "Battery",
             Widget::Today => "Today",
+            Widget::Water => "Water",
             Widget::Panel(tab) => tab.name(),
         }
     }
@@ -370,6 +373,15 @@ pub struct Config {
     pub workflows: Vec<Workflow>,
     pub tasks: Vec<Item>,
     pub habits: Vec<Habit>,
+    /// Water: glasses a day.
+    pub water_goal: u32,
+    /// Water: the day counted (days since 1970) and its glasses; another day starts at 0.
+    pub water_day: i64,
+    pub water_count: u32,
+    /// Water: a reminder each hour from `water_from` until `water_to` (hours, 0-24) while short of the goal.
+    pub water_reminders: bool,
+    pub water_from: u32,
+    pub water_to: u32,
     /// Each note's first line is its title.
     pub notes: Vec<Item>,
     /// Calendar events; each one's text is `YYYY-MM-DD title` (`nextcloud::event_day`).
@@ -449,6 +461,12 @@ impl Default for Config {
             workflows: Vec::new(),
             tasks: Vec::new(),
             habits: Vec::new(),
+            water_goal: 8,
+            water_day: 0,
+            water_count: 0,
+            water_reminders: true,
+            water_from: 9,
+            water_to: 21,
             notes: Vec::new(),
             events: Vec::new(),
             nextcloud: Nextcloud::default(),
@@ -541,6 +559,9 @@ impl Config {
         kit.c.knob_on = bg;
         kit
     }
+
+    /// Glasses of water drunk on `day`.
+    pub fn water(&self, day: i64) -> u32 { if self.water_day == day { self.water_count } else { 0 } }
 
     pub fn provider(&self) -> &'static Provider {
         PROVIDERS.iter().find(|p| p.id == self.ai_provider).unwrap_or(&PROVIDERS[0])

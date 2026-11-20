@@ -260,6 +260,8 @@ pub struct Island {
     pub reminder: Option<(String, f64)>,
     /// The minute task reminders were last checked, as `YYYY-MM-DDTHH:MM`; empty until the first.
     pub task_mark: String,
+    /// The hour a water reminder last came, as (day, hour).
+    water_mark: Option<(i64, u32)>,
     capture: Option<(Alert, f64)>,
     capture_queue: Vec<Alert>,
     paused_until: Option<f64>,
@@ -380,6 +382,7 @@ impl Island {
             bluetooth_alert_until: None,
             reminder: None,
             task_mark: String::new(),
+            water_mark: None,
             capture: None,
             capture_queue: Vec::new(),
             paused_until: None,
@@ -936,6 +939,16 @@ impl Island {
         if self.mode != Mode::Large { self.set_mode(Mode::Quick) }
     }
 
+    /// On the hour within the set hours, while the Water widget is on the Overview and today's
+    /// glasses are short of the goal.
+    pub fn water_reminders(&mut self, now: f64) {
+        if rune::is_headless() || !self.cfg.water_reminders || !self.cfg.dashboard.iter().any(|t| t.widget == crate::config::Widget::Water) { return }
+        let t = LocalTime::at(crate::date::now_ms());
+        let mark = (crate::date::days_from_civil(t.year, t.month, t.day), t.hour);
+        if self.water_mark.replace(mark) == Some(mark) { return }
+        if water_due(&self.cfg, mark) { self.remind("Drink water".into(), now) }
+    }
+
     pub fn set_battery(&mut self, battery: Option<(u8, bool)>, tx: &mut Tx) -> bool {
         let (percent, charging) = battery.map_or((None, false), |(p, c)| (Some(p), c));
         if (percent, charging) == (self.percent, self.charging) { return false }
@@ -1238,6 +1251,11 @@ impl Island {
     pub fn set_window(&mut self, window: WindowHandle) {
         self.passthrough.set_window(window);
     }
+}
+
+/// A water reminder is due at `(day, hour)`: within the set hours and short of the goal.
+fn water_due(cfg: &Config, (day, hour): (i64, u32)) -> bool {
+    (cfg.water_from..cfg.water_to).contains(&hour) && cfg.water(day) < cfg.water_goal
 }
 
 /// Fetches an image (blocking) and hands it, loaded, to `put` on the UI thread.
@@ -1590,6 +1608,15 @@ mod tests {
 
     fn island(cfg: Config) -> Island {
         Island::new(Store::memory(cfg), Vec::new())
+    }
+
+    #[test]
+    fn water_reminders_come_within_the_set_hours_until_the_goal() {
+        let cfg = Config { water_goal: 2, water_day: 100, water_count: 1, ..Config::default() };
+        assert!(water_due(&cfg, (100, 9)) && water_due(&cfg, (100, 20)));
+        assert!(!water_due(&cfg, (100, 8)) && !water_due(&cfg, (100, 21)), "outside 9 to 21");
+        assert!(water_due(&cfg, (101, 12)), "a new day starts at 0");
+        assert!(!water_due(&Config { water_count: 2, ..cfg }, (100, 12)), "the goal is met");
     }
 
     #[test]
