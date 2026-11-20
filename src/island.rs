@@ -764,7 +764,8 @@ impl Island {
     }
 
     /// A drag starting anywhere on the desktop opens the Shelf, ready for the drop. When it ends
-    /// away from the Island, it rests; over it, the drop (or the drag leaving) decides.
+    /// it rests, even under the pointer, unless files are over the Island: then the drop or the
+    /// drag leaving decides.
     pub fn desktop_drag(&mut self, active: bool) {
         if active {
             if !self.visible_tabs().contains(&Tab::Shelf) { return }
