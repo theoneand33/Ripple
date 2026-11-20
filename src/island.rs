@@ -221,6 +221,8 @@ pub struct Island {
     pub track: Option<Track>,
     pub art: Option<Image>,
     pub art_hovered: bool,
+    /// The bubble under the pointer: a bubble that goes away takes no hover-leave with it.
+    bubble_hovered: Option<Bubble>,
     /// The marquee under the pointer, by key: it holds still so it can be read.
     pub marquee_hovered: Option<String>,
     /// What the last delete took, until the tab changes.
@@ -335,6 +337,7 @@ impl Island {
             track: None,
             art: None,
             art_hovered: false,
+            bubble_hovered: None,
             marquee_hovered: None,
             undo: None,
             open_select: None,
@@ -655,6 +658,7 @@ impl Island {
             self.entered_tab();
         }
         // The bubble is gone in Large, so its hover is too; the Island closes unless the pointer reaches it.
+        self.bubble_hovered = None;
         self.over[2] = false;
         self.hovered = self.over.iter().any(|o| *o);
         if !self.hovered {
@@ -1040,6 +1044,10 @@ impl Island {
             // A tab change after the pointer left pushes the pending close out too.
             if self.close_at.is_some() { self.close_at = Some(at) }
         }
+        if let Some(kind) = self.bubble_hovered && !self.bubbles().iter().any(|b| b.0 == kind) {
+            self.bubble_hovered = None;
+            self.set_over(2, false, tx);
+        }
         changed |= self.leave(tx);
         changed |= due(&mut self.paused_until);
         if due(&mut self.intro_at) {
@@ -1293,7 +1301,10 @@ fn bubble(s: &Island, kind: Bubble, [x, y, w, h]: [f32; 4]) -> El {
         .box_shadow(Shadow { x: 0.0, y: 0.0, blur: 24.0, spread: 0.0, color: Color::BLACK.alpha(0.12), inset: false })
         .motion(SPRING).transition(Transition { removal: Effect { opacity: 0.0, ..enter.insertion }, ..enter })
         .hover(fg.alpha(0.1 * fg.a)).press_scale(0.95)
-        .on_hover_change(|s: &mut Island, hovered, tx| s.set_over(2, hovered, tx))
+        .on_hover_change(move |s: &mut Island, hovered, tx| {
+            s.bubble_hovered = hovered.then_some(kind);
+            s.set_over(2, hovered, tx)
+        })
         .on_press_tx(move |s: &mut Island, tx| s.open_bubble(kind, tx))
         .child(content)
 }
@@ -1628,6 +1639,13 @@ mod tests {
         s.pomodoro.ends = Some(60.0);
         let [x, _, w, h] = s.rect();
         assert_eq!(s.bubbles().iter().map(|b| b.1[0]).collect::<Vec<_>>(), [x + w + BUBBLE_GAP, x + w + 2.0 * BUBBLE_GAP + h]);
+
+        // A bubble that goes away under the pointer lets go of the hover.
+        s.bubble_hovered = Some(Bubble::CapsLock);
+        s.set_over(2, true, &mut tx);
+        s.set_caps_lock(false);
+        s.poll(1.0, &mut tx);
+        assert!(!s.hovered);
     }
 
     #[test]
