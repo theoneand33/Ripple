@@ -818,7 +818,6 @@ impl Island {
         self.set_mode(Mode::Large);
         if kind == Bubble::Pomodoro && self.visible_tabs().contains(&Tab::Pomodoro) {
             self.set_tab(Tab::Pomodoro);
-            self.entered_tab();
         }
         // The bubble is gone in Large, so its hover is too; the Island closes unless the pointer reaches it.
         self.bubble_hovered = None;
@@ -883,7 +882,7 @@ impl Island {
         self.set_mode(Mode::Still);
     }
 
-    /// Switches to `tab`, animating in the direction it sits from the current one.
+    /// Switches to `tab`, sliding the way it lies from the current one, and loads what it shows.
     pub fn set_tab(&mut self, tab: Tab) {
         let visible = self.visible_tabs();
         let at = |t: Tab| visible.iter().position(|v| *v == t);
@@ -893,6 +892,7 @@ impl Island {
             self.tab_dir = if to > from { 1 } else { -1 };
         }
         self.tab = tab;
+        self.entered_tab();
     }
 
     pub fn move_tab(&mut self, direction: i32) {
@@ -903,11 +903,10 @@ impl Island {
         self.open_tab(visible[next as usize]);
     }
 
-    /// The user's tab change: slides the way the tab lies, loads what it needs, and earns the linger.
+    /// The user's tab change: `set_tab`, and it earns the linger.
     pub fn open_tab(&mut self, tab: Tab) {
         if self.tab != tab && self.mode == Mode::Large { self.tab_changed = true }
         self.set_tab(tab);
-        self.entered_tab();
     }
 
     fn entered_tab(&mut self) {
@@ -924,7 +923,6 @@ impl Island {
         self.mode = Mode::Large;
         self.large_by_hand = true;
         self.set_tab(Tab::Shelf);
-        self.entered_tab();
     }
 
     /// A file drag over the Island opens the Shelf; one that leaves without dropping lets it rest.
@@ -1047,7 +1045,6 @@ impl Island {
         if self.mode != Mode::Large || !self.hovered { self.set_mode(Mode::Still) }
         if !self.visible_tabs().contains(&self.tab) {
             self.set_tab(self.first_tab());
-            self.entered_tab();
         }
         let size = self.screen().size;
         if old.display != self.cfg.display || Placement::of(&old, size) != Placement::of(&self.cfg, size) { self.place_window() }
