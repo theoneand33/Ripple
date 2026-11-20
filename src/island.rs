@@ -256,6 +256,7 @@ pub struct Island {
     expect_playing: Option<(bool, f64)>,
 
     pub search: TextEdit,
+    pub finder: tabs::Finder,
     pub ai: tabs::Assistant,
     pub clipboard: tabs::Clipboard,
     pub pomodoro: tabs::Pomodoro,
@@ -364,6 +365,7 @@ impl Island {
             paused_until: None,
             expect_playing: None,
             search: TextEdit::default(),
+            finder: tabs::Finder::default(),
             ai: tabs::Assistant::default(),
             clipboard: tabs::Clipboard::default(),
             pomodoro: tabs::Pomodoro::default(),
