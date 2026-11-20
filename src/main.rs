@@ -330,6 +330,7 @@ fn island_spec() -> AppSpec<Island> {
                 s.cfg.dashboard = [config::Widget::Clock, config::Widget::Battery, config::Widget::Panel(Tab::Tasks), config::Widget::Panel(Tab::System)].map(config::Tile::new).into();
                 s.cfg.tasks = vec![config::Item::new("Ship the dashboard"), config::Item::new("Water the plants")];
             }),
+            ("overview-quote", |s| { s.mode = Mode::Large; s.set_tab(Tab::Overview); s.cfg.dashboard = [config::Widget::Quote, config::Widget::Clock].map(config::Tile::new).into() }),
             ("overview-day", |s| {
                 s.mode = Mode::Large;
                 s.set_tab(Tab::Overview);
