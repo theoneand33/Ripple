@@ -278,8 +278,9 @@ impl Island {
         let Some(me) = self.me.clone() else { return };
         self.contributions.loaded_at = now;
         let (gh, lc) = (self.cfg.github_user.trim().to_string(), self.cfg.leetcode_user.trim().to_string());
-        if !gh.is_empty() { me.spawn({ let u = gh.clone(); move || crate::net::github_graph(&u) }, move |s, g| s.contributions.github = Some((gh, g))) }
-        if !lc.is_empty() { me.spawn({ let u = lc.clone(); move || crate::net::leetcode_graph(&u) }, move |s, g| s.contributions.leetcode = Some((lc, g))) }
+        // A late answer for a name since changed would replace the newer one's graph.
+        if !gh.is_empty() { me.spawn({ let u = gh.clone(); move || crate::net::github_graph(&u) }, move |s, g| if s.cfg.github_user.trim() == gh { s.contributions.github = Some((gh, g)) }) }
+        if !lc.is_empty() { me.spawn({ let u = lc.clone(); move || crate::net::leetcode_graph(&u) }, move |s, g| if s.cfg.leetcode_user.trim() == lc { s.contributions.leetcode = Some((lc, g)) }) }
     }
 }
 
