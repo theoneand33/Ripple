@@ -152,12 +152,10 @@ impl Island {
         self.clipboard.push(Content::Image(image, pixels))
     }
 
-    /// Runs a text tool on the top text in the list, then copies its answer.
+    /// Runs a text tool on the newest copied text (`Clipboard::tool_source`), then copies its answer.
     fn run_tool(&mut self, tool: usize, tx: &mut Tx) {
         let c = &mut self.clipboard;
-        // The first text listed, pinned or not: what the user sees on top.
-        let newest = c.items.iter().find_map(|i| match &i.content { Content::Text(t) => Some(t.clone()), Content::Image(..) => None });
-        let Some(source) = newest else { c.tool_error = Some("Copy some text first".into()); return };
+        let Some(source) = c.tool_source().map(str::to_string) else { c.tool_error = Some("Copy some text first".into()); return };
         match (TOOLS[tool].1)(&source) {
             Ok(out) => {
                 tx.copy(out.clone());
@@ -205,6 +203,12 @@ impl Clipboard {
     }
 
     fn pinned(&self) -> usize { self.items.iter().take_while(|c| c.pinned).count() }
+
+    /// What the text tools run on: the newest copied text, the first below the pins; with none
+    /// there, the first pinned text. The tools row shows it, so it is never a guess.
+    pub fn tool_source(&self) -> Option<&str> {
+        self.items[self.pinned()..].iter().chain(&self.items).find_map(|c| match &c.content { Content::Text(t) => Some(t.as_str()), Content::Image(..) => None })
+    }
 
     /// Adds a copy below the pinned items; one already listed moves up there, a pinned one stays.
     /// False when nothing changed.
@@ -318,7 +322,10 @@ pub fn view(s: &Island) -> El {
             .child(field(s, "clipboard-search", &s.clipboard.search, "Search clipboard", |s: &mut Island| &mut s.clipboard.search, |_, _| {}))
             .child(if s.clipboard.tools { tools.fill(fg.alpha(0.26 * fg.a)) } else { tools }));
     if s.clipboard.tools {
-        let mut chips = row().key("text-tool-chips").role("group").label("Text tools: run on the top text in the list").w_full().gap(6.0).flex_wrap();
+        let source = s.clipboard.tool_source().map(|t| t.split_whitespace().collect::<Vec<_>>().join(" "));
+        root = root.child(text(source.as_deref().map_or("Copy some text to use the tools".into(), |t| format!("On: {t}"))).key("tool-source")
+            .font(s.cfg.font(12.0, 500.0)).color(fg.alpha(0.55 * fg.a)).w_full().single_line().truncate());
+        let mut chips = row().key("text-tool-chips").role("group").label("Text tools: run on the newest copied text").w_full().gap(6.0).flex_wrap();
         for (i, (label, _)) in TOOLS.iter().enumerate() {
             chips = chips.child(pill(s, &format!("tool-{i}"), label).on_press_tx(move |s: &mut Island, tx| s.run_tool(i, tx)));
         }
@@ -362,6 +369,18 @@ mod tests {
         assert!(run("Unix time", "-9223372036854775808").is_err());
         assert!(run("Unix time", "9223372036854775807").is_err());
         assert!(run("Unix time", "-62135596801").is_err());
+    }
+
+    #[test]
+    fn text_tools_run_on_the_newest_copy_then_a_pinned_one() {
+        let t = |s: &str| Content::Text(s.into());
+        let mut c = Clipboard::default();
+        assert_eq!(c.tool_source(), None);
+        c.push(t("pinned"));
+        c.toggle_pin(0);
+        assert_eq!(c.tool_source(), Some("pinned"), "only pins: the first one");
+        c.push(t("newest"));
+        assert_eq!(c.tool_source(), Some("newest"), "the newest copy, below the pins");
     }
 
     #[test]
