@@ -170,6 +170,20 @@ fn island_spec() -> AppSpec<Island> {
             ("shelf-drop", |s| { s.mode = Mode::Large; s.set_tab(Tab::Shelf); s.dropping = true }),
             ("shelf", |s| { s.mode = Mode::Large; s.set_tab(Tab::Shelf); s.cfg.shelf = vec!["/home/me/Report final.pdf".into(), "/home/me/photo.png".into()] }),
             ("shelf-sync-error", |s| { s.mode = Mode::Large; s.set_tab(Tab::Shelf); s.cfg.shelf = vec!["/home/me/photo.png".into()]; s.shelf_sync.error = Some("Nextcloud refused the user or app password".into()) }),
+            ("shelf-menu", |s| {
+                s.mode = Mode::Large;
+                s.set_tab(Tab::Shelf);
+                s.cfg.shelf = vec!["/home/me/Report final.pdf".into(), "/home/me/photo.png".into()];
+                s.shelf.menu = Some(("/home/me/photo.png".into(), rune::PointerPress { x: 500.0, y: 90.0 }));
+                (s.open_select, s.hovered) = (Some("shelf"), true);
+            }),
+            ("shelf-rename", |s| {
+                s.mode = Mode::Large;
+                s.set_tab(Tab::Shelf);
+                s.cfg.shelf = vec!["/home/me/Report final.pdf".into()];
+                s.shelf.renaming = Some("/home/me/Report final.pdf".into());
+                s.shelf.name = rune::TextEdit::new("Report final.pdf");
+            }),
             ("shelf-undo", |s| { s.mode = Mode::Large; s.set_tab(Tab::Shelf); s.undo = Some(tabs::Undo::Shelf(vec!["/home/me/photo.png".into()])) }),
             ("t3-device", |s| {
                 s.mode = Mode::Large;

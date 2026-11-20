@@ -461,13 +461,11 @@ fn page(s: &Settings, k: &Kit, layer: &mut Vec<El>, page: Page) -> Vec<El> {
         Page::Tab(tab) => return panel(s, k, layer, tab),
         Page::General => {
             let mut general = vec![setting(s, "Clock format", choice(s, k, layer, "clock", "Clock format", &[("12", "12-hour"), ("24", "24-hour")], if cfg.hour12 { "12" } else { "24" }, |c, v| c.hour12 = v == "12"))];
-            if !cfg!(target_os = "macos") {
-                general.push(setting(s, "Launch at login", switch(k, "Launch at login", cfg.auto_launch, |c| {
-                    c.auto_launch = !c.auto_launch;
-                    let on = c.auto_launch;
-                    std::thread::spawn(move || crate::system::set_auto_launch(on));
-                }).a11y_hidden()));
-            }
+            general.push(setting(s, "Launch at login", switch(k, "Launch at login", cfg.auto_launch, |c| {
+                c.auto_launch = !c.auto_launch;
+                let on = c.auto_launch;
+                std::thread::spawn(move || crate::system::set_auto_launch(on));
+            }).a11y_hidden()));
             if !s.screens.is_empty() {
                 let current = if s.screens.contains(&cfg.display) { cfg.display.clone() } else { s.screens[0].clone() };
                 general.push(setting(s, "Display", Select::new("display", &s.screens).label("Display").width(190.0).current(Some(&current))
