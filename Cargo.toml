@@ -30,6 +30,8 @@ zip = { version = "9.8.0", default-features = false, features = ["deflate-flate2
 [target.'cfg(target_os = "macos")'.dependencies]
 # The status-bar item and the Island's unconstrained frame (src/mac.rs).
 objc2 = "0.6"
+# The handler that hears of other apps' downloads (NSProgress, src/mac.rs).
+block2 = "0.6"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # The Island's input shape (clicks outside it reach the windows underneath) and desktop drag starts.

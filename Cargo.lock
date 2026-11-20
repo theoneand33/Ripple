@@ -2821,6 +2821,7 @@ name = "ripple"
 version = "0.5.0"
 dependencies = [
  "base64 0.22.1",
+ "block2 0.6.2",
  "getrandom 0.3.4",
  "mlua",
  "objc2 0.6.5",
