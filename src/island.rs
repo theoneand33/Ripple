@@ -1261,8 +1261,11 @@ impl Island {
 }
 
 /// Rain starting at `at` is due an alert at `now` (Unix seconds): within the hour before, or up to
-/// 15 minutes after when Large held it back, and not alerted yet.
-fn rain_due(at: i64, now: i64, alerted: Option<i64>) -> bool { (-900..=3600).contains(&(at - now)) && alerted != Some(at) }
+/// 15 minutes after when Large held it back, and not the rain already alerted. A forecast often
+/// moves a rain by an hour or two: a start within 3 hours of the alerted one is the same rain.
+fn rain_due(at: i64, now: i64, alerted: Option<i64>) -> bool {
+    (-900..=3600).contains(&(at - now)) && alerted.is_none_or(|a| (at - a).abs() > 3 * 3600)
+}
 
 /// Fetches an image (blocking) and hands it, loaded, to `put` on the UI thread.
 /// `foreign` images come from other apps or hosts: raster only, since Rune bounds neither SVGZ
@@ -1621,6 +1624,8 @@ mod tests {
         assert!(!rain_due(10_000, 10_000 - 3601, None), "too early");
         assert!(rain_due(10_000, 10_000 - 3600, None));
         assert!(!rain_due(10_000, 10_000 - 1800, Some(10_000)), "once");
+        assert!(!rain_due(10_000 + 3600, 10_000 + 1800, Some(10_000)), "the same rain, moved an hour");
+        assert!(rain_due(10_000 + 4 * 3600, 10_000 + 3 * 3600, Some(10_000)), "a later rain");
         assert!(rain_due(10_000, 10_900, None), "held back by Large, still shown once compact");
         assert!(!rain_due(10_000, 10_901, None), "too late");
         let mut s = island(Config { hour12: false, ..Config::default() });

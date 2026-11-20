@@ -95,8 +95,11 @@ fn weather_from(geocoding: &str, forecast: &str, location: &str, unit: &str, now
     };
     let hourly = &data["hourly"];
     let falling = current["weather_code"].as_u64().and_then(precip_kind).is_some();
-    let precip = hourly["time"].as_array().into_iter().flatten().enumerate().filter(|_| !falling)
-        .find_map(|(i, t)| Some((unix(t.as_str()?)?, precip_kind(hourly["weather_code"][i].as_u64()?)?)).filter(|&(at, _)| at > now));
+    // Hours run one real hour apart, so only the first is read on the clock: the offset is right for
+    // it, and a daylight saving change within the next hours doesn't shift the rest.
+    let first = hourly["time"][0].as_str().and_then(unix);
+    let precip = hourly["weather_code"].as_array().into_iter().flatten().enumerate().filter(|_| !falling)
+        .find_map(|(i, code)| Some((first? + i as i64 * 3600, precip_kind(code.as_u64()?)?)).filter(|&(at, _)| at > now));
     Some(Weather {
         temp: current["temperature_2m"].as_f64().map(|t| t.round() as i32),
         code: current["weather_code"].as_u64(),
