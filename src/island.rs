@@ -1630,6 +1630,9 @@ mod tests {
         assert!(rain_due(10_000, 10_900, None), "held back by Large, still shown once compact");
         assert!(!rain_due(10_000, 10_901, None), "too late");
         let mut s = island(Config { hour12: false, ..Config::default() });
+        s.rain_alerted = Some(10_000);
+        s.rain_alert(0.0);
+        assert_eq!(s.rain_alerted, None, "no rain coming: the next shower alerts afresh");
         s.weather.precip = Some((0, true));
         assert!(s.precip_label().starts_with("Snow at "));
     }
