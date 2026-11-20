@@ -44,6 +44,7 @@ tabs! {
     Calculator = 17,
     Habits = 18,
     Stocks = 20,
+    Clocks = 21,
     Plugins = 15,
     Weather = 19,
 }
@@ -71,6 +72,7 @@ impl Tab {
             Tab::Calculator => "Calculator",
             Tab::Habits => "Habits",
             Tab::Stocks => "Stocks",
+            Tab::Clocks => "World Clocks",
         }
     }
 }
@@ -105,11 +107,19 @@ pub enum Widget {
     Battery,
     /// Today's events and the tasks left.
     Today,
+    /// Glasses of water drunk today, against a goal.
+    Water,
+    /// GitHub and LeetCode contribution graphs, with streaks.
+    Contributions,
+    /// A quote, a new one each day.
+    Quote,
+    /// Today as one timeline: the share gone, and its timed events and due tasks.
+    Day,
     Panel(Tab),
 }
 
 impl Widget {
-    pub const OWN: [Widget; 5] = [Widget::Clock, Widget::Media, Widget::Weather, Widget::Battery, Widget::Today];
+    pub const OWN: [Widget; 9] = [Widget::Clock, Widget::Media, Widget::Weather, Widget::Battery, Widget::Today, Widget::Day, Widget::Quote, Widget::Water, Widget::Contributions];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -118,6 +128,10 @@ impl Widget {
             Widget::Weather => "Weather",
             Widget::Battery => "Battery",
             Widget::Today => "Today",
+            Widget::Water => "Water",
+            Widget::Contributions => "Contributions",
+            Widget::Quote => "Quote of the Day",
+            Widget::Day => "Day Progress",
             Widget::Panel(tab) => tab.name(),
         }
     }
@@ -139,7 +153,7 @@ impl Tile {
 
     /// Panels open full width and tall: they were drawn for the whole Island.
     pub fn new(widget: Widget) -> Tile {
-        let (w, h) = match widget { Widget::Media => (4, 3), Widget::Panel(_) => (4, 4), _ => (2, 2) };
+        let (w, h) = match widget { Widget::Media => (4, 3), Widget::Panel(_) | Widget::Contributions => (4, 4), Widget::Quote => (4, 2), Widget::Day => (4, 2), _ => (2, 2) };
         Tile { widget, w, h }
     }
 
@@ -170,12 +184,15 @@ pub struct Provider {
     pub label: &'static str,
     pub url: &'static str,
     pub model: &'static str,
+    /// Empty for a server that takes no key (Ollama, LM Studio).
     pub key_hint: &'static str,
 }
 
-pub const PROVIDERS: [Provider; 2] = [
+pub const PROVIDERS: [Provider; 4] = [
     Provider { id: "groq", label: "Groq", url: "https://api.groq.com/openai/v1", model: "llama-3.3-70b-versatile", key_hint: "gsk_..." },
     Provider { id: "openrouter", label: "OpenRouter", url: "https://openrouter.ai/api/v1", model: "meta-llama/llama-3.3-70b-instruct", key_hint: "sk-or-..." },
+    Provider { id: "ollama", label: "Ollama", url: "http://localhost:11434/v1", model: "llama3.2", key_hint: "" },
+    Provider { id: "lmstudio", label: "LM Studio", url: "http://localhost:1234/v1", model: "local-model", key_hint: "" },
 ];
 
 pub const SEARCH_ENGINES: [(&str, &str, &str); 5] = [
@@ -336,7 +353,16 @@ pub struct Config {
     /// Seconds Large Mode stays open after the pointer leaves, once its tab was changed.
     pub tab_linger: f32,
     pub battery_alerts: bool,
+    /// 20-20-20: every 20 minutes, look 20 feet away for 20 seconds.
+    pub eye_breaks: bool,
+    /// A reminder to get up once an hour.
+    pub hourly_breaks: bool,
     pub island_border: bool,
+    /// The Island's size, in percent (80-200).
+    pub island_scale: f32,
+    /// The Island colour's opacity in percent, compact and open (Large).
+    pub compact_opacity: f32,
+    pub large_opacity: f32,
     pub standby: bool,
     pub large_standby: bool,
     pub hide_inactive: bool,
@@ -348,6 +374,10 @@ pub struct Config {
     pub hour12: bool,
     pub weather_unit: String,
     pub location: String,
+    /// An alert about an hour before rain or snow starts at the location.
+    pub rain_alerts: bool,
+    /// World Clocks: the cities shown, as typed (Open-Meteo looks each one up).
+    pub world_clocks: Vec<String>,
     pub theme: String,
     /// Switch between `day_theme` and `night_theme` at sunrise and sunset at the weather location.
     pub auto_theme: bool,
@@ -358,6 +388,8 @@ pub struct Config {
     pub bg_image: String,
     pub search_engine: String,
     pub auto_launch: bool,
+    /// The system-wide shortcut that opens Large Mode, as Rune spells it (`ctrl+alt+space`); empty turns it off.
+    pub hotkey: String,
     pub position_mode: String,
     pub notch_mode: bool,
     /// Notch Mode: shrink the compact Island to fit its content instead of a fixed width.
@@ -374,10 +406,24 @@ pub struct Config {
     pub workflows: Vec<Workflow>,
     pub tasks: Vec<Item>,
     pub habits: Vec<Habit>,
+    /// Water: glasses a day.
+    pub water_goal: u32,
+    /// Water: the day counted (days since 1970) and its glasses; another day starts at 0.
+    pub water_day: i64,
+    pub water_count: u32,
+    /// Water: a reminder each hour from `water_from` until `water_to` (hours, 0-24) while short of the goal.
+    pub water_reminders: bool,
+    pub water_from: u32,
+    pub water_to: u32,
+    /// Contributions: the GitHub and LeetCode user names whose graphs show; empty leaves one out.
+    pub github_user: String,
+    pub leetcode_user: String,
     /// Each note's first line is its title.
     pub notes: Vec<Item>,
     /// Calendar events; each one's text is `YYYY-MM-DD title` (`nextcloud::event_day`).
     pub events: Vec<Item>,
+    /// Calendar: ICS links (Google, Outlook, iCloud) shown read-only beside the events.
+    pub calendar_feeds: Vec<String>,
     pub nextcloud: Nextcloud,
     /// Notes pinned to the top of the list, by key.
     pub pinned_notes: Vec<u64>,
@@ -391,6 +437,8 @@ pub struct Config {
     pub shelf: Vec<std::path::PathBuf>,
     pub ai_provider: String,
     pub ai_model: String,
+    /// The provider's API base, for a server elsewhere; empty means the provider's own `url`.
+    pub ai_url: String,
     pub api_key: String,
     pub t3_devices: Vec<T3Device>,
     /// AI Limits: more Claude Code or Codex config folders, one per account.
@@ -423,10 +471,15 @@ impl Default for Config {
             hidden_tabs: vec![Tab::Stremflix],
             default_tab: Tab::Overview,
             open_default_tab: true,
-            dashboard: [Widget::Clock, Widget::Weather, Widget::Media, Widget::Today, Widget::Battery].map(Tile::new).into(),
+            dashboard: [Widget::Clock, Widget::Weather, Widget::Media, Widget::Today, Widget::Battery, Widget::Quote].map(Tile::new).into(),
             tab_linger: 1.0,
             battery_alerts: true,
+            eye_breaks: false,
+            hourly_breaks: false,
             island_border: false,
+            island_scale: 100.0,
+            compact_opacity: 100.0,
+            large_opacity: 100.0,
             standby: true,
             large_standby: false,
             hide_inactive: false,
@@ -436,6 +489,8 @@ impl Default for Config {
             hour12: true,
             weather_unit: "f".into(),
             location: String::new(),
+            rain_alerts: true,
+            world_clocks: ["London", "New York", "Tokyo"].map(Into::into).into(),
             theme: "none".into(),
             auto_theme: false,
             day_theme: "none".into(),
@@ -445,6 +500,7 @@ impl Default for Config {
             bg_image: "none".into(),
             search_engine: "google".into(),
             auto_launch: false,
+            hotkey: "ctrl+alt+space".into(),
             position_mode: "free".into(),
             notch_mode: false,
             notch_auto_size: true,
@@ -456,8 +512,17 @@ impl Default for Config {
             workflows: Vec::new(),
             tasks: Vec::new(),
             habits: Vec::new(),
+            water_goal: 8,
+            water_day: 0,
+            water_count: 0,
+            water_reminders: true,
+            water_from: 9,
+            water_to: 21,
+            github_user: String::new(),
+            leetcode_user: String::new(),
             notes: Vec::new(),
             events: Vec::new(),
+            calendar_feeds: Vec::new(),
             nextcloud: Nextcloud::default(),
             pinned_notes: Vec::new(),
             clipboard_pins: Vec::new(),
@@ -466,6 +531,7 @@ impl Default for Config {
             shelf: Vec::new(),
             ai_provider: "groq".into(),
             ai_model: PROVIDERS[0].model.into(),
+            ai_url: String::new(),
             api_key: String::new(),
             t3_devices: Vec::new(),
             agent_dirs: Vec::new(),
@@ -500,6 +566,8 @@ impl Config {
         self.island_x = self.island_x.clamp(0.0, 100.0);
         self.island_y = self.island_y.clamp(0.0, 1000.0);
         self.tab_linger = self.tab_linger.clamp(0.0, 10.0);
+        self.island_scale = if self.island_scale.is_finite() { self.island_scale.clamp(80.0, 200.0) } else { 100.0 };
+        for o in [&mut self.compact_opacity, &mut self.large_opacity] { *o = if o.is_finite() { o.clamp(10.0, 100.0) } else { 100.0 } }
         if !SEARCH_ENGINES.iter().any(|e| e.0 == self.search_engine) { self.search_engine = "google".into() }
         if !PROVIDERS.iter().any(|p| p.id == self.ai_provider) { self.ai_provider = PROVIDERS[0].id.into() }
         self
@@ -537,6 +605,8 @@ impl Config {
         let (rise, set) = (rise + days * 86_400, set + days * 86_400);
         Some(if (rise..set).contains(&now) { &self.day_theme } else { &self.night_theme })
     }
+    /// The Island's zoom: 1 at 100%.
+    pub fn zoom(&self) -> f32 { self.island_scale / 100.0 }
 
     pub fn win95(&self) -> bool { self.theme == "win95" }
     pub fn bg(&self) -> Color { parse_color(&self.bg_color).unwrap_or(Color::BLACK) }
@@ -560,8 +630,17 @@ impl Config {
         kit
     }
 
+    /// Glasses of water drunk on `day`.
+    pub fn water(&self, day: i64) -> u32 { if self.water_day == day { self.water_count } else { 0 } }
+
     pub fn provider(&self) -> &'static Provider {
         PROVIDERS.iter().find(|p| p.id == self.ai_provider).unwrap_or(&PROVIDERS[0])
+    }
+
+    /// The chat completions base: the one set in Settings, else the provider's.
+    pub fn ai_url(&self) -> String {
+        let url = self.ai_url.trim().trim_end_matches('/');
+        if url.is_empty() { self.provider().url.into() } else { url.into() }
     }
 
     pub fn search_engine(&self) -> (&'static str, &'static str) {
@@ -689,7 +768,7 @@ mod tests {
     fn saved_orders_drop_retired_tabs_and_gain_new_ones() {
         use Tab::*;
         let cfg = serde_json::from_str::<Config>(r#"{"tab_order": [7, 2, 3, 0], "hidden_tabs": [3, 0], "default_tab": 7}"#).unwrap().normalized();
-        assert_eq!(cfg.tab_order, [Overview, Search, Workflows, Assistant, Clipboard, Tasks, T3, Notes, Stremflix, Shelf, System, Calendar, Limits, Pomodoro, Calculator, Habits, Stocks, Plugins, Weather]);
+        assert_eq!(cfg.tab_order, [Overview, Search, Workflows, Assistant, Clipboard, Tasks, T3, Notes, Stremflix, Shelf, System, Calendar, Limits, Pomodoro, Calculator, Habits, Stocks, Clocks, Plugins, Weather]);
         assert_eq!((cfg.hidden_tabs.as_slice(), cfg.default_tab), ([Search].as_slice(), Overview));
     }
 
@@ -758,6 +837,14 @@ mod tests {
         assert_eq!(cfg.sun_theme(sun, 86_400 + 1500), Some("none"), "yesterday's times still say it's day");
         assert_eq!(cfg.sun_theme(sun, 86_400 + 999), Some("sleek-black"));
         assert_eq!(Config::default().sun_theme(sun, 1500), None, "off");
+    }
+
+    #[test]
+    fn a_set_base_url_replaces_the_providers_own() {
+        let cfg = Config { ai_provider: "ollama".into(), ..Config::default() };
+        assert_eq!(cfg.ai_url(), "http://localhost:11434/v1");
+        assert!(cfg.provider().key_hint.is_empty(), "Ollama takes no key");
+        assert_eq!(Config { ai_url: " http://gpu-box:11434/v1/ ".into(), ..cfg }.ai_url(), "http://gpu-box:11434/v1");
     }
 
     #[test]
