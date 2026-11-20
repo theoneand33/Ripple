@@ -1,6 +1,7 @@
 //! Calendar: a month at a glance, today marked; the arrows page through months. Beside it, the
 //! picked day's events; press one to edit it. With a Nextcloud account, events sync with a
-//! Nextcloud calendar.
+//! Nextcloud calendar. A timed event raises an alert shortly before it starts, with a Join
+//! button when its title holds a meeting link.
 
 use rune::{El, TextEdit, Transition, Tx, col, el, row, text};
 
@@ -23,6 +24,42 @@ pub struct Calendar {
 }
 
 const MONTHS: [&str; 12] = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+
+/// The first `http(s)://` link in an event's title, and the title without it.
+pub fn meeting_link(title: &str) -> (Option<String>, String) {
+    let link = title.split_whitespace().find(|w| w.starts_with("https://") || w.starts_with("http://"));
+    let rest = title.split_whitespace().filter(|w| Some(*w) != link).collect::<Vec<_>>().join(" ");
+    (link.map(str::to_string), rest)
+}
+
+/// The timed event to alert now (`now` and `lead` in minutes, since 1970 on this clock): one
+/// starting within `lead` minutes, or that started this minute, and not in `alerted`. Returns
+/// its id for `alerted`, its title, and its meeting link.
+pub fn due_event(events: &[Item], now: i64, lead: i64, alerted: &[String]) -> Option<(String, String, Option<String>)> {
+    events.iter().find_map(|e| {
+        let ((y, m, d), title) = event_day(&e.text)?;
+        let (Some((h, min)), rest) = nextcloud::leading_time(title) else { return None };
+        let start = crate::date::days_from_civil(y, m, d) * 1440 + i64::from(h * 60 + min);
+        let id = format!("{start} {rest}");
+        if !(start - lead..=start).contains(&now) || alerted.contains(&id) { return None }
+        let (link, title) = meeting_link(rest);
+        Some((id, title, link))
+    })
+}
+
+impl Island {
+    /// Once a second: an alert for the next timed event, `event_alert_minutes` before it.
+    /// Large draws no alerts, so one waits until the Island is compact again.
+    pub fn event_alerts(&mut self, now: f64) {
+        let lead = i64::from(self.cfg.event_alert_minutes);
+        if rune::is_headless() || lead == 0 || self.mode == crate::island::Mode::Large { return }
+        let t = rune::time::LocalTime::at(crate::date::now_ms());
+        let minute = crate::date::days_from_civil(t.year, t.month, t.day) * 1440 + i64::from(t.hour * 60 + t.minute);
+        let Some((id, title, link)) = due_event(&self.cfg.events, minute, lead, &self.alerted_events) else { return };
+        self.alerted_events.push(id);
+        self.remind_event(title, link, now);
+    }
+}
 
 /// Adds the typed event on the picked day, or saves the one being edited there.
 fn add_event(s: &mut Island, _: &mut Tx) {
@@ -182,6 +219,18 @@ pub fn view(s: &Island) -> El {
 mod tests {
     use crate::config::{Config, Item, Remote, Store};
     use crate::island::Island;
+
+    #[test]
+    fn an_event_alerts_once_within_its_lead_with_its_meeting_link() {
+        let events = ["2026-01-01 All day", "2026-01-01 09:30 Standup https://meet.example.com/abc daily"].map(Item::new);
+        let start = crate::date::days_from_civil(2026, 1, 1) * 1440 + 9 * 60 + 30;
+        assert_eq!(super::due_event(&events, start - 11, 10, &[]), None, "too early");
+        let (id, title, link) = super::due_event(&events, start - 10, 10, &[]).unwrap();
+        assert_eq!((title.as_str(), link.as_deref()), ("Standup daily", Some("https://meet.example.com/abc")));
+        assert_eq!(super::due_event(&events, start, 10, &[id]), None, "once");
+        assert_eq!(super::due_event(&events, start + 1, 10, &[]), None, "past");
+        assert_eq!(super::meeting_link("Lunch"), (None, "Lunch".into()));
+    }
 
     #[test]
     fn an_edit_changes_the_event_in_place() {

@@ -374,6 +374,8 @@ pub struct Config {
     pub notes: Vec<Item>,
     /// Calendar events; each one's text is `YYYY-MM-DD title` (`nextcloud::event_day`).
     pub events: Vec<Item>,
+    /// Calendar: minutes before a timed event that its alert shows; 0 turns alerts off.
+    pub event_alert_minutes: u32,
     pub nextcloud: Nextcloud,
     /// Notes pinned to the top of the list, by key.
     pub pinned_notes: Vec<u64>,
@@ -451,6 +453,7 @@ impl Default for Config {
             habits: Vec::new(),
             notes: Vec::new(),
             events: Vec::new(),
+            event_alert_minutes: 10,
             nextcloud: Nextcloud::default(),
             pinned_notes: Vec::new(),
             clipboard_pins: Vec::new(),

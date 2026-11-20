@@ -258,6 +258,10 @@ pub struct Island {
     bluetooth_alert_until: Option<f64>,
     /// The task that fell due, and until when its reminder shows.
     pub reminder: Option<(String, f64)>,
+    /// The reminder's meeting link, for its Join button.
+    pub reminder_link: Option<String>,
+    /// Events already alerted, as `minute title` (`tabs::calendar::due_event`).
+    pub alerted_events: Vec<String>,
     /// The minute task reminders were last checked, as `YYYY-MM-DDTHH:MM`; empty until the first.
     pub task_mark: String,
     capture: Option<(Alert, f64)>,
@@ -379,6 +383,8 @@ impl Island {
             charging_alert_until: None,
             bluetooth_alert_until: None,
             reminder: None,
+            reminder_link: None,
+            alerted_events: Vec::new(),
             task_mark: String::new(),
             capture: None,
             capture_queue: Vec::new(),
@@ -514,6 +520,9 @@ impl Island {
         }).collect()
     }
 
+    /// The alert showing is an event's, with a meeting to join.
+    fn joinable(&self) -> bool { self.alert() == Some(Alert::Reminder) && self.reminder_link.is_some() }
+
     pub fn low_battery(&self) -> bool { !self.charging && self.percent.is_some_and(|p| p < 20) }
 
     fn percent_label(&self) -> String { self.percent.map_or(String::new(), |p| format!("{p}%")) }
@@ -579,7 +588,7 @@ impl Island {
         let mut w = match self.mode {
             Mode::Large => large.0,
             _ if self.level.is_some() && !notch => 100.0, // just the ring
-            _ if alerting => if notch { self.notch_glance_width() } else { 176.0 }, // fits icon + "Disconnected"
+            _ if alerting => if notch { self.notch_glance_width() + if self.joinable() { 70.0 } else { 0.0 } } else if self.joinable() { 246.0 } else { 176.0 }, // fits icon + "Disconnected"
             _ if track => self.now_playing_width(),
             _ if notch => if self.mode == Mode::Quick || self.cfg.show_info_idle || self.pomodoro.active() { self.notch_glance_width() } else { 210.0 },
             _ if self.pomodoro.active() => (110.0 + estimate_width(&self.pomodoro.live_label(), 15.0)).ceil().max(168.0), // "23:59" + ring + "24:59"
@@ -933,7 +942,22 @@ impl Island {
     /// Shows a task's reminder for 6 seconds.
     pub fn remind(&mut self, title: String, now: f64) {
         self.reminder = Some((title, now + 6.0));
+        self.reminder_link = None;
         if self.mode != Mode::Large { self.set_mode(Mode::Quick) }
+    }
+
+    /// An event's alert: 30 seconds, so its Join button can be reached.
+    pub fn remind_event(&mut self, title: String, link: Option<String>, now: f64) {
+        self.remind(title, now);
+        if let Some(r) = &mut self.reminder { r.1 = now + 30.0 }
+        self.reminder_link = link;
+    }
+
+    /// The alert's Join button: opens the meeting and ends the alert.
+    fn join(&mut self) {
+        if let Some(link) = self.reminder_link.take() { system::open_external(&link) }
+        self.reminder = None;
+        self.set_mode(Mode::Still);
     }
 
     pub fn set_battery(&mut self, battery: Option<(u8, bool)>, tx: &mut Tx) -> bool {
@@ -1093,7 +1117,7 @@ impl Island {
         let mut alert_ended = due(&mut self.battery_alert_until);
         alert_ended |= due(&mut self.charging_alert_until);
         alert_ended |= due(&mut self.bluetooth_alert_until);
-        if self.reminder.as_ref().is_some_and(|r| now >= r.1) { self.reminder = None; alert_ended = true }
+        if self.reminder.as_ref().is_some_and(|r| now >= r.1) { (self.reminder, self.reminder_link) = (None, None); alert_ended = true }
         if self.capture.is_some_and(|c| now >= c.1) {
             self.capture = None;
             self.next_capture(tx);
@@ -1439,6 +1463,12 @@ fn glance(s: &Island, fg: Color) -> El {
         row().key("battery").gap(2.0).center_y().child(icon(&icons::ZAP, 14.0).color(color)).child(percent())
     } else { percent() };
     let right = match alert {
+        Some(alert) if s.joinable() => row().key("label").gap(8.0).center_y()
+            .child(text(s.alert_label(alert)).font(style).color(color))
+            .child(el().key("join").role("button").label("Join the meeting").focusable(true).h(26.0).px(12.0).center()
+                .radius(cfg.radius(13.0)).fill(accent::green()).hover(accent::green().alpha(0.8)).press_scale(0.96)
+                .child(text("Join").font(cfg.font(13.0, 700.0)).color(Color::BLACK).a11y_hidden())
+                .on_press(Island::join)),
         Some(alert) => text(s.alert_label(alert)).key("label").font(style).color(color),
         // A running Pomodoro is a live activity: its ring and time left take the right side.
         None if s.pomodoro.active() => tabs::pomodoro_live(&s.pomodoro, style),

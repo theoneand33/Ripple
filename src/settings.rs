@@ -451,6 +451,13 @@ fn panel(s: &Settings, k: &Kit, layer: &mut Vec<El>, tab: Tab) -> Vec<El> {
                     .binds(|s| &mut s.nc_shelf, |c, v| c.nextcloud.shelf_folder = v.trim().into()).build(k));
             }
             sections.push(section(s, "nextcloud", "Nextcloud", rows));
+            if tab == Tab::Calendar {
+                sections.push(section(s, "event-alerts", "Alerts", vec![
+                    setting(s, &match cfg.event_alert_minutes { 0 => "Alert before events: off".to_string(), m => format!("Alert {m} min before events") },
+                        slider(s, "event-alert", "Minutes before an event its alert shows", (0.0, 60.0, 5.0), |c| c.event_alert_minutes as f32, |c, v| c.event_alert_minutes = v as u32)).key("event-alert-row"),
+                    text("A meeting link in an event's title adds a Join button to its alert.").font(cfg.font(12.0, 400.0)).color(fg.alpha(0.6)),
+                ]));
+            }
         }
         Tab::Stocks => {
             let label = |t: &str| text(t.to_string()).font(cfg.font(14.0, 500.0)).color(fg.alpha(0.8)).mt(10.0);
