@@ -155,6 +155,12 @@ fn island_spec() -> AppSpec<Island> {
                 s.set_tab(Tab::Calendar);
                 s.cfg.events = ["2026-01-01 New Year's brunch", "2026-01-01 09:30 Standup", "2026-01-15 Dentist"].map(config::Item::new).into();
             }),
+            ("calendar-feed", |s| {
+                s.mode = Mode::Large;
+                s.set_tab(Tab::Calendar);
+                s.cfg.events = vec![config::Item::new("2026-01-01 09:30 Standup")];
+                s.calendar.feed_events = vec!["2026-01-01 12:00 Lunch (Google)".into(), "2026-01-01 Public holiday".into()];
+            }),
             ("calendar-edit", |s| {
                 s.mode = Mode::Large;
                 s.set_tab(Tab::Calendar);
@@ -362,6 +368,7 @@ fn island_spec() -> AppSpec<Island> {
             ("notch-large", |s| { s.cfg.notch_mode = true; s.placement = island::Placement::of(&s.cfg, (1920.0, 1080.0)); s.mode = Mode::Large }),
             ("mini-notch", |s| { s.cfg.notch_mode = true; s.cfg.notch_mini = true; s.placement = island::Placement::of(&s.cfg, (1920.0, 1080.0)) }),
             ("mini-notch-single", |s| { s.cfg.notch_mode = true; s.cfg.notch_mini = true; s.cfg.show_info_idle = true; s.weather.temp = None; s.percent = None; s.placement = island::Placement::of(&s.cfg, (1920.0, 1080.0)) }),
+            ("island-scale", |s| { s.cfg.island_scale = 80.0; s.cfg.compact_opacity = 60.0; s.cfg.standby = true; s.mode = Mode::Quick; s.placement = island::Placement::of(&s.cfg, (1920.0, 1080.0)) }),
             ("win95", |s| { s.cfg.set_theme("win95"); s.mode = Mode::Large }),
         ],
         ..AppSpec::new("Ripple", CANVAS, || unreachable!("state comes from App::init"), island::view)
@@ -418,9 +425,9 @@ fn overlay_island(screens: Vec<Screen>, store: Store) -> Vec<rune::AnyWindowSpec
     let mut host = App::new(spec).windowless();
     let state = Island::new(store.clone(), screens.clone());
     let screen = state.screen();
-    let (x, y) = state.placement.window;
+    let [x, y, width, height] = state.placement.frame();
     let options = OverlayOptions {
-        placement: Some(OverlayPlacement::Rect { x, y, width: CANVAS.0, height: CANVAS.1 }),
+        placement: Some(OverlayPlacement::Rect { x, y, width, height }),
         display: screen.target,
         // Only the Island, its dock and an open select's menu (`.hit()`) take the pointer.
         input: OverlayInput::Regions,
@@ -429,7 +436,7 @@ fn overlay_island(screens: Vec<Screen>, store: Store) -> Vec<rune::AnyWindowSpec
         overlap_panels: state.cfg.overlap_panels,
         ..Default::default()
     };
-    let spec = OverlaySpec { name: "ripple", size: CANVAS, edge: ScreenEdge::Top, margin: 0.0, align: Align::Start, inset: 0.0, interactive: true, view: island::view };
+    let spec = OverlaySpec { name: "ripple", size: (width, height), edge: ScreenEdge::Top, margin: 0.0, align: Align::Start, inset: 0.0, interactive: true, view: island::view };
     let overlay = host.overlay(
         spec.options(options).setup(Island::start).poll(Island::poll).on_key(Island::key).on_focus(Island::window_focus),
         state,
@@ -503,7 +510,7 @@ fn main() {
         state.settings = Some(settings_window);
         let screen = state.screen();
         let position = (!state.screens.is_empty()).then(|| {
-            let (x, y) = state.placement.window;
+            let [x, y, ..] = state.placement.frame();
             (screen.position.0 + (x * screen.scale).round() as i32, screen.position.1 + (y * screen.scale).round() as i32)
         });
 

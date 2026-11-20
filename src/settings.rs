@@ -70,6 +70,7 @@ pub struct Settings {
     nc_password: TextEdit,
     nc_list: TextEdit,
     nc_calendar: TextEdit,
+    calendar_feeds: TextEdit,
     nc_shelf: TextEdit,
     sure_url: TextEdit,
     sure_key: TextEdit,
@@ -105,6 +106,7 @@ impl Settings {
             nc_password: TextEdit::new("").secure(),
             nc_list: edit(&cfg.nextcloud.list),
             nc_calendar: edit(&cfg.nextcloud.calendar),
+            calendar_feeds: edit(&cfg.calendar_feeds.join("\n")),
             nc_shelf: edit(&cfg.nextcloud.shelf_folder),
             sure_url: edit(&cfg.sure_url),
             sure_key: TextEdit::new("").secure(),
@@ -470,6 +472,14 @@ fn panel(s: &Settings, k: &Kit, layer: &mut Vec<El>, tab: Tab) -> Vec<El> {
                     .binds(|s| &mut s.nc_shelf, |c, v| c.nextcloud.shelf_folder = v.trim().into()).build(k));
             }
             sections.push(section(s, "nextcloud", "Nextcloud", rows));
+            if tab == Tab::Calendar {
+                sections.push(section(s, "calendar-feeds", "Calendar links", vec![
+                    text("ICS links from Google Calendar (Secret address in iCal format), Outlook (Publish a calendar) or iCloud (Public Calendar), one per line. Their events show read-only.").font(cfg.font(12.0, 400.0)).color(fg.alpha(0.6)).wrap(),
+                    TextArea::new(&s.calendar_feeds).width(None).label("Calendar links").placeholder("https://calendar.google.com/calendar/ical/…/basic.ics").rows(3)
+                        .on_edit(|s: &mut Settings| &mut s.calendar_feeds)
+                        .on_change(|s: &mut Settings, _| { let v = s.calendar_feeds.text.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_string).collect(); s.save(|c| c.calendar_feeds = v) }).build(k),
+                ]));
+            }
         }
         Tab::Stocks => {
             let label = |t: &str| text(t.to_string()).font(cfg.font(14.0, 500.0)).color(fg.alpha(0.8)).mt(10.0);
@@ -574,6 +584,9 @@ fn page(s: &Settings, k: &Kit, layer: &mut Vec<El>, page: Page) -> Vec<El> {
                 style.push(setting(s, &format!("Position X ({:.1}%)", cfg.island_x), slider(s, "island-x", "Position X", (0.0, 100.0, 0.1), |c| c.island_x, |c, v| c.island_x = v)).key("island-x-row"));
                 style.push(setting(s, &format!("Position Y ({}px)", cfg.island_y.round()), slider(s, "island-y", "Position Y", (0.0, 500.0, 1.0), |c| c.island_y, |c, v| c.island_y = v)).key("island-y-row"));
             }
+            style.push(setting(s, &format!("Size ({}%)", cfg.island_scale.round()), slider(s, "island-scale", "Island size", (80.0, 200.0, 10.0), |c| c.island_scale, |c, v| c.island_scale = v)).key("island-scale-row"));
+            style.push(setting(s, &format!("Opacity, compact ({}%)", cfg.compact_opacity.round()), slider(s, "compact-opacity", "Opacity when compact", (10.0, 100.0, 5.0), |c| c.compact_opacity, |c, v| c.compact_opacity = v)).key("compact-opacity-row"));
+            style.push(setting(s, &format!("Opacity, open ({}%)", cfg.large_opacity.round()), slider(s, "large-opacity", "Opacity when open", (10.0, 100.0, 5.0), |c| c.large_opacity, |c, v| c.large_opacity = v)).key("large-opacity-row"));
             style.push(toggle(s, k, "Island border", cfg.island_border, |c| c.island_border = !c.island_border));
             // Only the Wayland layer-shell overlay can be pushed below a panel.
             if matches!(s.island, Some(Host::Overlay(..))) {

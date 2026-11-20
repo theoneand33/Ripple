@@ -355,6 +355,11 @@ pub struct Config {
     /// A reminder to get up once an hour.
     pub hourly_breaks: bool,
     pub island_border: bool,
+    /// The Island's size, in percent (80-200).
+    pub island_scale: f32,
+    /// The Island colour's opacity in percent, compact and open (Large).
+    pub compact_opacity: f32,
+    pub large_opacity: f32,
     pub standby: bool,
     pub large_standby: bool,
     pub hide_inactive: bool,
@@ -397,6 +402,8 @@ pub struct Config {
     pub notes: Vec<Item>,
     /// Calendar events; each one's text is `YYYY-MM-DD title` (`nextcloud::event_day`).
     pub events: Vec<Item>,
+    /// Calendar: ICS links (Google, Outlook, iCloud) shown read-only beside the events.
+    pub calendar_feeds: Vec<String>,
     pub nextcloud: Nextcloud,
     /// Notes pinned to the top of the list, by key.
     pub pinned_notes: Vec<u64>,
@@ -450,6 +457,9 @@ impl Default for Config {
             eye_breaks: false,
             hourly_breaks: false,
             island_border: false,
+            island_scale: 100.0,
+            compact_opacity: 100.0,
+            large_opacity: 100.0,
             standby: true,
             large_standby: false,
             hide_inactive: false,
@@ -481,6 +491,7 @@ impl Default for Config {
             leetcode_user: String::new(),
             notes: Vec::new(),
             events: Vec::new(),
+            calendar_feeds: Vec::new(),
             nextcloud: Nextcloud::default(),
             pinned_notes: Vec::new(),
             clipboard_pins: Vec::new(),
@@ -524,6 +535,8 @@ impl Config {
         self.island_x = self.island_x.clamp(0.0, 100.0);
         self.island_y = self.island_y.clamp(0.0, 1000.0);
         self.tab_linger = self.tab_linger.clamp(0.0, 10.0);
+        self.island_scale = if self.island_scale.is_finite() { self.island_scale.clamp(80.0, 200.0) } else { 100.0 };
+        for o in [&mut self.compact_opacity, &mut self.large_opacity] { *o = if o.is_finite() { o.clamp(10.0, 100.0) } else { 100.0 } }
         if !SEARCH_ENGINES.iter().any(|e| e.0 == self.search_engine) { self.search_engine = "google".into() }
         if !PROVIDERS.iter().any(|p| p.id == self.ai_provider) { self.ai_provider = PROVIDERS[0].id.into() }
         self
@@ -550,6 +563,9 @@ impl Config {
         self.bg_color = (*bg).into();
         self.text_color = (*text).into();
     }
+
+    /// The Island's zoom: 1 at 100%.
+    pub fn zoom(&self) -> f32 { self.island_scale / 100.0 }
 
     pub fn win95(&self) -> bool { self.theme == "win95" }
     pub fn bg(&self) -> Color { parse_color(&self.bg_color).unwrap_or(Color::BLACK) }

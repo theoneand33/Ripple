@@ -162,6 +162,7 @@ impl Host {
 }
 
 /// Where the Island's window sits on its display and where the Island is anchored inside it.
+/// All in the Island's own points: at a scale (`Config::zoom`) the display is that much smaller.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Placement {
     /// The window's top-left on the display, in points.
@@ -172,11 +173,15 @@ pub struct Placement {
     /// True when the Island hangs from `y`; false when it stands on it.
     pub top: bool,
     pub y: f32,
+    /// The zoom these points are drawn at.
+    pub zoom: f32,
 }
 
 impl Placement {
     pub fn of(cfg: &Config, display: (f32, f32)) -> Placement {
-        let (dw, dh) = display;
+        // Only as large as fits the display, though never below 100%.
+        let zoom = cfg.zoom().min((display.0 / CANVAS.0).min(display.1 / CANVAS.1).max(1.0));
+        let (dw, dh) = (display.0 / zoom, display.1 / zoom);
         // (align, x on the display, top?, y on the display)
         let (align, x, top, y) = if cfg.notch_mode {
             (0, dw * 0.5, true, 0.0)
@@ -188,13 +193,20 @@ impl Placement {
                 "bottom-right" => (1, dw - 15.0, false, dh - 45.0),
                 "top-center" => (0, dw * 0.498, true, 20.0),
                 "bottom-center" => (0, dw * 0.498, false, dh - 45.0),
-                _ => (0, dw * cfg.island_x / 100.0, true, cfg.island_y),
+                _ => (0, dw * cfg.island_x / 100.0, true, cfg.island_y / zoom),
             }
         };
         // The window stays on the display; the Island moves inside it instead.
-        let wx = match align { -1 => x - PAD, 0 => x - CANVAS.0 / 2.0, _ => x + PAD - CANVAS.0 }.min(dw - CANVAS.0).max(0.0);
-        let wy = if top { y - PAD } else { y + PAD - CANVAS.1 }.min(dh - CANVAS.1).max(0.0);
-        Placement { window: (wx.round(), wy.round()), align, x: x - wx.round(), top, y: y - wy.round() }
+        // Round before the clamp, and floor the limit, so a fractional zoom never pushes the window past the edge.
+        let wx = match align { -1 => x - PAD, 0 => x - CANVAS.0 / 2.0, _ => x + PAD - CANVAS.0 }.round().min((dw - CANVAS.0).floor()).max(0.0);
+        let wy = if top { y - PAD } else { y + PAD - CANVAS.1 }.round().min((dh - CANVAS.1).floor()).max(0.0);
+        Placement { window: (wx, wy), align, x: x - wx, top, y: y - wy, zoom }
+    }
+
+    /// The window's rect on the display, in the display's points.
+    pub fn frame(&self) -> [f32; 4] {
+        let k = self.zoom;
+        [self.window.0 * k, self.window.1 * k, CANVAS.0 * k, CANVAS.1 * k]
     }
 
     /// The Island's rect inside the window for a size.
@@ -470,8 +482,9 @@ impl Island {
         let screen = self.screen();
         self.placement = Placement::of(&self.cfg, screen.size);
         if let Some(me) = &self.me {
-            let (x, y) = self.placement.window;
-            me.place(screen.target, OverlayPlacement::Rect { x, y, width: CANVAS.0, height: CANVAS.1 });
+            let [x, y, width, height] = self.placement.frame();
+            me.place(screen.target, OverlayPlacement::Rect { x, y, width, height });
+            match me { Host::Window(_) => self.passthrough.resize((width, height)), Host::Overlay(h, ..) => h.resize((width, height)) }
         }
     }
 
@@ -528,6 +541,12 @@ impl Island {
             };
             (kind, [x, y, h, h])
         }).collect()
+    }
+
+    /// The Island colour at the opacity set for the mode it is in.
+    pub fn island_bg(&self) -> Color {
+        let bg = self.cfg.bg();
+        bg.alpha(bg.a * if self.mode == Mode::Large { self.cfg.large_opacity } else { self.cfg.compact_opacity } / 100.0)
     }
 
     pub fn low_battery(&self) -> bool { !self.charging && self.percent.is_some_and(|p| p < 20) }
@@ -1198,7 +1217,10 @@ impl Island {
             }
         };
         let screen = self.screen();
-        self.passthrough.sync(region, self.placement.window, &screen, tx);
+        // The window's points are the Island's times its zoom.
+        let k = self.placement.zoom;
+        let (wx, wy) = self.placement.window;
+        self.passthrough.sync(region.map(|v| v * k), (wx * k, wy * k), &screen, tx);
         changed
     }
 
@@ -1311,13 +1333,14 @@ pub fn fetch_image(me: &Host, url: String, foreign: bool, put: impl FnOnce(&mut 
 
 // --- Views ---
 
-pub fn view(s: &Island, _: &mut Cx<Island>) -> El {
+pub fn view(s: &Island, cx: &mut Cx<Island>) -> El {
     let cfg = &s.cfg;
+    cx.zoom(s.placement.zoom);
     let mut layer = Vec::new();
     let [left, top, w, h] = s.rect();
     let hidden = s.hidden();
-    let (bg, fg) = if hidden { (Color::TRANSPARENT, Color::TRANSPARENT) } else { (cfg.bg(), cfg.text()) };
     let large = s.mode == Mode::Large;
+    let (bg, fg) = if hidden { (Color::TRANSPARENT, Color::TRANSPARENT) } else { (s.island_bg(), cfg.text()) };
     let radii = if cfg.win95() { [0.0; 4] }
         else if cfg.notch_mode { let r = if large { 44.0 } else { h / 2.0 }; [0.0, 0.0, r, r] }
         else { [if large { 44.0 } else { h / 2.0 }; 4] };
@@ -1397,7 +1420,7 @@ pub fn view(s: &Island, _: &mut Cx<Island>) -> El {
 /// The Large Island's tabs as a row of icons in a pill of their own.
 fn dock(s: &Island, [x, y, w, h]: [f32; 4]) -> El {
     let cfg = &s.cfg;
-    let (bg, fg) = (cfg.bg(), cfg.text());
+    let (bg, fg) = (s.island_bg(), cfg.text());
     let (height, gap, button, space) = DOCK;
     let round = |r: f32| cfg.radius(r);
     let mut pill = row().key("dock").role("group").label("Tabs").w_full().h(height).px(space).gap(space).center_y()
@@ -1650,6 +1673,25 @@ mod tests {
 
     fn island(cfg: Config) -> Island {
         Island::new(Store::memory(cfg), Vec::new())
+    }
+
+    #[test]
+    fn a_scaled_island_keeps_its_window_on_the_display() {
+        for scale in [80.0, 110.0, 130.0, 150.0, 170.0, 200.0] {
+            for mode in ["top-right", "bottom-right", "bottom-left", "free"] {
+                let p = Placement::of(&Config { island_scale: scale, position_mode: mode.into(), ..Config::default() }, (1920.0, 1080.0));
+                let [x, y, w, h] = p.frame();
+                assert!(x >= 0.0 && y >= 0.0 && x + w <= 1920.01 && y + h <= 1080.01, "{scale}% {mode}: {:?}", p.frame());
+                assert!((w - CANVAS.0 * scale / 100.0).abs() < 0.01, "{scale}%: {w}");
+            }
+        }
+        let small = Placement::of(&Config { island_scale: 200.0, ..Config::default() }, (1366.0, 768.0));
+        let [x, y, w, h] = small.frame();
+        assert!(x >= 0.0 && y >= 0.0 && x + w <= 1366.01 && y + h <= 768.01, "a small display caps the zoom: {:?}", small.frame());
+        let free = |scale| { let p = Placement::of(&Config { island_scale: scale, ..Config::default() }, (1920.0, 1080.0)); (p.window.1 + p.y) * p.zoom };
+        assert_eq!(free(100.0), free(200.0), "free placement keeps the Island's top on the display");
+        let s = island(Config { compact_opacity: 50.0, large_opacity: 25.0, ..Config::default() });
+        assert_eq!(s.island_bg().a, 0.5);
     }
 
     #[test]

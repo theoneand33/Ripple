@@ -128,6 +128,16 @@ fn leetcode_graph_from(base: &str, user: &str) -> Result<Graph, String> {
     Ok(days)
 }
 
+/// An ICS calendar's text from its link; `webcal://` links are fetched over HTTPS.
+pub fn calendar_feed(url: &str) -> Result<String, String> {
+    let url = url.trim();
+    let url = match url.strip_prefix("webcal://") { Some(rest) => format!("https://{rest}"), None => url.to_string() };
+    if !(url.starts_with("https://") || url.starts_with("http://")) { return Err(format!("Not a calendar link: {url}")) }
+    let mut res = agent().get(&url).call().map_err(|e| e.to_string())?;
+    if !res.status().is_success() { return Err(format!("The calendar link answered {}", res.status().as_u16())) }
+    res.body_mut().with_config().limit(16 * 1024 * 1024).read_to_string().map_err(|e| e.to_string())
+}
+
 /// A world clock's city: its name as Open-Meteo has it, its UTC offset now, and today's sunrise
 /// and sunset there, in Unix seconds.
 #[derive(Clone, Debug, PartialEq)]
@@ -351,6 +361,18 @@ mod tests {
         assert!(github_graph_from(&base, "../x").is_err());
         assert_eq!(leetcode_graph_from(&base, "ana"), Ok(vec![(day(1, 4), 3), (day(1, 5), 1)]));
         assert!(leetcode_graph_from(&base, "ghost").is_err());
+    }
+
+    #[test]
+    fn a_calendar_link_is_fetched_and_webcal_needs_https() {
+        use crate::testserver::{Response, serve};
+        let base = serve(|r| match r.path.as_str() {
+            "/cal.ics" => Response { status: 200, headers: vec![], body: "BEGIN:VCALENDAR".into() },
+            _ => Response { status: 404, headers: vec![], body: String::new() },
+        });
+        assert_eq!(calendar_feed(&format!("{base}/cal.ics")).as_deref(), Ok("BEGIN:VCALENDAR"));
+        assert!(calendar_feed(&format!("{base}/gone.ics")).unwrap_err().contains("404"));
+        assert!(calendar_feed("file:///etc/passwd").is_err());
     }
 
     #[test]
