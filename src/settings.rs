@@ -70,6 +70,8 @@ pub struct Settings {
     nc_list: TextEdit,
     nc_calendar: TextEdit,
     nc_shelf: TextEdit,
+    sure_url: TextEdit,
+    sure_key: TextEdit,
 }
 
 impl Settings {
@@ -100,6 +102,8 @@ impl Settings {
             nc_list: edit(&cfg.nextcloud.list),
             nc_calendar: edit(&cfg.nextcloud.calendar),
             nc_shelf: edit(&cfg.nextcloud.shelf_folder),
+            sure_url: edit(&cfg.sure_url),
+            sure_key: TextEdit::new("").secure(),
             screens: screens.iter().map(|s| s.name.clone()).collect(),
             open: None,
             dragging: None,
@@ -286,7 +290,7 @@ fn drag_tab(s: &mut Settings, from: usize, d: &mut Drag, tx: &mut Tx) {
 /// Whether a tab has its own settings page: one `panel` has sections for.
 fn has_panel(tab: Tab) -> bool {
     match tab {
-        Tab::Search | Tab::Workflows | Tab::Overview | Tab::Weather | Tab::Assistant | Tab::T3 | Tab::Limits | Tab::Tasks | Tab::Notes | Tab::Calendar | Tab::Shelf => true,
+        Tab::Search | Tab::Workflows | Tab::Overview | Tab::Weather | Tab::Assistant | Tab::T3 | Tab::Limits | Tab::Tasks | Tab::Notes | Tab::Calendar | Tab::Shelf | Tab::Stocks => true,
         Tab::Clipboard | Tab::Stremflix | Tab::System | Tab::Plugins | Tab::Pomodoro | Tab::Calculator | Tab::Habits => false,
     }
 }
@@ -447,6 +451,18 @@ fn panel(s: &Settings, k: &Kit, layer: &mut Vec<El>, tab: Tab) -> Vec<El> {
                     .binds(|s| &mut s.nc_shelf, |c, v| c.nextcloud.shelf_folder = v.trim().into()).build(k));
             }
             sections.push(section(s, "nextcloud", "Nextcloud", rows));
+        }
+        Tab::Stocks => {
+            let label = |t: &str| text(t.to_string()).font(cfg.font(14.0, 500.0)).color(fg.alpha(0.8)).mt(10.0);
+            sections.push(section(s, "sure", "Sure", vec![
+                text("The portfolio comes from Sure's investment and crypto accounts. Make a Read Only key in Sure under Settings → API Keys.").font(cfg.font(12.0, 400.0)).color(fg.alpha(0.6)).wrap(),
+                label("Server"),
+                TextInput::new(&s.sure_url).width(None).label("Sure server").placeholder("https://app.sure.am")
+                    .binds(|s| &mut s.sure_url, |c, v| c.sure_url = v.trim().into()).build(k),
+                label("API key"),
+                TextInput::new(&s.sure_key).width(None).label("Sure API key").secure().placeholder(if cfg.sure_key.is_empty() { "API key" } else { "Saved" })
+                    .binds(|s| &mut s.sure_key, |c, v| c.sure_key = v.trim().into()).build(k),
+            ]));
         }
         Tab::Clipboard | Tab::Stremflix | Tab::System | Tab::Plugins | Tab::Pomodoro | Tab::Calculator | Tab::Habits => {}
     }

@@ -14,6 +14,7 @@ mod plugins;
 mod pomodoro;
 mod search;
 mod shelf;
+mod stocks;
 mod stremflix;
 mod t3;
 mod tasks;
@@ -29,6 +30,7 @@ pub use notes::Notes;
 pub use shelf::Shelf;
 pub use pomodoro::{Clock, Pomodoro, bubble as pomodoro_bubble, live as pomodoro_live};
 pub use search::Finder;
+pub use stocks::Stocks;
 pub use stremflix::Stremflix;
 pub use t3::T3;
 pub use tasks::{Every, Task, TaskDraft};
@@ -63,6 +65,7 @@ fn panel(s: &Island, tab: Tab, layer: &mut Vec<El>) -> El {
         Tab::Pomodoro => pomodoro::view(s),
         Tab::Calculator => calculator::view(s),
         Tab::Habits => habits::view(s),
+        Tab::Stocks => stocks::view(s),
     }
 }
 
@@ -80,6 +83,7 @@ pub const fn size(tab: Tab) -> (f32, f32) {
         Tab::Pomodoro => (440.0, 236.0),
         Tab::Calendar => (560.0, 280.0),
         Tab::Overview => (560.0, 320.0),
+        Tab::Stocks => (560.0, 350.0),
         Tab::Assistant => (420.0, 230.0),
         Tab::Clipboard => (420.0, 290.0),
         Tab::Weather => (420.0, 190.0),
@@ -107,6 +111,7 @@ fn load(s: &mut Island, tab: Tab) {
         Tab::Stremflix => s.stremflix_load(),
         Tab::Limits => s.limits_load(),
         Tab::Calculator => s.calc_load(),
+        Tab::Stocks => s.stocks_load(),
         Tab::Notes => s.nextcloud_sync(Kind::Notes),
         Tab::Tasks => {
             if s.task_draft.editing.is_some() { tasks::reset_draft(s) }
