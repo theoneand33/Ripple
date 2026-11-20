@@ -73,7 +73,7 @@ pub struct Settings {
     nc_shelf: TextEdit,
     sure_url: TextEdit,
     sure_key: TextEdit,
-    hotkey: ShortcutRecorderState,
+    pub hotkey: ShortcutRecorderState,
 }
 
 impl Settings {

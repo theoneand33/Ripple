@@ -334,6 +334,8 @@ pub struct Island {
 
     pub me: Option<Host>,
     pub settings: Option<WindowHandle>,
+    /// The Settings window's state, told when the saved hotkey could not be registered.
+    pub settings_app: Option<AppHandle<crate::settings::Settings>>,
     pub images: Option<ImageCache>,
     pub screens: Vec<Screen>,
     pub placement: Placement,
@@ -450,6 +452,7 @@ impl Island {
             dashboard_drag: None,
             me: None,
             settings: None,
+            settings_app: None,
             images: None,
             placement: Placement::of(&cfg, (1920.0, 1080.0)),
             screens,
@@ -1272,7 +1275,11 @@ impl Island {
         if !chord.is_empty() {
             match chord.parse().and_then(|k| me.register_hotkey(k)) {
                 Ok(id) => self.hotkey = Some(id),
-                Err(e) => eprintln!("Ripple: the shortcut {chord} is off: {e}"),
+                Err(e) => {
+                    eprintln!("Ripple: the shortcut {chord} is off: {e}");
+                    // Settings shows it unset, so recording it again retries; the saved chord stays for the next launch.
+                    if let Some(settings) = &self.settings_app { settings.update(|s, _| s.hotkey = rune_kit::ShortcutRecorderState::new(None)) }
+                }
             }
         }
 

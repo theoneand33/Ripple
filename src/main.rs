@@ -424,9 +424,9 @@ fn overlay_island(screens: Vec<Screen>, store: Store) -> Vec<rune::AnyWindowSpec
         state,
     );
     let me = Host::Overlay(overlay.clone(), host.handle(), Arc::new(AtomicBool::new(false)));
-    let (_, settings) = settings_window(&mut host, Settings::new(store, Some(me.clone()), &screens));
+    let (settings_app, settings) = settings_window(&mut host, Settings::new(store, Some(me.clone()), &screens));
     let island = me.clone();
-    overlay.update(move |s, _| { s.me = Some(island); s.settings = Some(settings); s.begin() });
+    overlay.update(move |s, _| { s.me = Some(island); s.settings = Some(settings); s.settings_app = Some(settings_app); s.begin() });
     me.show();
     start_tray(me);
     vec![WindowSpec::from_app("host", host).into()]
@@ -484,16 +484,18 @@ fn main() {
         let settings_state = Settings::new(store.clone(), Some(island.clone()), &screens);
         let (settings_app, settings_window) = settings_window(&mut app, settings_state);
         #[cfg(windows)]
-        std::thread::spawn(move || {
-            let apps = system::discover_apps();
-            settings_app.update(move |s, _| s.installed = apps);
+        std::thread::spawn({
+            let settings_app = settings_app.clone();
+            move || {
+                let apps = system::discover_apps();
+                settings_app.update(move |s, _| s.installed = apps);
+            }
         });
-        #[cfg(not(windows))]
-        let _ = settings_app;
 
         let mut state = Island::new(store, screens);
         state.me = Some(island.clone());
         state.settings = Some(settings_window);
+        state.settings_app = Some(settings_app);
         let screen = state.screen();
         let position = (!state.screens.is_empty()).then(|| {
             let (x, y) = state.placement.window;
