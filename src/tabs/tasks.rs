@@ -134,12 +134,7 @@ fn parse_due(v: &str, today: Date) -> Option<(Date, Option<(u32, u32)>)> {
     let day = match day.to_ascii_lowercase().as_str() {
         "today" => today,
         "tomorrow" => shift_days(today, 1),
-        _ => {
-            let mut p = day.splitn(3, '-').map(str::parse::<u32>);
-            let (y, m, d) = (p.next()?.ok()?, p.next()?.ok()?, p.next()?.ok()?);
-            if !(1..=12).contains(&m) || d == 0 || d > days_in(y as i32, m) { return None }
-            (y as i32, m, d)
-        }
+        _ => crate::date::parse_ymd(day)?,
     };
     let time = match time {
         Some(t) => {

@@ -485,9 +485,8 @@ pub fn detect_local() -> Option<T3Device> {
 /// initialize, initialized, tools/call. `Ok(None)` means the token was refused (401).
 fn mcp_call(device: &T3Device, token: &str, name: &str, args: &Value) -> Result<Option<Value>, String> {
     verify_peer(device)?;
-    let agent: ureq::Agent = ureq::Agent::config_builder()
+    let agent: ureq::Agent = crate::net::config()
         .timeout_global(Some(Duration::from_secs(30)))
-        .http_status_as_error(false)
         .build()
         .into();
     let url = format!("{}/mcp", base(device));

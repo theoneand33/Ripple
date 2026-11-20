@@ -787,10 +787,6 @@ pub fn battery() -> Option<(u8, bool)> {
 
 // --- System monitor ---
 
-/// Whether `Monitor::sample` reads processes too: only while the System tab shows, as reading
-/// every process costs more than the totals.
-pub static WANT_PROCESSES: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Stats {
     /// Percent of all cores.
@@ -804,7 +800,7 @@ pub struct Stats {
     pub down: u64,
     pub up: u64,
     /// The apps using the most CPU (percent of all cores) and memory (bytes), processes of the
-    /// same name added up; empty unless `WANT_PROCESSES`.
+    /// same name added up; empty unless sampled with `processes`.
     pub top_cpu: Vec<(String, f32)>,
     pub top_mem: Vec<(String, u64)>,
 }
@@ -835,7 +831,8 @@ impl Monitor {
         Monitor { sys, disks: sysinfo::Disks::new_with_refreshed_list(), nets: sysinfo::Networks::new_with_refreshed_list(), at: std::time::Instant::now() }
     }
 
-    pub fn sample(&mut self) -> Stats {
+    /// `processes` reads every process too, which costs more than the totals.
+    pub fn sample(&mut self, processes: bool) -> Stats {
         self.sys.refresh_cpu_usage();
         self.sys.refresh_memory();
         // Re-list, so a mounted or unmounted disk is noticed.
@@ -854,7 +851,7 @@ impl Monitor {
         let nets = self.nets.list().iter().filter(|(name, _)| !(*name == "lo" || *name == "lo0" || name.contains("Loopback"))).map(|(_, n)| n);
         let (down, up) = nets.fold((0, 0), |(d, u), n| (d.max(n.received()), u.max(n.transmitted())));
         let (mut top_cpu, mut top_mem) = (Vec::new(), Vec::new());
-        if WANT_PROCESSES.load(std::sync::atomic::Ordering::Relaxed) {
+        if processes {
             use sysinfo::{ProcessRefreshKind, ProcessesToUpdate};
             self.sys.refresh_processes_specifics(ProcessesToUpdate::All, true, ProcessRefreshKind::nothing().with_cpu().with_memory());
             let cores = self.sys.cpus().len().max(1) as f32;

@@ -53,8 +53,7 @@ impl Island {
 
 /// "9:41" on the user's clock format.
 fn clock(s: &Island, t: &LocalTime) -> String {
-    let hour = if s.cfg.hour12 { (t.hour + 11) % 12 + 1 } else { t.hour };
-    format!("{hour}:{:02}", t.minute)
+    crate::date::clock(t.hour, t.minute, s.cfg.hour12)
 }
 
 pub fn view(s: &Island) -> El {

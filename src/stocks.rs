@@ -61,7 +61,7 @@ fn quote_from(base: &str, symbol: &str, range: Range) -> Result<Quote, String> {
         // Yahoo turns away clients that don't look like a browser.
         .header("user-agent", "Mozilla/5.0")
         .call().map_err(|_| "Couldn't reach Yahoo Finance".to_string())?;
-    let body: Value = res.body_mut().read_to_string().ok().and_then(|b| serde_json::from_str(&b).ok()).unwrap_or_default();
+    let body: Value = crate::net::read_json(&mut res);
     let chart = &body["chart"]["result"][0];
     let meta = &chart["meta"];
     let Some(price) = meta["regularMarketPrice"].as_f64() else {
@@ -146,7 +146,7 @@ fn pages(url: &str, key: &str, path: &str, query: &[(&str, String)], field: &str
         for (k, v) in query { req = req.query(*k, v) }
         let mut res = req.call().map_err(|_| "Couldn't reach Sure".to_string())?;
         let status = res.status().as_u16();
-        let body: Value = res.body_mut().read_to_string().ok().and_then(|b| serde_json::from_str(&b).ok()).unwrap_or_default();
+        let body: Value = crate::net::read_json(&mut res);
         match status {
             200 => {}
             401 => return Err("Sure refused the API key".into()),

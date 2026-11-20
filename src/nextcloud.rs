@@ -262,9 +262,8 @@ impl Client {
         let host = base.find("://").map_or(0, |i| i + 3);
         let origin = base[host..].find('/').map_or(base.clone(), |end| base[..host + end].to_string());
         let auth = base64::engine::general_purpose::STANDARD.encode(format!("{}:{}", nc.user.trim(), nc.password));
-        let agent = ureq::Agent::config_builder()
+        let agent = crate::net::config()
             .timeout_global(Some(Duration::from_secs(30)))
-            .http_status_as_error(false)
             .allow_non_standard_methods(true)
             .build()
             .into();
@@ -1004,9 +1003,7 @@ fn sync_events(c: &Client, want: &str, items: &[Item], pending: &[String], out: 
 /// time (`HH:MM`) when the event has one.
 pub fn event_day(text: &str) -> Option<((i32, u32, u32), &str)> {
     let (date, title) = text.split_once(' ')?;
-    let mut parts = date.splitn(3, '-').map(str::parse::<u32>);
-    let (y, m, d) = (parts.next()?.ok()?, parts.next()?.ok()?, parts.next()?.ok()?);
-    ((1..=12).contains(&m) && (1..=31).contains(&d)).then_some(((y as i32, m, d), title))
+    Some((crate::date::parse_ymd(date)?, title))
 }
 
 /// Every event of an ICS file, as events' texts, from `since` (`YYYY-MM-DD`) on.

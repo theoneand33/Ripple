@@ -1109,8 +1109,7 @@ impl Island {
         let ms = crate::date::now_ms();
         // A headless capture reads the same clock on every machine.
         let now = if rune::is_headless() { LocalTime::at_offset(1_767_260_460_000, 0) } else { LocalTime::at(ms) };
-        let hour = if self.cfg.hour12 { (now.hour + 11) % 12 + 1 } else { now.hour };
-        self.time = format!("{hour}:{:02}", now.minute);
+        self.time = crate::date::clock(now.hour, now.minute, self.cfg.hour12);
         self.date = crate::date::format_date(now.year, now.month, now.day);
         self.today = (now.year, now.month, now.day);
         self.minutes = now.hour * 60 + now.minute;
@@ -1165,8 +1164,7 @@ impl Island {
     pub fn precip_label(&self) -> String {
         let Some((at, snow)) = self.weather.precip else { return String::new() };
         let t = LocalTime::at(at * 1000);
-        let hour = if self.cfg.hour12 { (t.hour + 11) % 12 + 1 } else { t.hour };
-        format!("{} at {hour}:{:02}", if snow { "Snow" } else { "Rain" }, t.minute)
+        format!("{} at {}", if snow { "Snow" } else { "Rain" }, crate::date::clock(t.hour, t.minute, self.cfg.hour12))
     }
 
     /// Once a second: an alert once rain or snow is due within the hour; Large waits for compact.
@@ -1539,11 +1537,19 @@ impl Island {
         let h = me.clone();
         std::thread::spawn(move || {
             let mut monitor = system::Monitor::new();
+            let showing = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
             loop {
                 std::thread::sleep(std::time::Duration::from_secs(2));
-                let stats = Some(monitor.sample());
+                let stats = Some(monitor.sample(showing.load(std::sync::atomic::Ordering::Relaxed)));
+                let showing = showing.clone();
                 // Redraw only while the System tab shows; otherwise just keep the latest figures.
-                h.update_if(move |s, _| { let changed = s.stats != stats; s.stats = stats; changed && tabs::shows(s, Tab::System) });
+                h.update_if(move |s, _| {
+                    let shows = tabs::shows(s, Tab::System);
+                    showing.store(shows, std::sync::atomic::Ordering::Relaxed);
+                    let changed = s.stats != stats;
+                    s.stats = stats;
+                    changed && shows
+                });
             }
         });
 

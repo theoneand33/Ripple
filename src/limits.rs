@@ -185,7 +185,7 @@ fn renew_into(s: &Saved, creds: &mut Value) -> Result<String, String> {
     let refresh = creds[s.refresh].as_str().ok_or(EXPIRED)?.to_string();
     let mut body = serde_json::json!({"grant_type": "refresh_token", "refresh_token": refresh, "client_id": s.oauth.client});
     if let Some(scope) = s.oauth.scope { body["scope"] = scope.into() }
-    let mut res = crate::net::agent().post(s.oauth.url).header("content-type", "application/json").header("user-agent", "Ripple")
+    let mut res = crate::net::agent().post(s.oauth.url).header("content-type", "application/json")
         .send(body.to_string()).map_err(|e| {
             use ureq::{Error as E, Timeout as T};
             match e {
@@ -196,7 +196,7 @@ fn renew_into(s: &Saved, creds: &mut Value) -> Result<String, String> {
         })?;
     if !res.status().is_success() { return Err(EXPIRED.into()) }
     // From here the old refresh token is spent.
-    let v: Value = res.body_mut().read_to_string().ok().and_then(|b| serde_json::from_str(&b).ok()).ok_or(LOST)?;
+    let v = crate::net::read_json(&mut res);
     let access = v["access_token"].as_str().ok_or(LOST)?.to_string();
     creds[s.access] = access.clone().into();
     if let Some(r) = v["refresh_token"].as_str() { creds[s.refresh] = r.into() }
@@ -209,7 +209,7 @@ fn renew_into(s: &Saved, creds: &mut Value) -> Result<String, String> {
 }
 
 fn get(url: &str, headers: &[(&str, &str)]) -> Result<Value, String> {
-    let mut req = crate::net::agent().get(url).header("accept", "application/json").header("user-agent", "Ripple");
+    let mut req = crate::net::agent().get(url).header("accept", "application/json");
     for (k, v) in headers { req = req.header(*k, *v) }
     let mut res = req.call().map_err(|_| "Can't reach the server".to_string())?;
     match res.status().as_u16() {
