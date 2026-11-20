@@ -108,6 +108,38 @@ fn weather_from(geocoding: &str, forecast: &str, location: &str, unit: &str, now
     })
 }
 
+/// A world clock's city: its name as Open-Meteo has it, its UTC offset now, and today's sunrise
+/// and sunset there, in Unix seconds.
+#[derive(Clone, Debug, PartialEq)]
+pub struct City {
+    pub name: String,
+    pub offset: i64,
+    pub sun: Option<(i64, i64)>,
+}
+
+pub fn city(name: &str) -> Option<City> { city_from("https://geocoding-api.open-meteo.com", "https://api.open-meteo.com", name) }
+
+fn city_from(geocoding: &str, forecast: &str, name: &str) -> Option<City> {
+    let found = get_json(agent().get(format!("{geocoding}/v1/search")).query("name", name.split(',').next().unwrap_or(name).trim()).query("count", "1"))?;
+    let place = &found["results"][0];
+    let (lat, lon) = (place["latitude"].as_f64()?, place["longitude"].as_f64()?);
+    let data = get_json(agent().get(format!("{forecast}/v1/forecast"))
+        .query("latitude", lat.to_string()).query("longitude", lon.to_string())
+        .query("daily", "sunrise,sunset").query("forecast_days", "1").query("timezone", "auto"))?;
+    let offset = data["utc_offset_seconds"].as_i64()?;
+    let at = |field: &str| data["daily"][field][0].as_str().and_then(|t| local_secs(t)).map(|t| t - offset);
+    Some(City { name: place["name"].as_str().unwrap_or(name).to_string(), offset, sun: at("sunrise").zip(at("sunset")) })
+}
+
+/// `2026-11-20T07:12` as seconds since 1970 on that clock.
+pub fn local_secs(t: &str) -> Option<i64> {
+    let (date, time) = t.split_once('T')?;
+    let mut d = date.splitn(3, '-').map(str::parse::<u32>);
+    let (y, m, day) = (d.next()?.ok()?, d.next()?.ok()?, d.next()?.ok()?);
+    let (h, min) = time.split_once(':')?;
+    Some(crate::date::days_from_civil(y as i32, m, day) * 86_400 + i64::from(h.parse::<u32>().ok()? * 3600 + min.get(..2)?.parse::<u32>().ok()? * 60))
+}
+
 /// Units of each currency per US dollar, by upper-case code, from Frankfurter (ECB reference
 /// rates, no API key).
 pub fn rates() -> Option<std::collections::HashMap<String, f64>> { rates_from("https://api.frankfurter.dev/v1") }
@@ -133,12 +165,14 @@ pub fn ask_ai(base: &str, model: &str, api_key: &str, question: &str, mut on_del
         .build()
         .into();
     // OpenRouter credits the app by these; other services ignore them.
-    let request = agent
+    let mut request = agent
         .post(format!("{base}/chat/completions"))
         .header("content-type", "application/json")
-        .header("authorization", format!("Bearer {api_key}"))
         .header("http-referer", "https://github.com/TopMyster/Ripple")
         .header("x-title", "Ripple");
+    if !api_key.is_empty() {
+        request = request.header("authorization", format!("Bearer {api_key}"));
+    }
     let body = json!({
         "model": model,
         "messages": [
@@ -287,6 +321,21 @@ mod tests {
     }
 
     #[test]
+    fn a_city_comes_with_its_offset_and_sunrise_and_sunset() {
+        use crate::testserver::{json, serve};
+        let base = serve(|r| match r.path.as_str() {
+            "/v1/search?name=Tokyo&count=1" => json(200, json!({ "results": [{ "name": "Tokyo", "latitude": 35.69, "longitude": 139.69 }] })),
+            p if p.starts_with("/v1/forecast?latitude=35.69&longitude=139.69&") =>
+                json(200, json!({ "utc_offset_seconds": 32400, "daily": { "sunrise": ["2026-11-20T06:20"], "sunset": ["2026-11-20T16:31"] } })),
+            _ => json(200, json!({})),
+        });
+        let tokyo = city_from(&base, &base, "Tokyo, Japan").unwrap();
+        let day = crate::date::days_from_civil(2026, 11, 20) * 86_400;
+        assert_eq!(tokyo, City { name: "Tokyo".into(), offset: 32400, sun: Some((day + 6 * 3600 + 20 * 60 - 32400, day + 16 * 3600 + 31 * 60 - 32400)) });
+        assert_eq!(city_from(&base, &base, "Atlantis"), None);
+    }
+
+    #[test]
     fn rates_come_per_dollar_with_the_dollar_itself() {
         use crate::testserver::{json, serve};
         let base = serve(|r| match r.path.as_str() {
@@ -320,8 +369,10 @@ mod tests {
         use crate::testserver::{Response, serve};
         let base = serve(|r| {
             let body: serde_json::Value = serde_json::from_str(&r.body).unwrap_or_default();
-            let ok = r.path == "/v1/chat/completions" && r.header("authorization") == Some("Bearer gsk_test")
-                && body["stream"] == true && body["messages"][1]["content"] == "Hi?" && body["model"] == "m";
+            // A keyless (local) model gets no authorization header at all.
+            let auth = if body["model"] == "local" { None } else { Some("Bearer gsk_test") };
+            let ok = r.path == "/v1/chat/completions" && r.header("authorization") == auth
+                && body["stream"] == true && body["messages"][1]["content"] == "Hi?" && (body["model"] == "m" || body["model"] == "local");
             if !ok { return Response { status: 401, headers: vec![], body: String::new() } }
             let events = ["Hel", "lo **", "you** [DONE]"].iter()
                 .map(|d| format!("data: {}\n\n", json!({ "choices": [{ "delta": { "content": d } }] })))
@@ -333,6 +384,7 @@ mod tests {
         assert_eq!(answer, "Hello **you** [DONE]");
         let refused = ask_ai(&format!("{base}/v1"), "m", "wrong", "Hi?", |_| {});
         assert!(refused.unwrap_err().starts_with("API Error: 401"));
+        assert_eq!(ask_ai(&format!("{base}/v1"), "local", "", "Hi?", |_| {}), Ok(true), "no authorization header for an empty key");
     }
 
 }
