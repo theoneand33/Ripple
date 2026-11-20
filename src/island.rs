@@ -202,6 +202,8 @@ pub struct Placement {
     pub y: f32,
     /// The zoom these points are drawn at.
     pub zoom: f32,
+    /// How far down the window stays on the display: less than `CANVAS.1` on a short display.
+    pub visible_h: f32,
 }
 
 impl Placement {
@@ -227,7 +229,12 @@ impl Placement {
         // Round before the clamp, and floor the limit, so a fractional zoom never pushes the window past the edge.
         let wx = match align { -1 => x - PAD, 0 => x - CANVAS.0 / 2.0, _ => x + PAD - CANVAS.0 }.round().min((dw - CANVAS.0).floor()).max(0.0);
         let wy = if top { y - PAD } else { y + PAD - CANVAS.1 }.round().min((dh - CANVAS.1).floor()).max(0.0);
-        Placement { window: (wx, wy), align, x: x - wx, top, y: y - wy, zoom }
+        Placement { window: (wx, wy), align, x: x - wx, top, y: y - wy, zoom, visible_h: (dh - wy).min(CANVAS.1) }
+    }
+
+    /// The tallest the Island gets with its dock and shadow still on the display.
+    pub fn max_h(&self) -> f32 {
+        (if self.top { self.visible_h - self.y } else { self.y }) - DOCK.0 - DOCK.1 - 8.0
     }
 
     /// The window's rect on the display, in the display's points.
@@ -704,7 +711,7 @@ impl Island {
         if notch && track && !alerting && self.mode != Mode::Large { w = (w + 40.0).max(300.0) }
         let h = match self.mode {
             // The Overview fits its tiles.
-            Mode::Large if self.tab == Tab::Overview => (self.notch_inset() - LARGE_EDGE).max(0.0) + 2.0 * LARGE_EDGE + tabs::overview_height(self),
+            Mode::Large if self.tab == Tab::Overview => ((self.notch_inset() - LARGE_EDGE).max(0.0) + 2.0 * LARGE_EDGE + tabs::overview_height(self)).min(self.placement.max_h()),
             Mode::Large => (self.notch_inset() - LARGE_EDGE).max(0.0) + large.1,
             _ => if self.cfg.notch_mode { 34.0 } else { 40.0 }, // Mini notch keeps the notch height
         };
@@ -2044,6 +2051,20 @@ mod tests {
     }
 
     #[test]
+    fn a_full_overview_fits_a_short_display() {
+        for mode in ["top-center", "bottom-center"] {
+            let mut s = island(Config { position_mode: mode.into(), ..Config::default() });
+            s.cfg.dashboard = crate::config::Widget::OWN.into_iter().map(|w| crate::config::Tile::new(w).sized(4, 6)).collect();
+            s.placement = Placement::of(&s.cfg, (853.0, 533.0));
+            s.mode = Mode::Large;
+            s.set_tab(Tab::Overview);
+            let ([_, iy, _, ih], [_, dy, _, dh]) = (s.rect(), s.dock_rect().unwrap());
+            let (top, bottom) = (iy.min(dy), (iy + ih).max(dy + dh));
+            assert!(top >= 0.0 && bottom <= s.placement.visible_h, "{mode}: {top}..{bottom}");
+        }
+    }
+
+    #[test]
     fn a_scaled_island_keeps_its_window_on_the_display() {
         for scale in [80.0, 110.0, 130.0, 150.0, 170.0, 180.0] {
             for mode in ["top-right", "bottom-right", "bottom-left", "free"] {
@@ -2352,6 +2373,8 @@ mod tests {
     fn notch_mode_sizes_around_the_notch() {
         let mut s = island(Config { standby: false, ..Config::default() });
         s.mode = Mode::Large;
+        // Short enough that the display's height doesn't cap it.
+        s.cfg.dashboard.truncate(1);
         let large = s.size();
         // Notch Mode's Large Island grows by what the notch hides.
         s.cfg.notch_mode = true;
