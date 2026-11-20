@@ -1,5 +1,6 @@
 //! Overview: a dashboard of tiles the user arranges. A tile is a widget made for it (clock,
-//! now playing, weather, battery, today) or another tab's panel. The pencil edits the layout.
+//! now playing, weather, battery, today) or another tab's panel. The Island grows to fit the
+//! tiles. The pencil edits the layout and opens a drawer of widgets to drag onto it.
 
 use rune::{Color, Drag, El, Key, KeyEvent, Phase, Transition, Tx, col, el, icon, row, text};
 
@@ -17,6 +18,11 @@ const GAP: f32 = 10.0;
 const WIDTH: f32 = super::size(Tab::Overview).0 - 24.0;
 /// One grid cell: a quarter of the width, and a row.
 const CELL: (f32, f32) = ((WIDTH - 3.0 * GAP) / Tile::COLS as f32, 52.0);
+const HEADER: f32 = 28.0;
+/// The edit drawer: padding, its label, and two rows of widgets that scroll.
+const DRAWER: f32 = 8.0 + 16.0 + 6.0 + 62.0 + 8.0;
+/// The tallest the Overview's content grows before its tiles scroll: room left for the dock in `CANVAS`.
+const MAX_H: f32 = 356.0;
 
 /// `n` cells and the gaps between them.
 fn span(n: u8, cell: f32) -> f32 { n as f32 * cell + (n as f32 - 1.0) * GAP }
@@ -48,13 +54,67 @@ fn drop_at(rects: &[[f32; 4]], i: usize, dx: f32, dy: f32) -> usize {
     if rects.iter().all(|r| cy >= r[1] + r[3]) { rects.len() - 1 } else { i }
 }
 
+/// The tiles to draw: the dashboard as a dragged corner would leave it, with a widget being
+/// dragged in from the drawer at its slot (the index returned).
+fn shown(s: &Island) -> (Vec<Tile>, Option<usize>) {
+    let mut tiles = s.cfg.dashboard.clone();
+    if let Some((i, dx, dy, true)) = s.dashboard_drag.filter(|d| d.0 < tiles.len()) { tiles[i] = resized(tiles[i], dx, dy) }
+    let new = s.dashboard_add.filter(|_| s.dashboard_edit).and_then(|(w, at)| at.map(|at| { let at = at.min(tiles.len()); tiles.insert(at, Tile::new(w)); at }));
+    (tiles, new)
+}
+
+/// The grid's height: its tiles', and while editing room for two rows to drop on.
+fn grid_height(edit: bool, rects: &[[f32; 4]]) -> f32 {
+    let h = rects.iter().map(|r| r[1] + r[3]).fold(0.0, f32::max);
+    if edit || rects.is_empty() { h.max(span(2, CELL.1)) } else { h }
+}
+
+/// The Overview's content height: the header, the saved tiles, and the drawer while editing.
+/// Not the tiles a drag shows, so the Island holds still under the pointer.
+pub fn height(s: &Island) -> f32 {
+    let h = HEADER + 10.0 + grid_height(s.dashboard_edit, &layout(&s.cfg.dashboard));
+    (h + if s.dashboard_edit { GAP + DRAWER } else { 0.0 }).min(MAX_H)
+}
+
+/// The slot a widget dropped at `(x, y)` on the grid takes: after every tile before it in
+/// reading order (rows above, and the left halves of the row it's on).
+fn slot_at(rects: &[[f32; 4]], x: f32, y: f32) -> usize {
+    rects.iter().filter(|r| r[1] + r[3] <= y || r[1] <= y && r[0] + r[2] / 2.0 < x).count()
+}
+
+/// The slot under the pointer, or `None` off the grid.
+fn slot(s: &Island, d: &Drag) -> Option<usize> {
+    let [gx, gy, gw, gh] = s.dashboard_grid.get();
+    if gw <= 0.0 { return None }
+    // The drawn rect is in window points: zoomed, and scaled with the Island.
+    let k = gw / WIDTH;
+    let [px, py] = d.window_point();
+    let (x, y) = ((px - gx) / k, (py - gy) / k);
+    if !(0.0..=WIDTH).contains(&x) || !(-GAP..=gh / k + GAP).contains(&y) { return None }
+    Some(slot_at(&layout(&s.cfg.dashboard), x, y))
+}
+
+/// Dragging a widget out of the drawer shows where it would go; releasing on the grid adds it there.
+fn drag_in(s: &mut Island, widget: Widget, d: &mut Drag) {
+    match d.phase {
+        Phase::Down => s.dashboard_add = None,
+        Phase::Move => s.dashboard_add = Some((widget, slot(s, d))),
+        Phase::Up => {
+            let at = s.dashboard_add.take().and_then(|(_, at)| at);
+            if let Some(at) = at.filter(|_| !d.cancelled()) { add(s, widget, at) }
+        }
+    }
+}
+
 /// Every widget the dashboard could hold: its own, then each tab but this one.
 fn all() -> impl Iterator<Item = Widget> {
     Widget::OWN.into_iter().chain(Tab::ALL.into_iter().filter(|t| *t != Tab::Overview).map(Widget::Panel))
 }
 
-fn add(s: &mut Island, widget: Widget) {
-    s.save(|c| if !c.dashboard.iter().any(|t| t.widget == widget) { c.dashboard.push(Tile::new(widget)) });
+/// Puts `widget` at `at` (the end past it), unless it's on the dashboard already: so a press
+/// that follows a drop changes nothing.
+fn add(s: &mut Island, widget: Widget, at: usize) {
+    s.save(|c| if !c.dashboard.iter().any(|t| t.widget == widget) { c.dashboard.insert(at.min(c.dashboard.len()), Tile::new(widget)) });
     match widget {
         Widget::Panel(tab) => super::load(s, tab),
         Widget::Contributions => s.contributions_load(),
@@ -109,29 +169,30 @@ pub fn view(s: &Island, layer: &mut Vec<El>) -> El {
     let fg = s.cfg.text();
     let muted = fg.alpha(0.6 * fg.a);
 
-    let mut header = row().key("overview-header").w_full().h(28.0).gap(8.0).center_y();
+    let mut header = row().key("overview-header").w_full().h(HEADER).gap(8.0).center_y();
     // A Clock tile already shows them.
     header = if s.cfg.dashboard.iter().any(|t| t.widget == Widget::Clock) { header.child(el().grow(1.0)) } else {
         header.child(text(&s.time).key("time").font(s.cfg.font(15.0, 600.0).features("'tnum' 1")).color(fg))
             .child(text(&s.date).font(s.cfg.font(13.0, 500.0)).color(muted).grow(1.0).min_w(0.0).truncate())
     };
     header = if s.dashboard_edit {
-        header.child(pill(s, "edit-done", "Done").on_press(|s: &mut Island| s.dashboard_edit = false))
+        header.child(pill(s, "edit-done", "Done").on_press(|s: &mut Island| (s.dashboard_edit, s.dashboard_add) = (false, None)))
     } else {
         header.child(tool(s, "edit-dashboard", &icons::PENCIL, "Edit dashboard").on_press(|s: &mut Island| s.dashboard_edit = true))
             .child(tool(s, "open-settings", &icons::SETTINGS, "Open settings").on_press(|s: &mut Island| if let Some(settings) = &s.settings { settings.open() }))
     };
 
     // A corner being dragged reflows the grid around the size it would land on.
-    let mut tiles = s.cfg.dashboard.clone();
-    let drag = s.dashboard_drag.filter(|d| d.0 < tiles.len());
-    if let Some((i, dx, dy, true)) = drag { tiles[i] = resized(tiles[i], dx, dy) }
+    let (tiles, new) = shown(s);
+    let drag = s.dashboard_drag.filter(|d| d.0 < s.cfg.dashboard.len());
     let rects = layout(&tiles);
     let target = drag.filter(|d| !d.3).map(|(i, dx, dy, _)| drop_at(&rects, i, dx, dy));
-    let height = rects.iter().map(|r| r[1] + r[3]).fold(0.0, f32::max);
 
-    let mut grid = el().key("dashboard").w_full().h(height);
-    for (i, (t, r)) in tiles.iter().zip(&rects).enumerate() {
+    let mut grid = el().key("dashboard").w_full().h(grid_height(s.dashboard_edit, &rects)).drawn_rect_into(&s.dashboard_grid);
+    for (j, (t, r)) in tiles.iter().zip(&rects).enumerate() {
+        if new == Some(j) { grid = grid.child(placeholder(s, *t, *r)); continue }
+        // The dashboard's own index, past the widget being dragged in.
+        let i = if new.is_some_and(|n| j > n) { j - 1 } else { j };
         let mut tile = tile(s, i, *t, *r, layer);
         match drag {
             Some((j, dx, dy, false)) if j == i => tile = tile.offset(dx, dy).raise().opacity(0.85),
@@ -140,13 +201,23 @@ pub fn view(s: &Island, layer: &mut Vec<El>) -> El {
         }
         grid = grid.child(tile);
     }
-    let mut content = col().key("dashboard-content").w_full().gap(GAP);
-    content = if tiles.is_empty() && !s.dashboard_edit { content.child(empty(s, "No widgets yet: press the pencil to add some")) } else { content.child(grid) };
-    if s.dashboard_edit { content = content.child(picker(s)) }
+    let content = if tiles.is_empty() && !s.dashboard_edit { empty(s, "No widgets yet: press the pencil to add some") } else { grid };
 
-    col().key("overview").w_full().h_full().gap(10.0)
+    let mut overview = col().key("overview").w_full().h_full().gap(10.0)
         .child(header)
-        .child(col().key("dashboard-scroll").w_full().grow(1.0).min_h(0.0).scrolls().child(content))
+        .child(col().key("dashboard-scroll").w_full().grow(1.0).min_h(0.0).scrolls().child(content));
+    if s.dashboard_edit { overview = overview.child(drawer(s)) }
+    overview
+}
+
+/// Where a widget dragged from the drawer would land.
+fn placeholder(s: &Island, t: Tile, [x, y, w, h]: [f32; 4]) -> El {
+    let fg = s.cfg.text();
+    let radius = s.cfg.radius(18.0);
+    el().key("tile-new").absolute(x, y).size(w, h).center().radius(radius)
+        .fill(fg.alpha(0.05 * fg.a)).border(2.0, fg.alpha(0.5 * fg.a))
+        .motion(SPRING).transition(Transition::opacity()).a11y_hidden()
+        .child(text(t.widget.name()).font(s.cfg.font(13.0, 700.0)).color(fg.alpha(0.7 * fg.a)).truncate())
 }
 
 fn tile(s: &Island, i: usize, t: Tile, [x, y, w, h]: [f32; 4], layer: &mut Vec<El>) -> El {
@@ -189,16 +260,25 @@ fn tile(s: &Island, i: usize, t: Tile, [x, y, w, h]: [f32; 4], layer: &mut Vec<E
     tile
 }
 
-/// The widgets not on the dashboard yet, to add.
-fn picker(s: &Island) -> El {
+/// The edit drawer: the widgets not on the dashboard, to drag onto it or press to add at the end.
+fn drawer(s: &Island) -> El {
     let fg = s.cfg.text();
-    let mut chips = row().key("add-chips").w_full().gap(6.0).flex_wrap();
-    for widget in all().filter(|w| !s.cfg.dashboard.iter().any(|t| t.widget == *w)) {
-        chips = chips.child(pill(s, &format!("add-{widget:?}"), &format!("+ {}", widget.name())).on_press(move |s: &mut Island| add(s, widget)));
+    let dragging = s.dashboard_add.map(|a| a.0);
+    let widgets: Vec<Widget> = all().filter(|w| !s.cfg.dashboard.iter().any(|t| t.widget == *w)).collect();
+    let mut chips = row().key("drawer-chips").w_full().gap(6.0).flex_wrap();
+    for &widget in &widgets {
+        let mut chip = pill(s, &format!("add-{widget:?}"), widget.name())
+            .label(format!("Add {}: press, or drag onto the dashboard", widget.name()))
+            .on_press(move |s: &mut Island| add(s, widget, usize::MAX))
+            .on_drag(move |s: &mut Island, d: &mut Drag, _: &mut Tx| drag_in(s, widget, d));
+        if dragging == Some(widget) { chip = chip.opacity(0.4) }
+        chips = chips.child(chip);
     }
-    col().key("add-widget").w_full().gap(8.0).pt(4.0)
-        .child(text("Add a widget").font(s.cfg.font(13.0, 700.0)).color(fg.alpha(0.6 * fg.a)))
-        .child(chips)
+    let hint = if widgets.is_empty() { "Every widget is on the dashboard" } else { "Drag a widget onto the dashboard" };
+    col().key("drawer").w_full().h(DRAWER).padding(8.0).gap(6.0).radius(s.cfg.radius(18.0)).fill(card(fg))
+        .transition(Transition::opacity())
+        .child(text(hint).font(s.cfg.font(12.0, 700.0)).color(fg.alpha(0.6 * fg.a)).h(16.0))
+        .child(col().key("drawer-scroll").w_full().grow(1.0).min_h(0.0).scrolls().child(chips))
 }
 
 fn clock(s: &Island, w: f32, h: f32) -> El {
@@ -551,5 +631,16 @@ mod tests {
         assert_eq!(drop_at(&r, 0, 0.0, r[2][1]), 2);
         assert_eq!(drop_at(&r, 2, 0.0, 1000.0), 2);
         assert_eq!(drop_at(&r, 1, 2.0, 2.0), 1);
+    }
+
+    #[test]
+    fn a_widget_dragged_in_takes_the_slot_under_the_pointer() {
+        let r = layout(&[tile(2, 2), tile(2, 2), tile(4, 2)]);
+        assert_eq!(slot_at(&r, 0.0, 0.0), 0);
+        // Right of the first tile's middle: after it.
+        assert_eq!(slot_at(&r, r[0][2] * 0.75, 10.0), 1);
+        assert_eq!(slot_at(&r, 0.0, r[2][1] + 1.0), 2);
+        assert_eq!(slot_at(&r, 0.0, 1000.0), 3);
+        assert_eq!(slot_at(&[], 50.0, 50.0), 0);
     }
 }

@@ -28,7 +28,7 @@ pub use assistant::Assistant;
 pub use calculator::Calculator;
 pub use calendar::{link_host, Calendar};
 pub use clipboard::{Clipboard, Content};
-pub use overview::Contributions;
+pub use overview::{Contributions, height as overview_height};
 pub use clocks::Clocks;
 pub use limits::Limits;
 pub use notes::Notes;
@@ -101,6 +101,7 @@ pub const fn size(tab: Tab) -> (f32, f32) {
 /// Loads what a tab shows, as it opens: the Overview's panels with it.
 pub fn entered(s: &mut Island) {
     s.dashboard_drag = None;
+    s.dashboard_add = None;
     load(s, s.tab);
     if s.tab == Tab::Overview {
         for tile in s.cfg.dashboard.clone() { if let Widget::Panel(tab) = tile.widget { load(s, tab) } }
