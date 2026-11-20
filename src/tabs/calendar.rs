@@ -52,10 +52,10 @@ pub fn due_events(events: &[Item], now: i64, lead: i64, alerted: &[String]) -> V
 
 impl Island {
     /// Once a second: an alert for the next timed event, `event_alert_minutes` before it.
-    /// Large draws no alerts, so one waits until the Island is compact again.
+    /// Large draws no alerts, and a showing reminder isn't replaced, so one waits for both.
     pub fn event_alerts(&mut self, now: f64) {
         let lead = i64::from(self.cfg.event_alert_minutes);
-        if rune::is_headless() || lead == 0 || self.mode == crate::island::Mode::Large { return }
+        if rune::is_headless() || lead == 0 || self.mode == crate::island::Mode::Large || self.reminder.is_some() { return }
         let t = rune::time::LocalTime::at(crate::date::now_ms());
         let minute = crate::date::days_from_civil(t.year, t.month, t.day) * 1440 + i64::from(t.hour * 60 + t.minute);
         let due = due_events(&self.cfg.events, minute, lead, &self.alerted_events);
