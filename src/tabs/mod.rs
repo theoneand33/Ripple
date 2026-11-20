@@ -136,6 +136,11 @@ pub fn each_second(s: &mut Island, now: f64) -> bool {
     s.notes_tick();
     s.task_reminders(now);
     crate::system::WANT_PROCESSES.store(s.mode == Mode::Large && s.tab == Tab::System, std::sync::atomic::Ordering::Relaxed);
+    match s.stocks.reload_in.take() {
+        Some(n) if n > 1 => s.stocks.reload_in = Some(n - 1),
+        Some(_) if shows(s, Tab::Stocks) => s.stocks_load(),
+        _ => {}
+    }
     s.pomodoro.tick_all(now) | plugins
 }
 
@@ -151,10 +156,9 @@ pub fn deadline(s: &Island) -> Option<f64> { s.clipboard.copied.map(|c| c.1) }
 /// Picks up a settings change another window made, for the tab showing.
 pub fn reloaded(s: &mut Island, old: &Config) {
     if shows(s, Tab::T3) && old.t3_devices != s.cfg.t3_devices { s.t3_load() }
-    // Settings saves each keystroke; the generation drops the answers to keys typed over.
+    // Settings saves each keystroke: wait until typing stops, and drop answers for what was typed over.
     if (old.sure_url != s.cfg.sure_url || old.sure_key != s.cfg.sure_key) && !s.cfg.sure_key.is_empty() {
-        (s.stocks.portfolio, s.stocks.generation) = (None, s.stocks.generation + 1);
-        if shows(s, Tab::Stocks) { s.stocks_load() }
+        (s.stocks.portfolio, s.stocks.generation, s.stocks.reload_in) = (None, s.stocks.generation + 1, Some(2));
     }
 }
 

@@ -21,6 +21,8 @@ pub struct Stocks {
     pub add: TextEdit,
     /// Bumped on every load and Sure account change, so an earlier answer is dropped.
     pub(super) generation: u64,
+    /// Seconds until the portfolio reloads after a Sure setting changed; each change restarts it.
+    pub(super) reload_in: Option<u8>,
 }
 
 impl Island {
@@ -36,9 +38,11 @@ impl Island {
             if matches!(self.stocks.portfolio, Some(Err(_))) { self.stocks.portfolio = None }
             me.spawn(move || api::portfolio(&url, &key, range), move |s, p| if s.stocks.generation == generation { s.stocks.portfolio = Some(p) });
         }
-        let tickers = self.cfg.stocks.clone();
-        me.spawn(move || tickers.into_iter().map(|t| { let q = api::quote(&t, range); (t, q) }).collect::<HashMap<_, _>>(),
-            move |s, quotes| if s.stocks.generation == generation { s.stocks.quotes = quotes });
+        // One job per ticker, so a slow one holds up no other; an answer for another range or a removed ticker is dropped.
+        for t in self.cfg.stocks.clone() {
+            me.spawn({ let t = t.clone(); move || api::quote(&t, range) },
+                move |s, q| if s.stocks.range == range && s.cfg.stocks.contains(&t) { s.stocks.quotes.insert(t, q); });
+        }
     }
 
     fn stocks_range(&mut self, range: Range) {
