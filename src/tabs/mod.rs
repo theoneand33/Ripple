@@ -24,7 +24,7 @@ pub use calendar::Calendar;
 pub use clipboard::Clipboard;
 pub use limits::Limits;
 pub use notes::Notes;
-pub use pomodoro::{Pomodoro, live as pomodoro_live};
+pub use pomodoro::{Pomodoro, bubble as pomodoro_bubble, live as pomodoro_live};
 pub use stremflix::Stremflix;
 pub use t3::T3;
 
