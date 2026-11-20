@@ -1537,8 +1537,8 @@ impl Island {
             let cfg = store.get();
             let t = LocalTime::at(crate::date::now_ms());
             let today = crate::date::days_from_civil(t.year, t.month, t.day);
-            // Not in quiet hours: the queue drops an alert that waits over 5 minutes.
-            if cfg.update_check && cfg.update_day != today && !cfg.quiet_at(t.hour) {
+            // Not while quiet (`Island::quiet`): the queue drops an alert that waits over 5 minutes.
+            if cfg.update_check && cfg.update_day != today && !cfg.quiet_at(t.hour) && !(cfg.quiet_fullscreen && platform::fullscreen()) {
                 // A failed request tries again next hour.
                 let latest = crate::net::latest_release();
                 if latest.is_some() { store.update(|c| c.update_day = today); }
