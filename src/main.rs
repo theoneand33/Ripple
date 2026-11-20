@@ -104,7 +104,7 @@ fn island_spec() -> AppSpec<Island> {
                 s.set_tab(Tab::Weather);
                 s.cfg.location = "Paris".into();
                 let day = |date, code, high, low| net::Day { date, code: Some(code), high, low };
-                s.weather = net::Weather { temp: Some(12), code: Some(3), days: vec![day((2026, 1, 2), 3, 13, 4), day((2026, 1, 3), 61, 9, 5), day((2026, 1, 4), 0, 15, 6), day((2026, 1, 5), 71, 2, -3), day((2026, 1, 6), 95, 11, 7)], precip: None };
+                s.weather = net::Weather { temp: Some(12), code: Some(3), days: vec![day((2026, 1, 2), 3, 13, 4), day((2026, 1, 3), 61, 9, 5), day((2026, 1, 4), 0, 15, 6), day((2026, 1, 5), 71, 2, -3), day((2026, 1, 6), 95, 11, 7)], sun: None, precip: None };
             }),
             ("search", |s| { s.mode = Mode::Large; s.set_tab(Tab::Search) }),
             ("search-results", |s| {
@@ -390,6 +390,7 @@ fn settings_spec() -> AppSpec<Settings> {
         scenes: &[
             ("tabs", |s| s.page = Page::Tabs),
             ("appearance", |s| s.page = Page::Appearance),
+            ("appearance-sun", |s| { s.page = Page::Appearance; s.cfg.auto_theme = true }),
             ("features", |s| s.page = Page::Features),
             ("panel-ai", |s| s.page = Page::Tab(Tab::Assistant)),
             ("panel-limits", |s| s.page = Page::Tab(Tab::Limits)),

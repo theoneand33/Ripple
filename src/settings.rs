@@ -589,8 +589,20 @@ fn page(s: &Settings, k: &Kit, layer: &mut Vec<El>, page: Page) -> Vec<El> {
         Page::Appearance => {
             let mut style = vec![
                 toggle(s, k, "Notch mode", cfg.notch_mode, |c| c.notch_mode = !c.notch_mode),
-                setting(s, "Theme", choice(s, k, layer, "theme", "Theme", &THEMES.map(|t| (t.0, t.1)), &cfg.theme, |c, v| c.set_theme(v))),
             ];
+            // The Day and Night pickers replace it: a manual pick would be reverted within a second.
+            if !cfg.auto_theme {
+                style.push(setting(s, "Theme", choice(s, k, layer, "theme", "Theme", &THEMES.map(|t| (t.0, t.1)), &cfg.theme, |c, v| c.set_theme(v))));
+            }
+            style.push(toggle(s, k, "Switch theme at sunrise and sunset", cfg.auto_theme, |c| c.auto_theme = !c.auto_theme));
+            if cfg.auto_theme {
+                let themes = THEMES.map(|t| (t.0, t.1));
+                style.push(setting(s, "Day theme", choice(s, k, layer, "day-theme", "Day theme", &themes, &cfg.day_theme, |c, v| c.day_theme = v.into())));
+                style.push(setting(s, "Night theme", choice(s, k, layer, "night-theme", "Night theme", &themes, &cfg.night_theme, |c, v| c.night_theme = v.into())));
+                if cfg.location.trim().is_empty() {
+                    style.push(text("Set a location in Settings → Weather: the sun's times come from there.").font(cfg.font(12.0, 400.0)).color(fg.alpha(0.6)).wrap());
+                }
+            }
             if cfg.notch_mode {
                 style.insert(1, toggle(s, k, "Mini notch", cfg.notch_mini, |c| c.notch_mini = !c.notch_mini));
                 // Auto size only sizes around a physical notch.

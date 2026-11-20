@@ -1391,12 +1391,18 @@ impl Island {
         let (kick, kicked) = std::sync::mpsc::channel();
         self.weather_kick = Some(kick);
         let store = self.store.clone();
+        // The location the weather last came for.
+        let mut found = String::new();
         std::thread::spawn(move || loop {
             let cfg = store.get();
             // No location: clear the weather so no icon shows and no request is sent.
             let w = if cfg.location.trim().is_empty() { Some(Weather::default()) } else { crate::net::weather(&cfg.location, &cfg.weather_unit) };
-            if let Some(w) = w {
-                me.update_if(move |s, _| s.weather != w && { s.weather = w; true });
+            match w {
+                Some(w) => { found = cfg.location.clone(); me.update_if(move |s, _| s.weather != w && { s.weather = w; true }) }
+                // A new place not found: the sun times are the old place's, so the themes stop following them.
+                // A failed refresh for the same place keeps them.
+                None if cfg.location != found => me.update(|s, _| s.weather.sun = None),
+                None => {}
             }
             if kicked.recv_timeout(std::time::Duration::from_secs(600)) == Err(std::sync::mpsc::RecvTimeoutError::Disconnected) { break }
         });
