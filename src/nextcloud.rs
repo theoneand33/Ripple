@@ -574,7 +574,7 @@ fn completed(ics: &str, stamp: &str) -> String {
 
 // --- Shelf: files in one Nextcloud Files folder, over WebDAV ---
 
-const FOLDER: &str = r#"<?xml version="1.0"?><d:propfind xmlns:d="DAV:"><d:prop><d:resourcetype/></d:prop></d:propfind>"#;
+const FOLDER: &str = r#"<?xml version="1.0"?><d:propfind xmlns:d="DAV:"><d:prop><d:resourcetype/><d:getcontentlength/></d:prop></d:propfind>"#;
 
 #[derive(Debug, Default, PartialEq)]
 pub struct ShelfOutcome {
@@ -605,7 +605,7 @@ fn shelf(c: &Client, folder: &str, files: &[PathBuf], base: &[String], cache: &P
         made.push(url.clone());
     }
     let (status, _, res) = c.call("PROPFIND", &url, &[XML, ("depth", "1")], FOLDER)?;
-    let listed = match status {
+    let sizes = match status {
         207 => folder_files(&res),
         // Not made yet: each missing level is (405 is one already there).
         404 => {
@@ -617,6 +617,7 @@ fn shelf(c: &Client, folder: &str, files: &[PathBuf], base: &[String], cache: &P
         }
         s => return Err(failed(s)),
     };
+    let listed: Vec<String> = sizes.iter().map(|(n, _)| n.clone()).collect();
     // shortcut: of two Shelf files with one name, the first syncs; the other stays here only.
     let mut local: Vec<(String, &PathBuf)> = Vec::new();
     for f in files {
@@ -624,17 +625,28 @@ fn shelf(c: &Client, folder: &str, files: &[PathBuf], base: &[String], cache: &P
         if !local.iter().any(|(n, _)| *n == name) { local.push((name, f)) }
     }
     let here = |name: &String| local.iter().any(|(n, _)| n == name);
+    // A name met for the first time on both sides, with other sizes, is two files: neither is
+    // taken for the other, so removing one never deletes the other.
+    let clash = |name: &String| !base.contains(name) && local.iter().find(|(n, _)| n == name).is_some_and(|(_, path)| {
+        let theirs = sizes.iter().find(|(n, _)| n == name).and_then(|(_, size)| *size);
+        theirs != std::fs::metadata(path).ok().filter(|m| m.is_file()).map(|m| m.len())
+    });
     let removed_here: Vec<&String> = listed.iter().filter(|n| !here(n) && base.contains(n)).collect();
     // One file that fails (too big, a name this OS can't save) doesn't hold up the rest; its error still shows.
     let mut skipped = None;
-    let both = out.both.insert(listed.iter().filter(|n| here(n)).chain(removed_here.iter().copied()).cloned().collect());
+    let both = out.both.insert(listed.iter().filter(|n| here(n) && !clash(n)).chain(removed_here.iter().copied()).cloned().collect());
     for name in removed_here {
         let (status, ..) = c.call("DELETE", &format!("{url}{}", percent_encode(name)), &[], "")?;
-        if !ok(status) && status != 404 { return Err(failed(status)) }
+        if matches!(status, 401 | 403) { return Err(failed(status)) }
+        // Still there, so still in `both`: the next sync tries again.
+        if !ok(status) && status != 404 { skipped.get_or_insert(format!("Couldn't remove {name}: {}", failed(status))); continue }
         both.retain(|n| n != name);
     }
     for (name, path) in &local {
-        if listed.contains(name) { continue }
+        if listed.contains(name) {
+            if clash(name) { skipped.get_or_insert(format!("Nextcloud already has another {name}; rename one to sync it")); }
+            continue;
+        }
         if base.contains(name) { out.gone.push((*path).clone()); continue }
         // shortcut: folders and files that are missing or unreadable stay here only.
         if !path.is_file() { continue }
@@ -660,14 +672,15 @@ fn shelf(c: &Client, folder: &str, files: &[PathBuf], base: &[String], cache: &P
     skipped.map_or(Ok(()), Err)
 }
 
-/// The files (not folders) a PROPFIND of a folder lists, by name. A name that could leave the
-/// cache folder is left out.
-fn folder_files(xml: &str) -> Vec<String> {
+/// The files (not folders) a PROPFIND of a folder lists, by name, with their sizes. A name that
+/// could leave the cache folder is left out.
+fn folder_files(xml: &str) -> Vec<(String, Option<u64>)> {
     elements(xml, "response").into_iter().filter_map(|r| {
         let href = unescape(elements(r, "href").first()?);
         if href.ends_with('/') { return None }
         let name = percent_decode(href.rsplit('/').next()?);
-        (Path::new(&name).file_name() == Some(name.as_ref()) && !name.contains(['/', '\\'])).then_some(name)
+        let size = elements(r, "getcontentlength").first().and_then(|s| s.trim().parse().ok());
+        (Path::new(&name).file_name() == Some(name.as_ref()) && !name.contains(['/', '\\'])).then_some((name, size))
     }).collect()
 }
 
@@ -928,9 +941,9 @@ mod tests {
         let base = serve(move |r| {
             log.lock().unwrap().push((r.method.clone(), r.path.clone(), r.body.clone()));
             let res = |status, body: &str| Response { status, headers: vec![], body: body.into() };
-            let file = |name: &str| format!("<d:response><d:href>{dir}{name}</d:href></d:response>");
+            let file = |name: &str, size: u64| format!("<d:response><d:href>{dir}{name}</d:href><d:propstat><d:prop><d:getcontentlength>{size}</d:getcontentlength></d:prop></d:propstat></d:response>");
             match (r.method.as_str(), r.path.as_str()) {
-                ("PROPFIND", p) if p == dir => res(207, &format!("<d:multistatus xmlns:d=\"DAV:\"><d:response><d:href>{dir}</d:href></d:response>{}{}{}{}<d:response><d:href>{dir}sub/</d:href></d:response></d:multistatus>", file("kept.txt"), file("their%20file.txt"), file("dropped.txt"), file("%2E%2E%2Fevil"))),
+                ("PROPFIND", p) if p == dir => res(207, &format!("<d:multistatus xmlns:d=\"DAV:\"><d:response><d:href>{dir}</d:href></d:response>{}{}{}{}{}<d:response><d:href>{dir}sub/</d:href></d:response></d:multistatus>", file("kept.txt", 8), file("their%20file.txt", 5), file("dropped.txt", 1), file("%2E%2E%2Fevil", 1), file("clash.txt", 99))),
                 ("PROPFIND", _) => res(404, ""),
                 ("GET", p) if p == format!("{dir}their%20file.txt") => res(200, "hello"),
                 ("PUT", p) if p.ends_with("big.txt") => res(507, ""),
@@ -942,9 +955,11 @@ mod tests {
         let tmp = std::env::temp_dir().join(format!("ripple-shelf-{}", std::process::id()));
         let cache = tmp.join("cache");
         std::fs::create_dir_all(&tmp).unwrap();
-        for name in ["big.txt", "kept.txt", "mine.txt", "old.txt"] { std::fs::write(tmp.join(name), name).unwrap() }
-        // The server has no room for big.txt: it's skipped, and the rest still syncs.
-        let files = ["big.txt", "kept.txt", "mine.txt", "old.txt"].map(|n| tmp.join(n));
+        let names = ["big.txt", "kept.txt", "mine.txt", "old.txt", "clash.txt"];
+        for name in names { std::fs::write(tmp.join(name), name).unwrap() }
+        // The server has no room for big.txt: it's skipped, and the rest still syncs. Its clash.txt
+        // is another file: neither is taken for the other, so it's neither uploaded nor in `both`.
+        let files = names.map(|n| tmp.join(n));
         // dropped.txt left the Shelf here and old.txt left Nextcloud since the last sync.
         let out = sync_shelf(&nc, "Ripple Shelf", &files, &["dropped.txt".into(), "old.txt".into(), "kept.txt".into()], &cache);
         assert_eq!(out.error.as_deref(), Some("Couldn't upload big.txt: Nextcloud answered 507"));
