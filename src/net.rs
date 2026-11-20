@@ -324,7 +324,9 @@ pub fn is_vector(bytes: &[u8]) -> bool {
     bytes.starts_with(&[0x1f, 0x8b]) || text.iter().find(|b| !b.is_ascii_whitespace()) == Some(&b'<')
 }
 
-pub fn percent_decode(s: &str) -> String {
+pub fn percent_decode(s: &str) -> String { String::from_utf8_lossy(&percent_decode_bytes(s)).into_owned() }
+
+pub fn percent_decode_bytes(s: &str) -> Vec<u8> {
     let bytes = s.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
@@ -333,7 +335,7 @@ pub fn percent_decode(s: &str) -> String {
         out.push(hex.unwrap_or(bytes[i]));
         i += if hex.is_some() { 3 } else { 1 };
     }
-    String::from_utf8_lossy(&out).into_owned()
+    out
 }
 
 /// `encodeURIComponent`: everything but unreserved characters is percent-encoded.

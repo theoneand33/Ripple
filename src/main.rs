@@ -118,6 +118,13 @@ fn island_spec() -> AppSpec<Island> {
             ("workflows", |s| { s.mode = Mode::Large; s.set_tab(Tab::Workflows) }),
             ("assistant", |s| { s.mode = Mode::Large; s.set_tab(Tab::Assistant); s.ai.asked = true; s.ai.answer = Some("**Rust** is a systems language.\n\n```rust\nfn main() {}\n```".into()) }),
             ("clipboard", |s| { s.mode = Mode::Large; s.set_tab(Tab::Clipboard); s.clipboard.push(tabs::Content::Text("Hello from Ripple".into())); }),
+            ("clipboard-tools", |s| {
+                s.mode = Mode::Large;
+                s.set_tab(Tab::Clipboard);
+                s.clipboard.push(tabs::Content::Text("1767260460".into()));
+                s.clipboard.tools = true;
+                s.clipboard.tool_error = Some("JSON: Not JSON".into());
+            }),
             ("clipboard-pinned", |s| {
                 s.mode = Mode::Large;
                 s.set_tab(Tab::Clipboard);
