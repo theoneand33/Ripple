@@ -106,12 +106,14 @@ pub fn ask_ai(base: &str, model: &str, api_key: &str, question: &str, mut on_del
         .build()
         .into();
     // OpenRouter credits the app by these; other services ignore them.
-    let request = agent
+    let mut request = agent
         .post(format!("{base}/chat/completions"))
         .header("content-type", "application/json")
-        .header("authorization", format!("Bearer {api_key}"))
         .header("http-referer", "https://github.com/TopMyster/Ripple")
         .header("x-title", "Ripple");
+    if !api_key.is_empty() {
+        request = request.header("authorization", format!("Bearer {api_key}"));
+    }
     let body = json!({
         "model": model,
         "messages": [
@@ -289,8 +291,10 @@ mod tests {
         use crate::testserver::{Response, serve};
         let base = serve(|r| {
             let body: serde_json::Value = serde_json::from_str(&r.body).unwrap_or_default();
-            let ok = r.path == "/v1/chat/completions" && r.header("authorization") == Some("Bearer gsk_test")
-                && body["stream"] == true && body["messages"][1]["content"] == "Hi?" && body["model"] == "m";
+            // A keyless (local) model gets no authorization header at all.
+            let auth = if body["model"] == "local" { None } else { Some("Bearer gsk_test") };
+            let ok = r.path == "/v1/chat/completions" && r.header("authorization") == auth
+                && body["stream"] == true && body["messages"][1]["content"] == "Hi?" && (body["model"] == "m" || body["model"] == "local");
             if !ok { return Response { status: 401, headers: vec![], body: String::new() } }
             let events = ["Hel", "lo **", "you** [DONE]"].iter()
                 .map(|d| format!("data: {}\n\n", json!({ "choices": [{ "delta": { "content": d } }] })))
@@ -302,6 +306,7 @@ mod tests {
         assert_eq!(answer, "Hello **you** [DONE]");
         let refused = ask_ai(&format!("{base}/v1"), "m", "wrong", "Hi?", |_| {});
         assert!(refused.unwrap_err().starts_with("API Error: 401"));
+        assert_eq!(ask_ai(&format!("{base}/v1"), "local", "", "Hi?", |_| {}), Ok(true), "no authorization header for an empty key");
     }
 
 }

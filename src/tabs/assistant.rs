@@ -20,15 +20,20 @@ impl Island {
         self.ai.asked = true;
         self.ai.generation += 1;
         let generation = self.ai.generation;
-        let key = self.cfg.api_key.trim().to_string();
         let provider = self.cfg.provider();
+        // A keyless (local) provider never gets the key saved for another one.
+        let key = if provider.key_hint.is_empty() { String::new() } else { self.cfg.api_key.trim().to_string() };
+        let url = self.cfg.ai_url();
         if key.is_empty() && !provider.key_hint.is_empty() {
             self.ai.answer = Some("Enter your API key in settings".into());
             return;
         }
+        if !key.is_empty() && !url.starts_with("https://") {
+            self.ai.answer = Some("Use an https:// Base URL with an API key".into());
+            return;
+        }
         self.ai.answer = None;
         let Some(me) = self.me.clone() else { return };
-        let url = self.cfg.ai_url();
         let model = if self.cfg.ai_model.trim().is_empty() { provider.model.to_string() } else { self.cfg.ai_model.clone() };
         let question = self.ai.ask.text.clone();
         std::thread::spawn(move || {
