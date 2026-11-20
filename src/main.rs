@@ -104,7 +104,7 @@ fn island_spec() -> AppSpec<Island> {
                 s.set_tab(Tab::Weather);
                 s.cfg.location = "Paris".into();
                 let day = |date, code, high, low| net::Day { date, code: Some(code), high, low };
-                s.weather = net::Weather { temp: Some(12), code: Some(3), days: vec![day((2026, 1, 2), 3, 13, 4), day((2026, 1, 3), 61, 9, 5), day((2026, 1, 4), 0, 15, 6), day((2026, 1, 5), 71, 2, -3), day((2026, 1, 6), 95, 11, 7)] };
+                s.weather = net::Weather { temp: Some(12), code: Some(3), days: vec![day((2026, 1, 2), 3, 13, 4), day((2026, 1, 3), 61, 9, 5), day((2026, 1, 4), 0, 15, 6), day((2026, 1, 5), 71, 2, -3), day((2026, 1, 6), 95, 11, 7)], sun: None, precip: None };
             }),
             ("search", |s| { s.mode = Mode::Large; s.set_tab(Tab::Search) }),
             ("search-results", |s| {
@@ -148,6 +148,8 @@ fn island_spec() -> AppSpec<Island> {
                 s.task.replace_text("Ship v0.5");
             }),
             ("reminder", |s| s.remind("Ship v0.5 release notes".into(), 0.0)),
+            ("rain-alert", |s| { s.weather.precip = Some((date::now_secs() + 3000, false)); s.remind(s.precip_label(), 0.0) }),
+            ("break-reminder", |s| s.remind("Look away 20s".into(), 0.0)),
             ("tasks-sync-error", |s| {
                 s.mode = Mode::Large;
                 s.set_tab(Tab::Tasks);
@@ -160,6 +162,12 @@ fn island_spec() -> AppSpec<Island> {
                 s.mode = Mode::Large;
                 s.set_tab(Tab::Calendar);
                 s.cfg.events = ["2026-01-01 New Year's brunch", "2026-01-01 09:30 Standup", "2026-01-15 Dentist"].map(config::Item::new).into();
+            }),
+            ("calendar-feed", |s| {
+                s.mode = Mode::Large;
+                s.set_tab(Tab::Calendar);
+                s.cfg.events = vec![config::Item::new("2026-01-01 09:30 Standup")];
+                s.calendar.feed_events = vec!["2026-01-01 12:00 Lunch (Google)".into(), "2026-01-01 Public holiday".into()];
             }),
             ("calendar-edit", |s| {
                 s.mode = Mode::Large;
@@ -202,6 +210,13 @@ fn island_spec() -> AppSpec<Island> {
                     ("NVDA".to_string(), Ok(quote("NVIDIA Corporation", "USD", 131.04, vec![134.2, 133.0, 132.5, 131.8, 131.04]))),
                     ("BTC-USD".to_string(), Err("Couldn't reach Yahoo Finance".to_string())),
                 ].into();
+            }),
+            ("clocks", |s| {
+                s.mode = Mode::Large;
+                s.set_tab(Tab::Clocks);
+                let now = date::now_secs();
+                let city = |name: &str, offset: i64| Some(net::City { name: name.into(), offset, sun: Some((now - 4 * 3600, now + 5 * 3600)) });
+                s.clocks.cities = [("London", city("London", 0)), ("New York", city("New York", -5 * 3600)), ("Tokyo", city("Tokyo", 9 * 3600))].map(|(n, c)| (n.to_string(), c)).into();
             }),
             ("pomodoro", |s| { s.mode = Mode::Large; s.set_tab(Tab::Pomodoro); s.pomodoro.left = 18.0 * 60.0 + 42.0; s.pomodoro.rounds = 2 }),
             // Ends on the app clock, which starts near zero in a headless render.
@@ -329,6 +344,30 @@ fn island_spec() -> AppSpec<Island> {
                 s.cfg.dashboard = [config::Widget::Clock, config::Widget::Battery, config::Widget::Panel(Tab::Tasks), config::Widget::Panel(Tab::System)].map(config::Tile::new).into();
                 s.cfg.tasks = vec![config::Item::new("Ship the dashboard"), config::Item::new("Water the plants")];
             }),
+            ("overview-water", |s| {
+                s.mode = Mode::Large;
+                s.set_tab(Tab::Overview);
+                s.cfg.dashboard = [config::Widget::Clock, config::Widget::Water].map(config::Tile::new).into();
+                (s.cfg.water_day, s.cfg.water_count) = (date::days_from_civil(s.today.0, s.today.1, s.today.2), 3);
+            }),
+            ("overview-contributions", |s| {
+                s.mode = Mode::Large;
+                s.set_tab(Tab::Overview);
+                s.cfg.dashboard = [config::Widget::Contributions].map(config::Tile::new).into();
+                (s.cfg.github_user, s.cfg.leetcode_user) = ("octocat".into(), "ana".into());
+                let today = date::days_from_civil(s.today.0, s.today.1, s.today.2);
+                let graph = |seed: i64| (0..365).filter(|d| (d * seed) % 7 < 3 || *d < 6).map(|d| (today - d, ((d * seed) % 4 + 1) as u8)).collect::<Vec<_>>();
+                s.contributions.github = Some(("octocat".into(), Ok(graph(5))));
+                s.contributions.leetcode = Some(("ana".into(), Ok(graph(3))));
+            }),
+            ("overview-quote", |s| { s.mode = Mode::Large; s.set_tab(Tab::Overview); s.cfg.dashboard = [config::Widget::Quote, config::Widget::Clock].map(config::Tile::new).into() }),
+            ("overview-day", |s| {
+                s.mode = Mode::Large;
+                s.set_tab(Tab::Overview);
+                s.cfg.dashboard = [config::Widget::Day].map(config::Tile::new).into();
+                s.cfg.events = ["2026-01-01 09:30 Standup", "2026-01-01 13:00 Lunch with Sam"].map(config::Item::new).into();
+                s.cfg.tasks = ["Ship v0.5 due:2026-01-01T17:00"].map(config::Item::new).into();
+            }),
             ("overview-edit", |s| { s.mode = Mode::Large; s.set_tab(Tab::Overview); s.dashboard_edit = true }),
             ("overview-resize", |s| { s.mode = Mode::Large; s.set_tab(Tab::Overview); s.dashboard_edit = true; s.dashboard_drag = Some((0, -130.0, -60.0, true)) }),
             ("camera", |s| { let mut tx = rune::Tx::default(); s.set_capture(Some(true), None, &mut tx); }),
@@ -343,6 +382,7 @@ fn island_spec() -> AppSpec<Island> {
             ("notch-large", |s| { s.cfg.notch_mode = true; s.placement = island::Placement::of(&s.cfg, (1920.0, 1080.0)); s.mode = Mode::Large }),
             ("mini-notch", |s| { s.cfg.notch_mode = true; s.cfg.notch_mini = true; s.placement = island::Placement::of(&s.cfg, (1920.0, 1080.0)) }),
             ("mini-notch-single", |s| { s.cfg.notch_mode = true; s.cfg.notch_mini = true; s.cfg.show_info_idle = true; s.weather.temp = None; s.percent = None; s.placement = island::Placement::of(&s.cfg, (1920.0, 1080.0)) }),
+            ("island-scale", |s| { s.cfg.island_scale = 80.0; s.cfg.compact_opacity = 60.0; s.cfg.standby = true; s.mode = Mode::Quick; s.placement = island::Placement::of(&s.cfg, (1920.0, 1080.0)) }),
             ("win95", |s| { s.cfg.set_theme("win95"); s.mode = Mode::Large }),
         ],
         ..AppSpec::new("Ripple", CANVAS, || unreachable!("state comes from App::init"), island::view)
@@ -357,6 +397,7 @@ fn settings_spec() -> AppSpec<Settings> {
         scenes: &[
             ("tabs", |s| s.page = Page::Tabs),
             ("appearance", |s| s.page = Page::Appearance),
+            ("appearance-sun", |s| { s.page = Page::Appearance; s.cfg.auto_theme = true }),
             ("features", |s| s.page = Page::Features),
             ("panel-ai", |s| s.page = Page::Tab(Tab::Assistant)),
             ("panel-limits", |s| s.page = Page::Tab(Tab::Limits)),
@@ -399,9 +440,9 @@ fn overlay_island(screens: Vec<Screen>, store: Store) -> Vec<rune::AnyWindowSpec
     let mut host = App::new(spec).windowless();
     let state = Island::new(store.clone(), screens.clone());
     let screen = state.screen();
-    let (x, y) = state.placement.window;
+    let [x, y, width, height] = state.placement.frame();
     let options = OverlayOptions {
-        placement: Some(OverlayPlacement::Rect { x, y, width: CANVAS.0, height: CANVAS.1 }),
+        placement: Some(OverlayPlacement::Rect { x, y, width, height }),
         display: screen.target,
         // Only the Island, its dock and an open select's menu (`.hit()`) take the pointer.
         input: OverlayInput::Regions,
@@ -410,15 +451,15 @@ fn overlay_island(screens: Vec<Screen>, store: Store) -> Vec<rune::AnyWindowSpec
         overlap_panels: state.cfg.overlap_panels,
         ..Default::default()
     };
-    let spec = OverlaySpec { name: "ripple", size: CANVAS, edge: ScreenEdge::Top, margin: 0.0, align: Align::Start, inset: 0.0, interactive: true, view: island::view };
+    let spec = OverlaySpec { name: "ripple", size: (width, height), edge: ScreenEdge::Top, margin: 0.0, align: Align::Start, inset: 0.0, interactive: true, view: island::view };
     let overlay = host.overlay(
         spec.options(options).setup(Island::start).poll(Island::poll).on_key(Island::key).on_focus(Island::window_focus),
         state,
     );
     let me = Host::Overlay(overlay.clone(), host.handle(), Arc::new(AtomicBool::new(false)));
-    let (_, settings) = settings_window(&mut host, Settings::new(store, Some(me.clone()), &screens));
+    let (settings_app, settings) = settings_window(&mut host, Settings::new(store, Some(me.clone()), &screens));
     let island = me.clone();
-    overlay.update(move |s, _| { s.me = Some(island); s.settings = Some(settings); s.begin() });
+    overlay.update(move |s, _| { s.me = Some(island); s.settings = Some(settings); s.settings_app = Some(settings_app); s.begin() });
     me.show();
     start_tray(me);
     vec![WindowSpec::from_app("host", host).into()]
@@ -440,6 +481,9 @@ fn attach_console() {
     }
 }
 
+/// Reverse-DNS: GNOME's shortcuts portal refuses other app ids.
+const APP_ID: &str = "io.github.theoneand33.Ripple";
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().is_some_and(|a| a == "--test-plugin") {
@@ -455,9 +499,10 @@ fn main() {
         let overlay = wayland && !rune::is_headless() && has_layer_shell();
         // SAFETY: single-threaded here, before the event loop or any thread starts.
         unsafe { system::note_wayland(!overlay && std::env::var_os("DISPLAY").is_some()) };
+        if wayland && !rune::is_headless() { system::install_desktop_entry(APP_ID) }
         overlay
     };
-    rune::set_app_id("ripple");
+    rune::set_app_id(APP_ID);
 
     rune::run_windows_with(RunOptions { accessory: true }, move |displays| {
         let screens = Screen::all(displays);
@@ -472,19 +517,21 @@ fn main() {
         let settings_state = Settings::new(store.clone(), Some(island.clone()), &screens);
         let (settings_app, settings_window) = settings_window(&mut app, settings_state);
         #[cfg(windows)]
-        std::thread::spawn(move || {
-            let apps = system::discover_apps();
-            settings_app.update(move |s, _| s.installed = apps);
+        std::thread::spawn({
+            let settings_app = settings_app.clone();
+            move || {
+                let apps = system::discover_apps();
+                settings_app.update(move |s, _| s.installed = apps);
+            }
         });
-        #[cfg(not(windows))]
-        let _ = settings_app;
 
         let mut state = Island::new(store, screens);
         state.me = Some(island.clone());
         state.settings = Some(settings_window);
+        state.settings_app = Some(settings_app);
         let screen = state.screen();
         let position = (!state.screens.is_empty()).then(|| {
-            let (x, y) = state.placement.window;
+            let [x, y, ..] = state.placement.frame();
             (screen.position.0 + (x * screen.scale).round() as i32, screen.position.1 + (y * screen.scale).round() as i32)
         });
 

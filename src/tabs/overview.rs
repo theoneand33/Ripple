@@ -1,13 +1,15 @@
 //! Overview: a dashboard of tiles the user arranges. A tile is a widget made for it (clock,
 //! now playing, weather, battery, today) or another tab's panel. The pencil edits the layout.
 
-use rune::{Drag, El, Key, KeyEvent, Phase, Transition, Tx, col, el, icon, row, text};
+use rune::{Color, Drag, El, Key, KeyEvent, Phase, Transition, Tx, col, el, icon, row, text};
 
 use super::{Scrolls, accent, card, empty, pill, ring, tool};
 use crate::config::{Tab, Tile, Widget};
 use crate::icons;
 use crate::island::{Island, SPRING, control, cover, estimate_width, marquee, visualizer};
-use crate::nextcloud::event_day;
+use crate::nextcloud::{event_day, leading_time};
+use crate::net::Graph;
+use super::Task;
 use crate::system::MediaCommand;
 
 const GAP: f32 = 10.0;
@@ -53,7 +55,11 @@ fn all() -> impl Iterator<Item = Widget> {
 
 fn add(s: &mut Island, widget: Widget) {
     s.save(|c| if !c.dashboard.iter().any(|t| t.widget == widget) { c.dashboard.push(Tile::new(widget)) });
-    if let Widget::Panel(tab) = widget { super::load(s, tab) }
+    match widget {
+        Widget::Panel(tab) => super::load(s, tab),
+        Widget::Contributions => s.contributions_load(),
+        _ => {}
+    }
 }
 
 fn move_tile(s: &mut Island, from: usize, to: usize) {
@@ -152,6 +158,10 @@ fn tile(s: &Island, i: usize, t: Tile, [x, y, w, h]: [f32; 4], layer: &mut Vec<E
         Widget::Weather => weather(s, h),
         Widget::Battery => battery(s, h),
         Widget::Today => today(s),
+        Widget::Water => water(s, h),
+        Widget::Contributions => contributions(s, w),
+        Widget::Quote => quote(s),
+        Widget::Day => day(s, w),
         Widget::Panel(tab) => super::panel(s, tab, layer),
     };
     let name = t.widget.name();
@@ -249,6 +259,197 @@ fn today(s: &Island) -> El {
             .font(s.cfg.font(12.0, 500.0)).color(muted))
 }
 
+/// Adds or takes away a glass of today's water.
+fn drink(s: &mut Island, by: i32) {
+    let today = crate::date::days_from_civil(s.today.0, s.today.1, s.today.2);
+    s.save(|c| { c.water_count = c.water(today).saturating_add_signed(by); c.water_day = today });
+}
+
+fn water(s: &Island, h: f32) -> El {
+    let fg = s.cfg.text();
+    let tint = accent::blue();
+    let n = s.cfg.water(crate::date::days_from_civil(s.today.0, s.today.1, s.today.2));
+    let goal = s.cfg.water_goal.max(1);
+    let gauge = ring(if h < CELL.1 * 2.0 { 32.0 } else { 52.0 }, n as f32 * 100.0 / goal as f32, tint, icon(&icons::DROPLET, 16.0).color(tint));
+    stack("water", h)
+        .child(row().gap(8.0).center_y()
+            .child(tool(s, "water-less", &icons::MINUS, "One glass less").on_press(|s: &mut Island| drink(s, -1)))
+            .child(gauge)
+            .child(tool(s, "water-more", &icons::PLUS, "One more glass").on_press(|s: &mut Island| drink(s, 1))))
+        .child(text(format!("{n} of {goal} glasses")).font(s.cfg.font(13.0, 600.0).features("'tnum' 1")).color(fg))
+}
+
+/// The GitHub and LeetCode graphs: for whom, and the graph or why it failed; None while loading.
+#[derive(Default)]
+pub struct Contributions {
+    pub github: Option<(String, Result<Graph, String>)>,
+    pub leetcode: Option<(String, Result<Graph, String>)>,
+    /// When they were last asked for (Unix seconds).
+    loaded_at: i64,
+    /// Seconds left before a changed user name loads, so typing in Settings doesn't fetch each keystroke.
+    pub(super) reload_in: Option<u8>,
+}
+
+impl Island {
+    /// Asks again once an hour, or at once for a changed user name.
+    pub fn contributions_load(&mut self) {
+        let now = crate::date::now_secs();
+        let c = &self.contributions;
+        let same = |had: &Option<(String, Result<Graph, String>)>, user: &str| user.trim().is_empty() || had.as_ref().is_some_and(|h| h.0 == user.trim());
+        if same(&c.github, &self.cfg.github_user) && same(&c.leetcode, &self.cfg.leetcode_user) && now - c.loaded_at < 3600 { return }
+        let Some(me) = self.me.clone() else { return };
+        self.contributions.loaded_at = now;
+        let (gh, lc) = (self.cfg.github_user.trim().to_string(), self.cfg.leetcode_user.trim().to_string());
+        // A late answer for a name since changed would replace the newer one's graph.
+        if !gh.is_empty() { me.spawn({ let u = gh.clone(); move || crate::net::github_graph(&u) }, move |s, g| if s.cfg.github_user.trim() == gh { s.contributions.github = Some((gh, g)) }) }
+        if !lc.is_empty() { me.spawn({ let u = lc.clone(); move || crate::net::leetcode_graph(&u) }, move |s, g| if s.cfg.leetcode_user.trim() == lc { s.contributions.leetcode = Some((lc, g)) }) }
+    }
+}
+
+/// One graph: its name and streak, then a column per week up to this one, Sunday on top.
+fn graph(s: &Island, key: &str, name: &str, user: &str, data: Option<&Result<Graph, String>>, weeks: i64) -> El {
+    let fg = s.cfg.text();
+    let muted = fg.alpha(0.6 * fg.a);
+    let today = crate::date::days_from_civil(s.today.0, s.today.1, s.today.2);
+    let head = row().w_full().gap(6.0).center_y().child(text(format!("{name} · {user}")).font(s.cfg.font(13.0, 700.0)).color(fg).grow(1.0).min_w(0.0).truncate());
+    let days = match data {
+        None => return col().key(key.to_string()).w_full().gap(6.0).child(head).child(text("Loading…").font(s.cfg.font(12.0, 500.0)).color(muted)),
+        Some(Err(e)) => return col().key(key.to_string()).w_full().gap(6.0).child(head).child(text(e).font(s.cfg.font(12.0, 500.0)).color(muted).truncate()),
+        Some(Ok(days)) => days,
+    };
+    let active: Vec<i64> = days.iter().map(|d| d.0).collect();
+    let streak = super::habits::streak(&active, today);
+    let flame = if streak > 0 { accent::orange() } else { fg.alpha(0.35 * fg.a) };
+    let head = head.child(row().key("streak").role("img").label(format!("{streak} day streak")).gap(3.0).center_y()
+        .child(icon(&icons::FLAME, 13.0).color(flame).a11y_hidden())
+        .child(text(format!("{streak}")).font(s.cfg.font(12.0, 700.0).features("'tnum' 1")).color(flame).a11y_hidden()));
+    // 1970-01-01 was a Thursday: day 0 sits in row 4.
+    let sunday = today - (today + 4).rem_euclid(7);
+    let mut grid = row().key("cells").gap(2.0).a11y_hidden();
+    for week in (0..weeks).rev() {
+        let mut column = col().gap(2.0);
+        for wd in 0..7 {
+            let day = sunday - week * 7 + wd;
+            let level = days.iter().find(|d| d.0 == day).map_or(0, |d| d.1);
+            let fill = if day > today { Color::TRANSPARENT } else if level == 0 { fg.alpha(0.08 * fg.a) } else { accent::green().alpha([0.3, 0.5, 0.75, 1.0][usize::from(level - 1)]) };
+            column = column.child(el().size(8.0, 8.0).radius(2.0).fill(fill));
+        }
+        grid = grid.child(column);
+    }
+    col().key(key.to_string()).role("group").label(format!("{name} contributions of {user}: {} active days, {streak} day streak", active.len())).w_full().gap(6.0).child(head).child(grid)
+}
+
+fn contributions(s: &Island, w: f32) -> El {
+    let fg = s.cfg.text();
+    let c = &s.contributions;
+    // 8pt cells 2pt apart, inside the tile's padding.
+    let weeks = (((w - 24.0 + 2.0) / 10.0).floor() as i64).clamp(1, 53);
+    let mut body = col().key("contributions").w_full().h_full().padding(12.0).gap(12.0);
+    let (gh, lc) = (s.cfg.github_user.trim(), s.cfg.leetcode_user.trim());
+    if gh.is_empty() && lc.is_empty() {
+        return body.center().child(text("Set a GitHub or LeetCode user in Settings → Overview").font(s.cfg.font(12.0, 500.0)).color(fg.alpha(0.6 * fg.a)));
+    }
+    if !gh.is_empty() { body = body.child(graph(s, "github", "GitHub", gh, c.github.as_ref().filter(|g| g.0 == gh).map(|g| &g.1), weeks)) }
+    if !lc.is_empty() { body = body.child(graph(s, "leetcode", "LeetCode", lc, c.leetcode.as_ref().filter(|g| g.0 == lc).map(|g| &g.1), weeks)) }
+    body
+}
+
+/// (quote, author); all from authors long in the public domain.
+const QUOTES: [(&str, &str); 30] = [
+    ("The secret of getting ahead is getting started.", "Mark Twain"),
+    ("Well begun is half done.", "Aristotle"),
+    ("It does not matter how slowly you go as long as you do not stop.", "Confucius"),
+    ("What we think, we become.", "The Buddha"),
+    ("Simplicity is the ultimate sophistication.", "Leonardo da Vinci"),
+    ("The best way out is always through.", "Robert Frost"),
+    ("Energy and persistence conquer all things.", "Benjamin Franklin"),
+    ("Do what you can, with what you have, where you are.", "Theodore Roosevelt"),
+    ("Nothing will work unless you do.", "Maya Angelou"),
+    ("He who has a why to live can bear almost any how.", "Friedrich Nietzsche"),
+    ("The only way to have a friend is to be one.", "Ralph Waldo Emerson"),
+    ("Knowing is not enough; we must apply.", "Johann Wolfgang von Goethe"),
+    ("Waste no more time arguing what a good man should be. Be one.", "Marcus Aurelius"),
+    ("We suffer more often in imagination than in reality.", "Seneca"),
+    ("No man ever steps in the same river twice.", "Heraclitus"),
+    ("Little by little, one travels far.", "J. R. R. Tolkien"),
+    ("Quality is not an act, it is a habit.", "Aristotle"),
+    ("Go confidently in the direction of your dreams.", "Henry David Thoreau"),
+    ("A journey of a thousand miles begins with a single step.", "Lao Tzu"),
+    ("Imagination is more important than knowledge.", "Albert Einstein"),
+    ("Act as if what you do makes a difference. It does.", "William James"),
+    ("The unexamined life is not worth living.", "Socrates"),
+    ("Whatever you are, be a good one.", "Abraham Lincoln"),
+    ("Not all those who wander are lost.", "J. R. R. Tolkien"),
+    ("Be kind, for everyone you meet is fighting a hard battle.", "Ian Maclaren"),
+    ("Hope is the thing with feathers that perches in the soul.", "Emily Dickinson"),
+    ("To be yourself in a world trying to make you something else is the greatest accomplishment.", "Ralph Waldo Emerson"),
+    ("The future depends on what you do today.", "Mahatma Gandhi"),
+    ("Luck is what happens when preparation meets opportunity.", "Seneca"),
+    ("I think, therefore I am.", "René Descartes"),
+];
+
+/// The day's quote: the same all day, the next one tomorrow.
+fn quote_of(day: i64) -> (&'static str, &'static str) { QUOTES[day.rem_euclid(QUOTES.len() as i64) as usize] }
+
+fn quote(s: &Island) -> El {
+    let fg = s.cfg.text();
+    let (words, author) = quote_of(crate::date::days_from_civil(s.today.0, s.today.1, s.today.2));
+    col().key("quote").role("group").label(format!("Quote of the day: {words} {author}")).w_full().h_full().padding(14.0).gap(6.0).justify_center()
+        .child(text(format!("“{words}”")).font(s.cfg.font(15.0, 600.0).lh(20.0)).color(fg).wrap().max_lines(3).a11y_hidden())
+        .child(text(format!("— {author}")).font(s.cfg.font(12.0, 500.0)).color(fg.alpha(0.6 * fg.a)).truncate().a11y_hidden())
+}
+
+/// Today's timed events and the tasks due today, as (minutes since midnight, title, a task?),
+/// in time order. A task due without a time counts at 9:00, as its reminder does.
+fn timeline(s: &Island) -> Vec<(u32, String, bool)> {
+    let events = s.cfg.events.iter().filter_map(|e| {
+        let (_, title) = event_day(&e.text).filter(|(d, _)| *d == s.today)?;
+        let (Some((h, m)), rest) = leading_time(title) else { return None };
+        Some((h * 60 + m, rest.to_string(), false))
+    });
+    let tasks = s.cfg.tasks.iter().filter_map(|t| {
+        let task = Task::parse(&t.text, s.today);
+        let (_, time) = task.due.filter(|(d, _)| *d == s.today)?;
+        let (h, m) = time.unwrap_or((9, 0));
+        Some((h * 60 + m, task.title, true))
+    });
+    let mut items: Vec<_> = events.chain(tasks).collect();
+    items.sort_by_key(|i| i.0);
+    items
+}
+
+/// One line for the whole day: the share gone, a mark for each event and task, and what is next.
+fn day(s: &Island, w: f32) -> El {
+    let fg = s.cfg.text();
+    let muted = fg.alpha(0.6 * fg.a);
+    let items = timeline(s);
+    let gone = s.minutes as f32 / 1440.0;
+    let bar_w = (w - 24.0).max(0.0);
+    let tint = |task: bool| if task { accent::teal() } else { accent::indigo() };
+    let mut bar = el().key("day-bar").role("progressbar").label(format!("{:.0}% of the day gone", gone * 100.0)).w(bar_w).h(10.0)
+        .radius(5.0).fill(fg.alpha(0.12 * fg.a))
+        .child(el().h_full().w_frac(gone).radius(5.0).fill(accent::orange().alpha(0.7)).a11y_hidden());
+    for (i, (at, _, task)) in items.iter().enumerate() {
+        bar = bar.child(el().key(format!("mark-{i}")).a11y_hidden().absolute(*at as f32 / 1440.0 * bar_w - 3.0, 2.0).size(6.0, 6.0).radius(3.0).fill(tint(*task)));
+    }
+    let hours = row().key("day-hours").w(bar_w).justify_between().a11y_hidden()
+        .children([0, 6, 12, 18, 24].map(|h| text(format!("{h}")).font(s.cfg.font(10.0, 500.0).features("'tnum' 1")).color(muted)));
+    let next: Vec<_> = items.iter().filter(|i| i.0 >= s.minutes).take(2).collect();
+    let mut c = col().key("day").w_full().h_full().padding(12.0).gap(6.0)
+        .child(row().w_full().justify_between()
+            .child(text("Day Progress").font(s.cfg.font(13.0, 700.0)).color(accent::orange()))
+            .child(text(format!("{:.0}%", gone * 100.0)).font(s.cfg.font(13.0, 700.0).features("'tnum' 1")).color(fg)))
+        .child(bar).child(hours);
+    if next.is_empty() { c = c.child(text("Nothing left today").font(s.cfg.font(12.0, 500.0)).color(muted)) }
+    for (i, (at, title, task)) in next.into_iter().enumerate() {
+        c = c.child(row().key(format!("next-{i}")).w_full().gap(6.0).center_y()
+            .child(el().size(6.0, 6.0).radius(3.0).fill(tint(*task)).a11y_hidden())
+            .child(text(format!("{:02}:{:02}", at / 60, at % 60)).font(s.cfg.font(12.0, 600.0).features("'tnum' 1")).color(muted))
+            .child(text(title).font(s.cfg.font(12.0, 500.0)).color(fg).grow(1.0).min_w(0.0).truncate()));
+    }
+    c
+}
+
 /// Droppy's player: cover and title on top, the progress bar with both times, then the controls.
 fn media(s: &Island, w: f32) -> El {
     let fg = s.cfg.text();
@@ -299,6 +500,25 @@ mod tests {
     use super::*;
 
     fn tile(w: u8, h: u8) -> Tile { Tile { widget: Widget::Clock, w, h } }
+
+    #[test]
+    fn the_quote_changes_once_a_day_and_wraps_around() {
+        assert_eq!(quote_of(10), quote_of(10));
+        assert_ne!(quote_of(10), quote_of(11));
+        assert_eq!(quote_of(0), quote_of(QUOTES.len() as i64));
+        assert_eq!(quote_of(-1), QUOTES[QUOTES.len() - 1]);
+    }
+
+    #[test]
+    fn the_day_lines_up_timed_events_and_tasks_due_today() {
+        use crate::config::{Config, Item, Store};
+        let mut cfg = Config::default();
+        cfg.events = ["2026-01-01 13:00 Lunch", "2026-01-01 All day", "2026-01-02 09:00 Tomorrow"].map(Item::new).into();
+        cfg.tasks = ["Ship due:2026-01-01T17:30", "Plan due:2026-01-01", "Later due:2026-01-03"].map(Item::new).into();
+        let mut s = Island::new(Store::memory(cfg), Vec::new());
+        s.today = (2026, 1, 1);
+        assert_eq!(timeline(&s), [(540, "Plan".into(), true), (780, "Lunch".into(), false), (1050, "Ship".into(), true)]);
+    }
 
     #[test]
     fn tiles_fill_rows_in_order() {
