@@ -322,15 +322,15 @@ pub fn fetch_image(url: &str) -> Option<Vec<u8>> {
 pub type Lyric = (u32, String);
 
 /// A track's synced lyrics from LRCLIB, which needs no API key; None when it has none.
-/// `length` (seconds) prefers the result whose duration matches, as a song has many recordings.
-pub fn lyrics(artist: &str, title: &str, length: Option<u32>) -> Option<Vec<Lyric>> {
+/// `length` (seconds) picks the result whose duration matches, as a song has many recordings.
+pub fn lyrics(artist: &str, title: &str, length: u32) -> Option<Vec<Lyric>> {
     lyrics_from("https://lrclib.net", artist, title, length)
 }
 
-fn lyrics_from(base: &str, artist: &str, title: &str, length: Option<u32>) -> Option<Vec<Lyric>> {
+fn lyrics_from(base: &str, artist: &str, title: &str, length: u32) -> Option<Vec<Lyric>> {
     let found = get_json(agent().get(format!("{base}/api/search")).header("User-Agent", "Ripple").query("artist_name", artist).query("track_name", title))?;
     let synced: Vec<&Value> = found.as_array()?.iter().filter(|r| r["syncedLyrics"].as_str().is_some_and(|l| !l.trim().is_empty())).collect();
-    let off = |r: &&Value| length.map_or(0.0, |l| (r["duration"].as_f64().unwrap_or(f64::MAX) - l as f64).abs());
+    let off = |r: &&Value| (r["duration"].as_f64().unwrap_or(f64::MAX) - length as f64).abs();
     // Search is fuzzy: a result more than 5 s off in length is another song or recording.
     let best = synced.iter().filter(|r| off(r) <= 5.0).min_by(|a, b| off(a).total_cmp(&off(b)))?;
     let lines = parse_lrc(best["syncedLyrics"].as_str()?);
@@ -424,9 +424,9 @@ mod tests {
             ])),
             _ => json(200, json!([])),
         });
-        assert_eq!(lyrics_from(&base, "Artist", "Song", Some(200)), Some(vec![(1000, "Album cut".into())]));
-        assert_eq!(lyrics_from(&base, "Artist", "Song", Some(250)), None, "no result within 5 s");
-        assert_eq!(lyrics_from(&base, "Artist", "Unknown", Some(200)), None);
+        assert_eq!(lyrics_from(&base, "Artist", "Song", 200), Some(vec![(1000, "Album cut".into())]));
+        assert_eq!(lyrics_from(&base, "Artist", "Song", 250), None, "no result within 5 s");
+        assert_eq!(lyrics_from(&base, "Artist", "Unknown", 200), None);
     }
 
     #[test]
