@@ -267,7 +267,7 @@ fn media(s: &Island, w: f32) -> El {
             .on_press(move |s: &mut Island| control(s, command))
     };
     // The tile less its padding, the cover, the visualizer and the gaps between them.
-    let title_w = w - 24.0 - 56.0 - 25.0 - 24.0;
+    let title_w = (w - 24.0 - 56.0 - 25.0 - 24.0).max(0.0);
     let line = |key: &str, text: El, text_width: f32, height: f32| marquee(s, key, text, text_width, title_w, 10.0).w(title_w).h(height);
     let head = row().key("track-head").w_full().gap(12.0).center_y()
         .child(cover(s, 56.0, 12.0, 24.0, 1.06))
