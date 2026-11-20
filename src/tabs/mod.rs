@@ -151,6 +151,11 @@ pub fn deadline(s: &Island) -> Option<f64> { s.clipboard.copied.map(|c| c.1) }
 /// Picks up a settings change another window made, for the tab showing.
 pub fn reloaded(s: &mut Island, old: &Config) {
     if shows(s, Tab::T3) && old.t3_devices != s.cfg.t3_devices { s.t3_load() }
+    // Settings saves each keystroke; the generation drops the answers to keys typed over.
+    if (old.sure_url != s.cfg.sure_url || old.sure_key != s.cfg.sure_key) && !s.cfg.sure_key.is_empty() {
+        s.stocks.portfolio = None;
+        if shows(s, Tab::Stocks) { s.stocks_load() }
+    }
 }
 
 /// What a delete took: a note or an event and where it sat, or the cleared Shelf.
