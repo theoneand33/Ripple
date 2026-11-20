@@ -99,6 +99,8 @@ fn jwt(t: &str) -> Result<String, String> {
     let parts: Vec<&str> = t.trim().split('.').collect();
     let [header, claims, _] = parts[..] else { return Err("Not a JWT".into()) };
     let (header, claims) = (from_base64(header, true)?, from_base64(claims, true)?);
+    // Both are JSON objects; `pretty_json` checks the rest.
+    if ![&header, &claims].iter().all(|p| p.trim_start().starts_with('{')) { return Err("Not a JWT".into()) }
     pretty_json(&format!(r#"{{"header":{header},"claims":{claims}}}"#)).map_err(|_| "Not a JWT".into())
 }
 
@@ -263,7 +265,8 @@ impl Clipboard {
             *n += 1;
             *n <= if matches!(c.content, Content::Text(_)) { TEXTS } else { IMAGES }
         });
-        self.copied = None;
+        // A tool's error was about the text before.
+        (self.copied, self.tool_error) = (None, None);
         true
     }
 
@@ -397,6 +400,7 @@ mod tests {
         let claims = run("JWT", "eyJhbGciOiJub25lIn0.eyJzdWIiOiJtZSJ9.").unwrap();
         assert!(claims.contains(r#""sub": "me""#) && claims.contains(r#""alg": "none""#), "{claims}");
         assert!(run("JWT", "a.b").is_err());
+        assert!(run("JWT", "MQ.Mg.").is_err(), "1 and 2 are JSON, not a header and claims");
         let t = run("Unix time", "0").unwrap();
         assert!(t.starts_with("1970-01-01") || t.starts_with("1969-12-31"), "{t}");
         assert_eq!(run("Unix time", "1767225600000").unwrap()[..7], run("Unix time", "1767225600").unwrap()[..7], "milliseconds too");
