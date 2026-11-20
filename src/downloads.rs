@@ -76,10 +76,12 @@ pub fn watch(on: impl Fn(Option<Progress>)) {
             r.retain(|_, (_, at)| at.elapsed() < STALE);
             r.values().map(|v| v.0).collect()
         };
-        let now = merge(&reported, partial);
+        // A source that calls a download complete (macOS NSProgress) ends it then, not when it unpublishes.
+        let full = reported.contains(&Some(1.0));
+        let now = merge(&reported.iter().copied().filter(|f| *f != Some(1.0)).collect::<Vec<_>>(), partial);
         let ended = match (now, running) {
-            (Some(p), _) => { running = Some((running.map_or_else(SystemTime::now, |r| r.0), p.count, reported.contains(&Some(1.0)))); None }
-            (None, Some(r)) => { running = None; Some(r) }
+            (Some(p), _) => { running = Some((running.map_or_else(SystemTime::now, |r| r.0), p.count, full)); None }
+            (None, Some(r)) => { running = None; Some((r.0, r.1, r.2 || full)) }
             (None, None) => None,
         };
         // Not on macOS, which reads no folder: there NSProgress says it finished, not cancelled.

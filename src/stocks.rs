@@ -101,6 +101,8 @@ pub struct Portfolio {
     pub history: Vec<f64>,
     /// Each of those days' market gain or loss, without deposits and withdrawals.
     pub market: Vec<f64>,
+    /// Accounts left out of the totals, as "name (currency)": no rate converts them.
+    pub skipped: Vec<String>,
 }
 
 impl Portfolio {
@@ -186,10 +188,11 @@ pub fn portfolio(url: &str, key: &str, range: Range, base: &str, rates: Option<&
     // Per day: the balance, and its net market flows.
     let mut history: BTreeMap<String, [f64; 2]> = BTreeMap::new();
     let mut out = Vec::new();
+    let mut skipped = Vec::new();
     for a in &accounts {
         let id = a["id"].as_str().unwrap_or_default();
         let cur = a["currency"].as_str().unwrap_or(base);
-        let k = rate(cur)?;
+        let Ok(k) = rate(cur) else { skipped.push(format!("{} ({cur})", a["name"].as_str().unwrap_or_default())); continue };
         let mine: Vec<&Value> = holdings.iter().filter(|h| h["account"]["id"].as_str() == Some(id)).collect();
         let latest = mine.iter().filter_map(|h| h["date"].as_str()).max().unwrap_or_default();
         let mut acct = Account {
@@ -204,7 +207,8 @@ pub fn portfolio(url: &str, key: &str, range: Range, base: &str, rates: Option<&
             acct.positions += 1;
             let hc = h["currency"].as_str().unwrap_or(cur);
             if let (Some(avg), Some(amount)) = (h["avg_cost"].as_str().and_then(|m| money(m, hc)), h["amount"].as_str().and_then(|m| money(m, hc))) {
-                let hk = rate(hc)?;
+                // A holding in a currency with no rate stays out of cost and value.
+                let Ok(hk) = rate(hc) else { continue };
                 (acct.cost, acct.value) = (acct.cost + qty * avg * hk, acct.value + amount * hk);
             }
         }
@@ -219,7 +223,7 @@ pub fn portfolio(url: &str, key: &str, range: Range, base: &str, rates: Option<&
         out.push(acct);
     }
     let (history, market) = history.into_values().map(|[b, m]| (b, m)).unzip();
-    Ok(Portfolio { currency: base.into(), accounts: out, history, market })
+    Ok(Portfolio { currency: base.into(), accounts: out, history, market, skipped })
 }
 
 /// "€34,721.55": the currency's sign, thousands grouped, two decimals.
@@ -321,8 +325,9 @@ mod tests {
         let usd = portfolio(&base, "k", Range::Week, "USD", Some(&rates)).unwrap();
         let a = &usd.accounts[0];
         assert_eq!((usd.currency.as_str(), a.balance, a.cash, a.cost, a.value, usd.history.clone()), ("USD", 1250.0, 125.0, 875.0, 1125.0, vec![1125.0, 1250.0]));
-        assert_eq!(portfolio(&base, "k", Range::Week, "USD", None), Err("Couldn't load exchange rates".into()));
-        assert_eq!(portfolio(&base, "k", Range::Week, "XYZ", Some(&rates)), Err("No exchange rate from EUR to XYZ".into()));
+        let none = portfolio(&base, "k", Range::Week, "USD", None).unwrap();
+        assert_eq!((none.accounts.len(), none.skipped.clone(), none.history.len()), (0, vec!["Broker (EUR)".to_string()], 0), "no rates: left out, named");
+        assert_eq!(portfolio(&base, "k", Range::Week, "XYZ", Some(&rates)).unwrap().skipped, ["Broker (EUR)"]);
         assert_eq!(portfolio(&base, "bad", Range::Day, "EUR", None), Err("Sure refused the API key".into()));
         let html = serve(|_| crate::testserver::Response { status: 200, headers: Vec::new(), body: "<html>Sign in</html>".into() });
         assert_eq!(portfolio(&html, "k", Range::Day, "EUR", None), Err(format!("{html} isn't Sure's API")));

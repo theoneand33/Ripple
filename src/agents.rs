@@ -253,8 +253,9 @@ pub fn cli(args: &[String]) -> i32 {
 }
 
 /// Once a second from the Island: marks it running, and reads the live sessions (newest first)
-/// and the requests waiting on it. Files left by gone sessions and hooks are deleted.
-pub fn scan(dir: &Path) -> (Vec<Session>, Vec<Request>) {
+/// and the requests waiting on it. Files left by gone sessions and hooks are deleted; with
+/// `processes`, so are those of sessions whose agent process is gone.
+pub fn scan(dir: &Path, processes: bool) -> (Vec<Session>, Vec<Request>) {
     let _ = fs::create_dir_all(dir).and_then(|()| fs::write(dir.join("alive"), ""));
     let read = |folder: &str, max: Duration| -> Vec<(String, String, Duration)> {
         let Ok(entries) = fs::read_dir(dir.join(folder)) else { return Vec::new() };
@@ -272,7 +273,7 @@ pub fn scan(dir: &Path) -> (Vec<Session>, Vec<Request>) {
     let sessions: Vec<Session> = read("sessions", STALE).into_iter()
         .filter_map(|(key, text, _)| serde_json::from_str(&text).ok().map(|s| Session { key, ..s })).collect();
     // An agent killed without SessionEnd: its process is gone, so is the session.
-    let live = running(&sessions);
+    let live = if processes { running(&sessions) } else { vec![true; sessions.len()] };
     let sessions = sessions.into_iter().zip(live).filter_map(|(s, live)| {
         if !live { let _ = fs::remove_file(dir.join("sessions").join(format!("{}.json", s.key))); }
         live.then_some(s)
@@ -303,14 +304,14 @@ mod tests {
         let dir = temp("events");
         let event = |e: Value| record(&dir, "claude", &e).unwrap();
         assert!(event(json!({"session_id": "a/../b", "cwd": "/src/ripple", "hook_event_name": "UserPromptSubmit", "prompt": "Fix the build"})).is_none());
-        let (sessions, _) = scan(&dir);
+        let (sessions, _) = scan(&dir, true);
         assert_eq!(sessions, [Session { key: "claude-a____b".into(), agent: "claude".into(), cwd: "/src/ripple".into(), working: true, detail: "Fix the build".into(), ..sessions[0].clone() }]);
         assert_ne!(sessions[0].pid, 0, "the agent's process is recorded: here, what runs the tests");
         event(json!({"session_id": "a/../b", "hook_event_name": "Stop", "last_assistant_message": "Done."}));
-        let (sessions, _) = scan(&dir);
+        let (sessions, _) = scan(&dir, true);
         assert_eq!((sessions[0].working, sessions[0].detail.as_str(), sessions[0].cwd.as_str()), (false, "Done.", "/src/ripple"), "cwd kept from before");
         event(json!({"session_id": "a/../b", "hook_event_name": "SessionEnd"}));
-        assert!(scan(&dir).0.is_empty());
+        assert!(scan(&dir, true).0.is_empty());
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -326,7 +327,7 @@ mod tests {
         write("reused", me.as_u32(), started + 100);
         write("gone", u32::MAX - 7, 1);
         write("unknown", 0, 0);
-        let mut keys: Vec<String> = scan(&dir).0.into_iter().map(|s| s.key).collect();
+        let mut keys: Vec<String> = scan(&dir, true).0.into_iter().map(|s| s.key).collect();
         keys.sort();
         let gone_file = dir.join("sessions/gone.json").exists();
         let _ = fs::remove_dir_all(&dir);
@@ -341,7 +342,7 @@ mod tests {
         let request = record(&dir, "codex", &input).unwrap().unwrap();
         assert_eq!((request.tool.as_str(), request.detail.as_str(), request.session.as_str()), ("Bash", "rm -rf target", "codex-s1"));
         assert!(!alive(&dir), "no Island yet: the agent asks in its terminal");
-        scan(&dir);
+        scan(&dir, true);
         assert!(alive(&dir));
         let hook = {
             let (dir, request) = (dir.clone(), request.clone());
@@ -349,14 +350,14 @@ mod tests {
         };
         let deadline = Instant::now() + Duration::from_secs(5);
         let seen = loop {
-            let (_, requests) = scan(&dir);
+            let (_, requests) = scan(&dir, true);
             if !requests.is_empty() || Instant::now() > deadline { break requests }
             std::thread::sleep(Duration::from_millis(50));
         };
         assert_eq!(seen, [request.clone()]);
         answer(&dir, &request.key, &Answer::Deny).unwrap();
         assert_eq!(hook.join().unwrap(), Some(Answer::Deny));
-        assert!(scan(&dir).1.is_empty(), "the hook cleans up after itself");
+        assert!(scan(&dir, true).1.is_empty(), "the hook cleans up after itself");
         let _ = fs::remove_dir_all(&dir);
     }
 

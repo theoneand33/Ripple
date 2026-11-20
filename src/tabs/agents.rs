@@ -20,6 +20,8 @@ pub struct Agents {
     answered: HashSet<String>,
     /// A new request that came in quiet hours: its alert shows once they end.
     held: Option<String>,
+    /// When the agents' processes were last looked up: the process table is too dear to read each second.
+    processes_at: f64,
 }
 
 impl Island {
@@ -28,7 +30,9 @@ impl Island {
         // A hidden tab can't be answered: without `alive`, hooks leave agents to ask in their terminals.
         if rune::is_headless() || !self.visible_tabs().contains(&Tab::Agents) { return false }
         let Some(dir) = self.store.dir().map(|d| d.join("agents")) else { return false };
-        let (sessions, mut requests) = agents::scan(&dir);
+        let processes = now - self.agents.processes_at >= 10.0;
+        if processes { self.agents.processes_at = now }
+        let (sessions, mut requests) = agents::scan(&dir, processes);
         self.agents.answered.retain(|key| requests.iter().any(|r| &r.key == key));
         requests.retain(|r| !self.agents.answered.contains(&r.key));
         let changed = (&sessions, &requests) != (&self.agents.sessions, &self.agents.requests);

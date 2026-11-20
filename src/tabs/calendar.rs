@@ -28,7 +28,7 @@ pub struct Calendar {
     /// The links last fetched, and when (Unix seconds).
     feeds_loaded: (Vec<String>, i64),
     /// An event alert due in quiet hours, (title, meeting link): it shows once they end.
-    held: Option<(String, Option<String>)>,
+    held: Option<(String, Option<String>, usize)>,
 }
 
 impl Island {
@@ -96,7 +96,7 @@ impl Island {
         let lead = i64::from(self.cfg.event_alert_minutes);
         if rune::is_headless() || lead == 0 || self.large_open() || self.reminder.is_some() { return }
         let quiet = self.quiet();
-        if !quiet && let Some((title, link)) = self.calendar.held.take() { return self.remind_event(title, link, now) }
+        if !quiet && let Some((title, link, _)) = self.calendar.held.take() { return self.remind_event(title, link, now) }
         let t = rune::time::LocalTime::at(crate::date::now_ms());
         let minute = crate::date::days_from_civil(t.year, t.month, t.day) * 1440 + i64::from(t.hour * 60 + t.minute);
         let due = due_events(&self.cfg.events, minute, lead, &self.cfg.alerted_events);
@@ -104,13 +104,19 @@ impl Island {
         // Several at once share one alert, with the first meeting link.
         let title = if due.len() == 1 { due[0].1.clone() } else { format!("{} events", due.len()) };
         let link = due.iter().find_map(|d| d.2.clone());
+        let n = due.len();
         self.save(|c| {
             // Ids start with the event's start minute; those over a day old can't alert again.
             c.alerted_events.retain(|id| id.split(' ').next().and_then(|m| m.parse::<i64>().ok()).is_some_and(|m| m >= minute - 1440));
             c.alerted_events.extend(due.into_iter().map(|d| d.0));
         });
         // Held, not dropped: by the time quiet hours end the event may be past its alert window.
-        if quiet { self.calendar.held = Some((title, link)) } else { self.remind_event(title, link, now) }
+        if !quiet { return self.remind_event(title, link, now) }
+        // Several held in one quiet spell share one alert, as a batch does.
+        self.calendar.held = Some(match self.calendar.held.take() {
+            Some((_, held_link, m)) => (format!("{} events", m + n), held_link.or(link), m + n),
+            None => (title, link, n),
+        });
     }
 }
 

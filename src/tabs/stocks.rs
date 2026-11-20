@@ -149,6 +149,9 @@ fn portfolio(s: &Island, root: El, p: &Portfolio) -> El {
                 .child(text(signed_money(a.open(), cur)).font(tnum(12.0, 500.0)).color(tint(a.open())).single_line()))
             .child(change(s, percent(a.open(), a.cost))));
     }
+    if !p.skipped.is_empty() {
+        list = list.child(text(format!("Not in the totals, with no {cur} rate: {}", p.skipped.join(", "))).key("stocks-skipped").font(s.cfg.font(12.0, 400.0)).color(muted).w_full().wrap().pt(8.0));
+    }
     root.child(summary).child(stats)
         .child(col().key("stocks-scroll").w_full().grow(1.0).min_h(0.0).scrolls().scroll_edge_fade(10.0).child(list))
 }
