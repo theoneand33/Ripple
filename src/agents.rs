@@ -137,7 +137,11 @@ fn record(dir: &Path, agent: &str, input: &Value) -> std::io::Result<Option<Requ
     let event = s("hook_event_name");
     match event {
         "SessionEnd" => { let _ = fs::remove_file(&path); return Ok(None) }
-        "UserPromptSubmit" => (info.working, info.detail) = (true, clip(s("prompt"), DETAIL)),
+        // OpenCode's plugin sends no prompt: keep the one shown.
+        "UserPromptSubmit" => {
+            info.working = true;
+            if !s("prompt").is_empty() { info.detail = clip(s("prompt"), DETAIL) }
+        }
         "Stop" => {
             info.working = false;
             if !s("last_assistant_message").is_empty() { info.detail = clip(s("last_assistant_message"), DETAIL) }

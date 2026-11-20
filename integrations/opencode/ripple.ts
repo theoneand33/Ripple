@@ -17,6 +17,8 @@ function hook(input: Record<string, unknown>): Promise<string> {
     child.stdout.on("data", (chunk) => (out += chunk))
     child.on("error", () => { clearTimeout(timer); resolve("") })
     child.on("close", (code) => { clearTimeout(timer); resolve(code === 0 ? out : "") })
+    // A failed spawn (ripple not on PATH) also breaks the pipe: ignore that, `error` above resolves.
+    child.stdin.on("error", () => {})
     child.stdin.end(JSON.stringify(input))
   })
 }
