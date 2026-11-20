@@ -186,6 +186,15 @@ impl Island {
         me.spawn(move || sync_shelf(&nc, &at, &files, &base, &dir.join("Shelf")), move |s, out| s.nextcloud_shelf_synced(&account, &folder, out));
     }
 
+    /// Files just put on the Shelf (dropped, renamed, compressed, extracted), then a sync. A name
+    /// the sync record knows is a new file now, not one Nextcloud since removed.
+    pub fn shelf_new_files(&mut self, files: &[PathBuf]) {
+        let names: Vec<_> = files.iter().filter_map(|f| f.file_name().map(|n| n.to_string_lossy().into_owned())).collect();
+        self.save(|c| c.nextcloud.shelf_synced.retain(|e| !names.iter().any(|n| e.rsplit('/').next() == Some(n.as_str()))));
+        if self.shelf_sync.running { self.shelf_sync.dropped.extend(names) }
+        self.nextcloud_shelf_sync();
+    }
+
     fn nextcloud_shelf_synced(&mut self, account: &str, folder: &str, out: ShelfOutcome) {
         self.shelf_sync.running = false;
         let current = self.cfg.nextcloud.account() == account;

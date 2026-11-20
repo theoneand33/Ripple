@@ -37,11 +37,11 @@ fn shelve(s: &mut Island, old: Option<&Path>, new: PathBuf) {
     s.save(|c| {
         c.shelf.retain(|f| *f != new);
         match old.and_then(|o| c.shelf.iter().position(|f| f == o)) {
-            Some(i) => c.shelf[i] = new,
-            None => c.shelf.insert(0, new),
+            Some(i) => c.shelf[i] = new.clone(),
+            None => c.shelf.insert(0, new.clone()),
         }
     });
-    s.nextcloud_shelf_sync();
+    s.shelf_new_files(&[new]);
 }
 
 /// Runs a blocking file job off the UI thread; its result goes on top of the Shelf.
