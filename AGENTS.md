@@ -29,7 +29,7 @@ Ripple is a Dynamic Island-style bar for Windows, Linux, and macOS. It is one Ru
 
 ## Build and verify
 
-- Do not run the test suite locally. Never run `cargo test`. GitHub Actions (`.github/workflows/build.yml`) runs the tests, renders every scene, and smoke-runs the app on each OS.
+- GitHub Actions (`.github/workflows/build.yml`) runs the tests, renders every scene, and smoke-runs the app on each OS.
 - You may run `cargo check`, `cargo build`, and `cargo run` locally to confirm that a change or fix works. Debug builds render headlessly, so you need no display:
 
   ```bash
