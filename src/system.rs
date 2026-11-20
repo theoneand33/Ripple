@@ -937,6 +937,37 @@ pub fn open_external(url: &str) {
     spawn(cmd);
 }
 
+/// Opens a document in its default app; programs are refused, as `open_external` refuses them.
+pub fn open_file(path: &std::path::Path) {
+    // The real name, not a URL's: a `?` or `#` in it must not hide the extension.
+    if runs_as_program(&path.to_string_lossy()) { return }
+    #[cfg(target_os = "linux")]
+    let mut cmd = command("xdg-open");
+    #[cfg(target_os = "macos")]
+    let mut cmd = command("open");
+    #[cfg(windows)]
+    let mut cmd = { let mut cmd = command("rundll32"); cmd.arg("url.dll,FileProtocolHandler"); cmd };
+    cmd.arg(path);
+    spawn(cmd);
+}
+
+/// Shows a file in its folder: selected in Finder and Explorer, the folder itself elsewhere.
+pub fn reveal(path: &std::path::Path) {
+    #[cfg(target_os = "linux")]
+    let cmd = { let mut cmd = command("xdg-open"); cmd.arg(path.parent().unwrap_or(path)); cmd };
+    #[cfg(target_os = "macos")]
+    let cmd = { let mut cmd = command("open"); cmd.arg("-R").arg(path); cmd };
+    #[cfg(windows)]
+    let cmd = {
+        use std::os::windows::process::CommandExt;
+        // Explorer parses `/select,"path"` itself; std's quoting of the whole argument confuses it.
+        let mut cmd = command("explorer");
+        cmd.raw_arg(format!("/select,\"{}\"", path.display()));
+        cmd
+    };
+    spawn(cmd);
+}
+
 /// Web pages, and `file:` documents that wouldn't run as programs.
 fn openable(url: &str) -> bool {
     let lower = url.to_ascii_lowercase();
@@ -947,10 +978,16 @@ fn openable(url: &str) -> bool {
     // and spaces Windows drops (`x.exe.` is `x.exe`).
     let path = crate::net::percent_decode(path.split(['?', '#']).next().unwrap_or_default());
     let path = path.trim_end_matches(['/', '\\', '.', ' ']);
-    const EXECUTABLE: [&str; 29] = [".exe", ".bat", ".cmd", ".com", ".ps1", ".msi", ".scr", ".lnk", ".sh", ".app", ".desktop", ".jar",
+    !path.is_empty() && !runs_as_program(path)
+}
+
+/// Names the OS would run rather than open, by extension.
+fn runs_as_program(path: &str) -> bool {
+    const EXECUTABLE: [&str; 46] = [".exe", ".bat", ".cmd", ".com", ".ps1", ".msi", ".scr", ".lnk", ".sh", ".app", ".desktop", ".jar",
         ".vbs", ".vbe", ".js", ".jse", ".wsf", ".hta", ".reg", ".command", ".tool", ".pkg", ".appimage", ".run", ".py", ".pl",
-        ".cpl", ".msc", ".pif"];
-    !path.is_empty() && !EXECUTABLE.iter().any(|ext| path.ends_with(ext))
+        ".cpl", ".msc", ".pif", ".terminal", ".application", ".appref-ms", ".url", ".scf", ".ws", ".msix", ".appx", ".msixbundle", ".appxbundle", ".jnlp", ".mpkg", ".msp", ".sct", ".wsc", ".msu", ".diagcab"];
+    let path = path.trim_end_matches(['/', '\\', '.', ' ']).to_ascii_lowercase();
+    EXECUTABLE.iter().any(|ext| path.ends_with(ext))
 }
 
 /// Starts an app by name or command line. No shell: the text is split into argv, so it
