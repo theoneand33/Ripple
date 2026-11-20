@@ -359,7 +359,7 @@ impl Island {
             expect_playing: None,
             search: TextEdit::default(),
             ai: tabs::Assistant::default(),
-            clipboard: tabs::Clipboard::new(&cfg),
+            clipboard: tabs::Clipboard::new(&cfg, store.dir().as_deref()),
             pomodoro: tabs::Pomodoro::default(),
             calc: tabs::Calculator::default(),
             task: TextEdit::default(),
@@ -1056,6 +1056,7 @@ impl Island {
     /// Runs once the window exists: the pollers start here, after the first frame.
     pub fn start(&mut self, waker: Waker) {
         self.images = Some(ImageCache::new(waker));
+        self.clipboard_decode();
         self.begin();
     }
 

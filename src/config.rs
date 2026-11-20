@@ -201,6 +201,15 @@ impl Item {
     }
 }
 
+/// A pinned clipboard item: a text, or an image saved as `clipboard/<name>` beside prefs.json.
+/// Pins were plain texts before images could be pinned.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum Pin {
+    Text(String),
+    Image { image: String },
+}
+
 /// The Nextcloud account Notes, Tasks and Calendar events sync with.
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -281,8 +290,8 @@ pub struct Config {
     pub nextcloud: Nextcloud,
     /// Notes pinned to the top of the list, by key.
     pub pinned_notes: Vec<u64>,
-    /// Clipboard texts pinned to the top; they outlive the history's limit and restarts.
-    pub clipboard_pins: Vec<String>,
+    /// Clipboard items pinned to the top; they outlive the history's limit and restarts.
+    pub clipboard_pins: Vec<Pin>,
     /// The Calculator's tape, (sum, answer), newest first.
     pub calc_tape: Vec<(String, String)>,
     /// Task reminders already shown, as `key@YYYY-MM-DDTHH:MM`, so a missed one shows once later.
@@ -616,6 +625,13 @@ mod tests {
         let cfg: Config = serde_json::from_str(r#"{"standby": false}"#).unwrap();
         assert!(!cfg.standby && cfg.battery_alerts && cfg.default_tab == Tab::Overview);
         assert!(serde_json::to_string(&Config::default()).unwrap().contains(r#""default_tab":2"#), "tabs save as their numbers");
+    }
+
+    #[test]
+    fn clipboard_pins_load_old_texts_and_new_images() {
+        let cfg: Config = serde_json::from_str(r#"{"clipboard_pins": ["old", {"image": "ab.png"}]}"#).unwrap();
+        assert_eq!(cfg.clipboard_pins, [Pin::Text("old".into()), Pin::Image { image: "ab.png".into() }]);
+        assert_eq!(serde_json::from_str::<Config>(&serde_json::to_string(&cfg).unwrap()).unwrap().clipboard_pins, cfg.clipboard_pins);
     }
 
     #[test]

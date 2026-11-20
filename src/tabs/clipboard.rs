@@ -1,10 +1,15 @@
 //! Clipboard: the last 50 texts and 10 images copied anywhere, newest first, each one copyable
-//! again. Pinned items stay on top, and pinned texts are kept across restarts.
+//! again. Pinned items stay on top and are kept across restarts; pinned images are saved as PNG
+//! files in a `clipboard` folder beside prefs.json.
 
 use rune::{ClipboardContent, ClipboardImage, Color, El, Image, SurfaceFit, TextEdit, Transition, Tx, col, el, row, text};
 
 use super::{Scrolls, empty, field, tool};
-use crate::config::Config;
+use std::path::{Path, PathBuf};
+
+use sha2::{Digest, Sha256};
+
+use crate::config::{Config, Pin};
 use crate::icons;
 use crate::island::Island;
 
@@ -42,6 +47,21 @@ pub struct Clipboard {
     pub copied: Option<(usize, f64)>,
     pub search: TextEdit,
     next_read: f64,
+    /// Where pinned images are saved; None keeps them only this run (headless).
+    dir: Option<PathBuf>,
+}
+
+/// A pinned image's file name: its PNG's hash, so the same image is one file.
+fn file_name(image: &ClipboardImage) -> String {
+    let hash: String = Sha256::digest(image.png()).iter().take(16).map(|b| format!("{b:02x}")).collect();
+    format!("{hash}.png")
+}
+
+/// Only names `file_name` makes are read: the prefs file can be edited by hand.
+fn load_image(dir: &Path, name: &str) -> Option<ClipboardImage> {
+    let stem = name.strip_suffix(".png")?;
+    if stem.is_empty() || !stem.bytes().all(|b| b.is_ascii_hexdigit()) { return None }
+    ClipboardImage::from_png(std::fs::read(dir.join(name)).ok()?)
 }
 
 impl Island {
@@ -69,16 +89,38 @@ impl Island {
 
     pub fn toggle_clip_pin(&mut self, i: usize) {
         self.clipboard.toggle_pin(i);
-        let pins = self.clipboard.pinned_texts();
-        if pins != self.cfg.clipboard_pins { self.save(|c| c.clipboard_pins = pins) }
+        let pins = self.clipboard.pins();
+        if pins == self.cfg.clipboard_pins { return }
+        // An image no longer pinned loses its file.
+        if let Some(dir) = &self.clipboard.dir {
+            for old in &self.cfg.clipboard_pins {
+                if let Pin::Image { image } = old && !pins.contains(old) && load_image(dir, image).is_some() { let _ = std::fs::remove_file(dir.join(image)); }
+            }
+        }
+        self.save(|c| c.clipboard_pins = pins);
+    }
+
+    /// Decodes the pinned images loaded at start, once the window has an image cache.
+    pub fn clipboard_decode(&mut self) {
+        let Some(cache) = &self.images else { return };
+        for clip in &mut self.clipboard.items {
+            if let Content::Image(image, pixels @ None) = &mut clip.content { *pixels = Some(cache.load(image.png().to_vec())) }
+        }
     }
 }
 
 impl Clipboard {
-    /// The pinned texts saved last time.
-    pub fn new(cfg: &Config) -> Clipboard {
-        let items = cfg.clipboard_pins.iter().map(|t| Clip { content: Content::Text(t.clone()), pinned: true }).collect();
-        Clipboard { items, ..Clipboard::default() }
+    /// The items pinned last time; `dir` is the settings folder. An image whose file is gone is left out.
+    pub fn new(cfg: &Config, dir: Option<&Path>) -> Clipboard {
+        let dir = dir.map(|d| d.join("clipboard"));
+        let items = cfg.clipboard_pins.iter().filter_map(|pin| Some(Clip {
+            content: match pin {
+                Pin::Text(t) => Content::Text(t.clone()),
+                Pin::Image { image } => Content::Image(load_image(dir.as_deref()?, image)?, None),
+            },
+            pinned: true,
+        })).collect();
+        Clipboard { items, dir, ..Clipboard::default() }
     }
 
     fn pinned(&self) -> usize { self.items.iter().take_while(|c| c.pinned).count() }
@@ -117,9 +159,20 @@ impl Clipboard {
         self.copied = None;
     }
 
-    /// shortcut: pinned images last only this session; save their PNGs beside prefs.json if people want them kept.
-    pub fn pinned_texts(&self) -> Vec<String> {
-        self.items.iter().filter(|c| c.pinned).filter_map(|c| match &c.content { Content::Text(t) => Some(t.clone()), Content::Image(..) => None }).collect()
+    /// The pinned items to save, writing each pinned image's file if it isn't there yet. An
+    /// image that can't be written stays pinned only this run.
+    pub fn pins(&self) -> Vec<Pin> {
+        self.items.iter().filter(|c| c.pinned).filter_map(|c| match &c.content {
+            Content::Text(t) => Some(Pin::Text(t.clone())),
+            Content::Image(image, _) => {
+                let (dir, name) = (self.dir.as_ref()?, file_name(image));
+                let path = dir.join(&name);
+                if !path.exists() {
+                    std::fs::create_dir_all(dir).and_then(|_| std::fs::write(&path, image.png())).map_err(|e| eprintln!("Ripple: could not save a pinned image: {e}")).ok()?;
+                }
+                Some(Pin::Image { image: name })
+            }
+        }).collect()
     }
 
     /// The items the search matches, by index; images only show with no search.
@@ -209,13 +262,31 @@ mod tests {
         c.push(t("keep"));
         c.push(t("other"));
         c.toggle_pin(1);
-        assert_eq!((texts(&c), c.pinned_texts()), (vec!["keep".to_string(), "other".into()], vec!["keep".to_string()]));
+        assert_eq!((texts(&c), c.pins()), (vec!["keep".to_string(), "other".into()], vec![crate::config::Pin::Text("keep".into())]));
         for i in 0..60 { c.push(t(&format!("n{i}"))); }
         assert_eq!((c.items.len(), texts(&c)[0].as_str(), texts(&c)[1].as_str()), (51, "keep", "n59"));
         assert!(!c.push(t("keep")), "copying a pinned text again leaves it in place");
         c.search.replace_text("KEE");
         assert_eq!(c.listed(), [0]);
         c.toggle_pin(0);
-        assert!(c.pinned_texts().is_empty() && texts(&c)[0] == "keep");
+        assert!(c.pins().is_empty() && texts(&c)[0] == "keep");
+    }
+
+    #[test]
+    fn pinned_images_are_saved_and_load_next_time() {
+        use crate::config::{Config, Pin};
+        let dir = std::env::temp_dir().join(format!("ripple-clips-{}", std::process::id()));
+        let png = [&b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR"[..], &[0, 0, 0, 2, 0, 0, 0, 3]].concat();
+        let image = rune::ClipboardImage::from_png(png).unwrap();
+        let mut c = Clipboard::new(&Config::default(), Some(&dir));
+        c.push(Content::Image(image.clone(), None));
+        c.toggle_pin(0);
+        let pins = c.pins();
+        let cfg = Config { clipboard_pins: [pins.clone(), vec![Pin::Image { image: "../prefs.json".into() }, Pin::Image { image: "ff.png".into() }]].concat(), ..Config::default() };
+        let again = Clipboard::new(&cfg, Some(&dir));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(matches!(&pins[..], [Pin::Image { image }] if image.len() == 36));
+        assert_eq!(again.items.len(), 1, "files outside the folder or gone are left out");
+        assert!(matches!(&again.items[0].content, Content::Image(i, None) if *i == image) && again.items[0].pinned);
     }
 }
