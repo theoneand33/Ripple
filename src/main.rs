@@ -196,6 +196,13 @@ fn island_spec() -> AppSpec<Island> {
                     ("BTC-USD".to_string(), Err("Couldn't reach Yahoo Finance".to_string())),
                 ].into();
             }),
+            ("clocks", |s| {
+                s.mode = Mode::Large;
+                s.set_tab(Tab::Clocks);
+                let now = date::now_secs();
+                let city = |name: &str, offset: i64| Some(net::City { name: name.into(), offset, sun: Some((now - 4 * 3600, now + 5 * 3600)) });
+                s.clocks.cities = [("London", city("London", 0)), ("New York", city("New York", -5 * 3600)), ("Tokyo", city("Tokyo", 9 * 3600))].map(|(n, c)| (n.to_string(), c)).into();
+            }),
             ("pomodoro", |s| { s.mode = Mode::Large; s.set_tab(Tab::Pomodoro); s.pomodoro.left = 18.0 * 60.0 + 42.0; s.pomodoro.rounds = 2 }),
             // Ends on the app clock, which starts near zero in a headless render.
             ("timer", |s| { s.mode = Mode::Large; s.set_tab(Tab::Pomodoro); s.pomodoro.clock = tabs::Clock::Timer; s.pomodoro.timer.set(10.0, 0.0); s.pomodoro.timer.left = 4.0 * 60.0 + 12.0 }),
