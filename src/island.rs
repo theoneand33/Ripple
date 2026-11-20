@@ -1260,8 +1260,9 @@ impl Island {
     }
 }
 
-/// Rain starting at `at` is due an alert at `now` (Unix seconds): within the hour, and not alerted yet.
-fn rain_due(at: i64, now: i64, alerted: Option<i64>) -> bool { (1..=3600).contains(&(at - now)) && alerted != Some(at) }
+/// Rain starting at `at` is due an alert at `now` (Unix seconds): within the hour before, or up to
+/// 15 minutes after when Large held it back, and not alerted yet.
+fn rain_due(at: i64, now: i64, alerted: Option<i64>) -> bool { (-900..=3600).contains(&(at - now)) && alerted != Some(at) }
 
 /// Fetches an image (blocking) and hands it, loaded, to `put` on the UI thread.
 /// `foreign` images come from other apps or hosts: raster only, since Rune bounds neither SVGZ
@@ -1620,7 +1621,8 @@ mod tests {
         assert!(!rain_due(10_000, 10_000 - 3601, None), "too early");
         assert!(rain_due(10_000, 10_000 - 3600, None));
         assert!(!rain_due(10_000, 10_000 - 1800, Some(10_000)), "once");
-        assert!(!rain_due(10_000, 10_000, None), "already started");
+        assert!(rain_due(10_000, 10_900, None), "held back by Large, still shown once compact");
+        assert!(!rain_due(10_000, 10_901, None), "too late");
         let mut s = island(Config { hour12: false, ..Config::default() });
         s.weather.precip = Some((0, true));
         assert!(s.precip_label().starts_with("Snow at "));
