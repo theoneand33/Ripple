@@ -109,13 +109,15 @@ fn merge(reported: &[Option<f64>], partial: usize) -> Option<Progress> {
 fn launcher_entries(reports: &Reports) {
     use std::io::BufRead;
     use std::process::{Command, Stdio};
+    // Apps whose bar is visible; unlike reports, this never goes stale, so a download that pauses past `STALE` comes back with its next progress.
+    let mut shown = std::collections::HashSet::new();
     loop {
         let child = Command::new("busctl")
             .args(["--user", "monitor", "--json=short", "--match", "type='signal',interface='com.canonical.Unity.LauncherEntry',member='Update'"])
             .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn();
         if let Ok(mut child) = child {
             for line in child.stdout.take().into_iter().flat_map(|o| std::io::BufReader::new(o).lines().map_while(Result::ok)) {
-                if let Some(update) = parse_launcher(&line) { apply(&mut lock(reports), update, Instant::now()) }
+                if let Some(update) = parse_launcher(&line) { apply(&mut lock(reports), &mut shown, update, Instant::now()) }
             }
             let _ = child.kill();
             let _ = child.wait();
@@ -126,12 +128,13 @@ fn launcher_entries(reports: &Reports) {
 }
 
 /// Applies one LauncherEntry update: hidden drops the app; a progress without `progress-visible`
-/// updates a bar already showing and keeps its last share when it has none.
+/// updates an app whose bar is visible and keeps its last share when it has none.
 #[cfg(any(target_os = "linux", test))]
-fn apply(r: &mut HashMap<String, (Option<f64>, Instant)>, (app, visible, progress): (String, Option<bool>, Option<f64>), now: Instant) {
+fn apply(r: &mut HashMap<String, (Option<f64>, Instant)>, shown: &mut std::collections::HashSet<String>, (app, visible, progress): (String, Option<bool>, Option<f64>), now: Instant) {
     match visible {
-        Some(false) => { r.remove(&app); }
-        _ if visible == Some(true) || r.contains_key(&app) => {
+        Some(false) => { shown.remove(&app); r.remove(&app); }
+        _ if visible == Some(true) || shown.contains(&app) => {
+            shown.insert(app.clone());
             let known = progress.or_else(|| r.get(&app).and_then(|e| e.0));
             r.insert(app, (known, now));
         }
@@ -169,17 +172,23 @@ mod tests {
     #[test]
     fn launcher_updates_show_and_hide_an_apps_bar() {
         let now = Instant::now();
-        let mut r = HashMap::new();
+        let (mut r, mut shown) = (HashMap::new(), std::collections::HashSet::new());
         let up = |v: Option<bool>, p: Option<f64>| ("app".to_string(), v, p);
-        apply(&mut r, up(None, Some(0.3)), now);
+        apply(&mut r, &mut shown, up(None, Some(0.3)), now);
         assert!(r.is_empty(), "progress alone shows no bar");
-        apply(&mut r, up(Some(true), Some(0.3)), now);
-        apply(&mut r, up(None, Some(0.6)), now);
+        apply(&mut r, &mut shown, up(Some(true), Some(0.3)), now);
+        apply(&mut r, &mut shown, up(None, Some(0.6)), now);
         assert_eq!(r["app"].0, Some(0.6));
-        apply(&mut r, up(Some(true), None), now);
+        apply(&mut r, &mut shown, up(Some(true), None), now);
         assert_eq!(r["app"].0, Some(0.6), "a share once known stays");
-        apply(&mut r, up(Some(false), None), now);
+        // Paused past STALE: `watch` drops the report; the next progress alone brings it back.
+        r.clear();
+        apply(&mut r, &mut shown, up(None, Some(0.7)), now);
+        assert_eq!(r["app"].0, Some(0.7));
+        apply(&mut r, &mut shown, up(Some(false), None), now);
         assert!(r.is_empty());
+        apply(&mut r, &mut shown, up(None, Some(0.8)), now);
+        assert!(r.is_empty(), "hidden stays hidden until shown again");
     }
 
     #[test]
