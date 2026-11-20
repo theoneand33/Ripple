@@ -28,7 +28,6 @@ macro_rules! tabs {
 
 tabs! {
     Overview = 2,
-    Weather = 18,
     Search = 0,
     Workflows = 1,
     Assistant = 4,
@@ -44,6 +43,7 @@ tabs! {
     Pomodoro = 16,
     Calculator = 17,
     Plugins = 15,
+    Weather = 18,
 }
 
 impl Tab {
@@ -646,7 +646,7 @@ mod tests {
     fn saved_orders_drop_retired_tabs_and_gain_new_ones() {
         use Tab::*;
         let cfg = serde_json::from_str::<Config>(r#"{"tab_order": [7, 2, 3, 0], "hidden_tabs": [3, 0], "default_tab": 7}"#).unwrap().normalized();
-        assert_eq!(cfg.tab_order, [Overview, Weather, Search, Workflows, Assistant, Clipboard, Tasks, T3, Notes, Stremflix, Shelf, System, Calendar, Limits, Pomodoro, Calculator, Plugins]);
+        assert_eq!(cfg.tab_order, [Overview, Search, Workflows, Assistant, Clipboard, Tasks, T3, Notes, Stremflix, Shelf, System, Calendar, Limits, Pomodoro, Calculator, Plugins, Weather]);
         assert_eq!((cfg.hidden_tabs.as_slice(), cfg.default_tab), ([Search].as_slice(), Overview));
     }
 
@@ -661,7 +661,7 @@ mod tests {
     fn the_last_visible_tab_cannot_be_hidden() {
         let mut cfg = Config { hidden_tabs: Vec::new(), ..Config::default() };
         for t in Tab::ALL { cfg.toggle_tab(t) }
-        assert!(!cfg.hidden_tabs.contains(&Tab::Plugins) && cfg.hidden_tabs.len() == Tab::ALL.len() - 1);
+        assert!(!cfg.hidden_tabs.contains(&Tab::Weather) && cfg.hidden_tabs.len() == Tab::ALL.len() - 1);
         cfg.toggle_tab(Tab::Search);
         assert!(!cfg.hidden_tabs.contains(&Tab::Search));
     }
