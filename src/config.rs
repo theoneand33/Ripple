@@ -341,6 +341,10 @@ pub struct Config {
     /// Seconds Large Mode stays open after the pointer leaves, once its tab was changed.
     pub tab_linger: f32,
     pub battery_alerts: bool,
+    /// 20-20-20: every 20 minutes, look 20 feet away for 20 seconds.
+    pub eye_breaks: bool,
+    /// A reminder to get up once an hour.
+    pub hourly_breaks: bool,
     pub island_border: bool,
     pub standby: bool,
     pub large_standby: bool,
@@ -431,6 +435,8 @@ impl Default for Config {
             dashboard: [Widget::Clock, Widget::Weather, Widget::Media, Widget::Today, Widget::Battery].map(Tile::new).into(),
             tab_linger: 1.0,
             battery_alerts: true,
+            eye_breaks: false,
+            hourly_breaks: false,
             island_border: false,
             standby: true,
             large_standby: false,

@@ -141,6 +141,7 @@ fn island_spec() -> AppSpec<Island> {
                 s.task.replace_text("Ship v0.5");
             }),
             ("reminder", |s| s.remind("Ship v0.5 release notes".into(), 0.0)),
+            ("break-reminder", |s| s.remind("Look away 20s".into(), 0.0)),
             ("tasks-sync-error", |s| {
                 s.mode = Mode::Large;
                 s.set_tab(Tab::Tasks);
