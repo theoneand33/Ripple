@@ -1,7 +1,8 @@
 //! Coding agents: `ripple hook <agent>` is a command hook for Claude Code, Codex, the OpenCode
 //! plugin, or any agent whose hooks send Claude-style JSON on stdin. It keeps each session as a
 //! file in an `agents` folder beside prefs.json and, for a permission or a question, waits there
-//! for the Island's answer. Files, not a socket, as with `ripple notify`.
+//! for the Island's answer. Files, not a socket, as with `ripple notify`, but on one computer:
+//! liveness is read from file times, so a folder synced between computers would mislead it.
 //!
 //! `agents/sessions/<key>.json` is a session; `agents/requests/<key>.json` is a hook waiting, which
 //! it touches each second, and the Island answers it in `<key>.answer`. The Island touches
