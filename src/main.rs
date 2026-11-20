@@ -154,6 +154,12 @@ fn island_spec() -> AppSpec<Island> {
                 s.set_tab(Tab::Calendar);
                 s.cfg.events = ["2026-01-01 New Year's brunch", "2026-01-01 09:30 Standup", "2026-01-15 Dentist"].map(config::Item::new).into();
             }),
+            ("calendar-feed", |s| {
+                s.mode = Mode::Large;
+                s.set_tab(Tab::Calendar);
+                s.cfg.events = vec![config::Item::new("2026-01-01 09:30 Standup")];
+                s.calendar.feed_events = vec!["2026-01-01 12:00 Lunch (Google)".into(), "2026-01-01 Public holiday".into()];
+            }),
             ("calendar-edit", |s| {
                 s.mode = Mode::Large;
                 s.set_tab(Tab::Calendar);

@@ -81,6 +81,16 @@ fn weather_from(geocoding: &str, forecast: &str, location: &str, unit: &str) -> 
     })
 }
 
+/// An ICS calendar's text from its link; `webcal://` links are fetched over HTTPS.
+pub fn calendar_feed(url: &str) -> Result<String, String> {
+    let url = url.trim();
+    let url = match url.strip_prefix("webcal://") { Some(rest) => format!("https://{rest}"), None => url.to_string() };
+    if !(url.starts_with("https://") || url.starts_with("http://")) { return Err(format!("Not a calendar link: {url}")) }
+    let mut res = agent().get(&url).call().map_err(|e| e.to_string())?;
+    if !res.status().is_success() { return Err(format!("The calendar link answered {}", res.status().as_u16())) }
+    res.body_mut().with_config().limit(16 * 1024 * 1024).read_to_string().map_err(|e| e.to_string())
+}
+
 /// Units of each currency per US dollar, by upper-case code, from Frankfurter (ECB reference
 /// rates, no API key).
 pub fn rates() -> Option<std::collections::HashMap<String, f64>> { rates_from("https://api.frankfurter.dev/v1") }
@@ -253,6 +263,18 @@ mod tests {
         assert_eq!(weather_from(&base, &base, "Paris, France", "c"), Some(Weather { temp: Some(18), code: Some(61), days: vec![tomorrow] }), "a day missing a figure is left out");
         assert_eq!(weather_from(&base, &base, "1.5, -2", "f"), Some(Weather { temp: Some(70), code: Some(2), days: vec![] }));
         assert_eq!(weather_from(&base, &base, "Nowhere", "c"), None);
+    }
+
+    #[test]
+    fn a_calendar_link_is_fetched_and_webcal_needs_https() {
+        use crate::testserver::{Response, serve};
+        let base = serve(|r| match r.path.as_str() {
+            "/cal.ics" => Response { status: 200, headers: vec![], body: "BEGIN:VCALENDAR".into() },
+            _ => Response { status: 404, headers: vec![], body: String::new() },
+        });
+        assert_eq!(calendar_feed(&format!("{base}/cal.ics")).as_deref(), Ok("BEGIN:VCALENDAR"));
+        assert!(calendar_feed(&format!("{base}/gone.ics")).unwrap_err().contains("404"));
+        assert!(calendar_feed("file:///etc/passwd").is_err());
     }
 
     #[test]

@@ -1009,6 +1009,13 @@ pub fn event_day(text: &str) -> Option<((i32, u32, u32), &str)> {
     ((1..=12).contains(&m) && (1..=31).contains(&d)).then_some(((y as i32, m, d), title))
 }
 
+/// Every event of an ICS file, as events' texts, from `since` (`YYYY-MM-DD`) on.
+pub fn feed_events(ics: &str, since: &str) -> Vec<String> {
+    let mut events: Vec<String> = ics.split("BEGIN:VEVENT").skip(1).filter_map(|e| event(&format!("BEGIN:VEVENT{e}"))).filter(|t| t.as_str() >= since).collect();
+    events.sort();
+    events
+}
+
 /// The calendar object's first event as an event's text, unless it was cancelled.
 /// shortcut: a recurring event shows on its first day only; expand RRULEs if people ask.
 fn event(ics: &str) -> Option<String> {
@@ -1059,6 +1066,15 @@ fn leading_time(title: &str) -> (Option<(u32, u32)>, &str) {
 fn utc_stamp(days_ago: i64) -> String {
     let t = rune::time::LocalTime::at_offset(crate::date::now_ms() - days_ago * 86_400_000, 0);
     format!("{:04}{:02}{:02}T{:02}{:02}{:02}Z", t.year, t.month, t.day, t.hour, t.minute, t.second)
+}
+
+#[cfg(test)]
+mod feed_tests {
+    #[test]
+    fn a_feed_lists_its_events_from_a_day_on() {
+        let ics = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nDTSTART;VALUE=DATE:20260105\r\nSUMMARY:Dentist\r\nEND:VEVENT\r\nBEGIN:VEVENT\r\nDTSTART:20260102T093000\r\nSUMMARY:Stand\r\n up\r\nEND:VEVENT\r\nBEGIN:VEVENT\r\nDTSTART:20250101T100000\r\nSUMMARY:Old\r\nEND:VEVENT\r\nBEGIN:VEVENT\r\nDTSTART:20260103T100000\r\nSUMMARY:Off\r\nSTATUS:CANCELLED\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+        assert_eq!(super::feed_events(ics, "2026-01-01"), ["2026-01-02 09:30 Standup", "2026-01-05 Dentist"]);
+    }
 }
 
 #[cfg(test)]
