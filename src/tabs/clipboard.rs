@@ -99,8 +99,8 @@ fn jwt(t: &str) -> Result<String, String> {
     let parts: Vec<&str> = t.trim().split('.').collect();
     let [header, claims, _] = parts[..] else { return Err("Not a JWT".into()) };
     let (header, claims) = (from_base64(header, true)?, from_base64(claims, true)?);
-    // Both are JSON objects; `pretty_json` checks the rest.
-    if ![&header, &claims].iter().all(|p| p.trim_start().starts_with('{')) { return Err("Not a JWT".into()) }
+    // Each is one JSON object on its own, so the splice below can't be fooled by a part that closes early.
+    if ![&header, &claims].iter().all(|p| matches!(serde_json::from_str(p), Ok(serde_json::Value::Object(_)))) { return Err("Not a JWT".into()) }
     pretty_json(&format!(r#"{{"header":{header},"claims":{claims}}}"#)).map_err(|_| "Not a JWT".into())
 }
 
@@ -398,6 +398,7 @@ mod tests {
         assert_eq!(run("URL encode", "a b&c").unwrap(), "a%20b%26c");
         assert_eq!(run("URL decode", "a+b%26c").unwrap(), "a b&c");
         assert!(run("URL decode", "caf%E9").is_err(), "Latin-1 isn't UTF-8");
+        assert!(run("JWT", "e30sICJwYWQiOiB7fQ.e30.").is_err(), "a header that closes early");
         // {"alg":"none"}.{"sub":"me"}.
         let claims = run("JWT", "eyJhbGciOiJub25lIn0.eyJzdWIiOiJtZSJ9.").unwrap();
         assert!(claims.contains(r#""sub": "me""#) && claims.contains(r#""alg": "none""#), "{claims}");
