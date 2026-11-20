@@ -492,6 +492,14 @@ fn panel(s: &Settings, k: &Kit, layer: &mut Vec<El>, tab: Tab) -> Vec<El> {
             }
             sections.push(section(s, "nextcloud", "Nextcloud", rows));
             if tab == Tab::Calendar {
+                sections.push(section(s, "event-alerts", "Alerts", vec![
+                    setting(s, &match cfg.event_alert_minutes { 0 => "Alert before events: off".to_string(), m => format!("Alert {m} min before events") },
+                        slider(s, "event-alert", "Minutes before an event its alert shows", (0.0, 60.0, 5.0), |c| c.event_alert_minutes as f32, |c, v| c.event_alert_minutes = v as u32)).key("event-alert-row"),
+                    text("A meeting link in an event's title adds a Join button to its alert.").font(cfg.font(12.0, 400.0)).color(fg.alpha(0.6)),
+                ]));
+            }
+
+            if tab == Tab::Calendar {
                 sections.push(section(s, "calendar-feeds", "Calendar links", vec![
                     text("ICS links from Google Calendar (Secret address in iCal format), Outlook (Publish a calendar) or iCloud (Public Calendar), one per line. Their events show read-only.").font(cfg.font(12.0, 400.0)).color(fg.alpha(0.6)).wrap(),
                     TextArea::new(&s.calendar_feeds).width(None).label("Calendar links").placeholder("https://calendar.google.com/calendar/ical/…/basic.ics").rows(3)

@@ -1,6 +1,8 @@
 //! Calendar: a month at a glance, today marked; the arrows page through months. Beside it, the
 //! picked day's events; press one to edit it. With a Nextcloud account, events sync with a
 //! Nextcloud calendar. Events from ICS links (Google, Outlook, iCloud) show beside them, read-only.
+//! A timed Nextcloud event raises an alert shortly before it starts, with a Join button when its
+//! title holds a meeting link.
 
 use rune::{El, TextEdit, Transition, Tx, col, el, row, text};
 
@@ -51,6 +53,61 @@ impl Island {
 }
 
 const MONTHS: [&str; 12] = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+
+/// The first `https://` link in an event's title, and the title without it. An `http://` link
+/// stays in the title and gets no Join button.
+pub fn meeting_link(title: &str) -> (Option<String>, String) {
+    let link = title.split_whitespace().find(|w| w.starts_with("https://"));
+    let rest = title.split_whitespace().filter(|w| Some(*w) != link).collect::<Vec<_>>().join(" ");
+    (link.map(str::to_string), rest)
+}
+
+/// A link's host, for the Join button's label: `https://user@host:443/path` gives `host:443`.
+pub fn link_host(link: &str) -> &str {
+    // Browsers read `\` as `/` in an https link, so it ends the host too.
+    let authority = link.split_once("://").map_or(link, |l| l.1).split(['/', '\\', '?', '#']).next().unwrap_or("");
+    authority.rsplit('@').next().unwrap_or(authority)
+}
+
+/// Minutes after its start that an event can still alert, for one held while Large was open.
+const EVENT_GRACE: i64 = 15;
+
+/// The timed events to alert now (`now` and `lead` in minutes, since 1970 on this clock): those
+/// starting within `lead` minutes, or that started up to `EVENT_GRACE` minutes ago, and not in
+/// `alerted`. Each is its id for `alerted`, its title, and its meeting link.
+pub fn due_events(events: &[Item], now: i64, lead: i64, alerted: &[String]) -> Vec<(String, String, Option<String>)> {
+    events.iter().filter_map(|e| {
+        let ((y, m, d), title) = event_day(&e.text)?;
+        let (Some((h, min)), rest) = nextcloud::leading_time(title) else { return None };
+        let start = crate::date::days_from_civil(y, m, d) * 1440 + i64::from(h * 60 + min);
+        let id = format!("{start} {rest}");
+        if !(start - lead..=start + EVENT_GRACE).contains(&now) || alerted.contains(&id) { return None }
+        let (link, title) = meeting_link(rest);
+        Some((id, if title.is_empty() { "Meeting".into() } else { title }, link))
+    }).collect()
+}
+
+impl Island {
+    /// Once a second: an alert for the next timed event, `event_alert_minutes` before it.
+    /// Large draws no alerts, and a showing reminder isn't replaced, so one waits for both.
+    pub fn event_alerts(&mut self, now: f64) {
+        let lead = i64::from(self.cfg.event_alert_minutes);
+        if rune::is_headless() || lead == 0 || self.large_open() || self.reminder.is_some() { return }
+        let t = rune::time::LocalTime::at(crate::date::now_ms());
+        let minute = crate::date::days_from_civil(t.year, t.month, t.day) * 1440 + i64::from(t.hour * 60 + t.minute);
+        let due = due_events(&self.cfg.events, minute, lead, &self.cfg.alerted_events);
+        if due.is_empty() { return }
+        // Several at once share one alert, with the first meeting link.
+        let title = if due.len() == 1 { due[0].1.clone() } else { format!("{} events", due.len()) };
+        let link = due.iter().find_map(|d| d.2.clone());
+        self.save(|c| {
+            // Ids start with the event's start minute; those over a day old can't alert again.
+            c.alerted_events.retain(|id| id.split(' ').next().and_then(|m| m.parse::<i64>().ok()).is_some_and(|m| m >= minute - 1440));
+            c.alerted_events.extend(due.into_iter().map(|d| d.0));
+        });
+        self.remind_event(title, link, now);
+    }
+}
 
 /// Adds the typed event on the picked day, or saves the one being edited there.
 fn add_event(s: &mut Island, _: &mut Tx) {
@@ -219,6 +276,31 @@ pub fn view(s: &Island) -> El {
 mod tests {
     use crate::config::{Config, Item, Remote, Store};
     use crate::island::Island;
+
+    #[test]
+    fn an_event_alerts_once_within_its_lead_with_its_meeting_link() {
+        let events = ["2026-01-01 All day", "2026-01-01 09:30 Standup https://meet.example.com/abc daily", "2026-01-01 09:30 Review", "2026-01-02 09:30 https://meet.example.com/x", "2026-01-02 10:00 Sync http://meet.example.com/y"].map(Item::new);
+        let start = crate::date::days_from_civil(2026, 1, 1) * 1440 + 9 * 60 + 30;
+        assert!(super::due_events(&events, start - 11, 10, &[]).is_empty(), "too early");
+        let due = super::due_events(&events, start - 10, 10, &[]);
+        assert_eq!(due.len(), 2, "events starting together alert together");
+        let (id, title, link) = &due[0];
+        assert_eq!((title.as_str(), link.as_deref()), ("Standup daily", Some("https://meet.example.com/abc")));
+        let alerted: Vec<String> = due.iter().map(|d| d.0.clone()).collect();
+        assert!(super::due_events(&events, start, 10, &alerted).is_empty(), "once");
+        let held = super::due_events(&events, start + 15, 10, &[]);
+        assert_eq!(held.len(), 2, "held while Large was open");
+        assert_eq!(&held[0].0, id);
+        assert!(super::due_events(&events, start + 16, 10, &[]).is_empty(), "past");
+        assert_eq!(super::meeting_link("Lunch"), (None, "Lunch".into()));
+        let next = super::due_events(&events, start + 1440, 0, &[]);
+        assert_eq!((next[0].1.as_str(), next[0].2.as_deref()), ("Meeting", Some("https://meet.example.com/x")), "a link-only title");
+        let http = super::due_events(&events, start + 1440 + 30, 0, &[]);
+        assert_eq!((http[0].1.as_str(), http[0].2.as_deref()), ("Sync http://meet.example.com/y", None), "no Join for http");
+        assert_eq!(super::link_host("https://meet.example.com/abc?x=1"), "meet.example.com");
+        assert_eq!(super::link_host("https://meet.example.com@evil.example"), "evil.example");
+        assert_eq!(super::link_host("https://evil.example\\@trusted.example"), "evil.example", "a backslash ends the host, as browsers read it");
+    }
 
     #[test]
     fn an_edit_changes_the_event_in_place() {

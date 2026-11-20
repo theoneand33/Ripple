@@ -422,6 +422,8 @@ pub struct Config {
     pub notes: Vec<Item>,
     /// Calendar events; each one's text is `YYYY-MM-DD title` (`nextcloud::event_day`).
     pub events: Vec<Item>,
+    /// Calendar: minutes before a timed event that its alert shows; 0 turns alerts off.
+    pub event_alert_minutes: u32,
     /// Calendar: ICS links (Google, Outlook, iCloud) shown read-only beside the events.
     pub calendar_feeds: Vec<String>,
     pub nextcloud: Nextcloud,
@@ -433,6 +435,8 @@ pub struct Config {
     pub calc_tape: Vec<(String, String)>,
     /// Task reminders already shown, as `key@YYYY-MM-DDTHH:MM`, so a missed one shows once later.
     pub reminded_tasks: Vec<String>,
+    /// Calendar events already alerted, as `start-minute title` (`tabs::calendar::due_events`).
+    pub alerted_events: Vec<String>,
     /// Files dropped on the Island, newest first.
     pub shelf: Vec<std::path::PathBuf>,
     pub ai_provider: String,
@@ -522,12 +526,14 @@ impl Default for Config {
             leetcode_user: String::new(),
             notes: Vec::new(),
             events: Vec::new(),
+            event_alert_minutes: 10,
             calendar_feeds: Vec::new(),
             nextcloud: Nextcloud::default(),
             pinned_notes: Vec::new(),
             clipboard_pins: Vec::new(),
             calc_tape: Vec::new(),
             reminded_tasks: Vec::new(),
+            alerted_events: Vec::new(),
             shelf: Vec::new(),
             ai_provider: "groq".into(),
             ai_model: PROVIDERS[0].model.into(),
