@@ -1017,9 +1017,11 @@ impl Island {
     pub fn set_fullscreen(&mut self, on: bool) -> bool {
         // Hovered or focused, the focused-window check may read Ripple itself; keep the last reading.
         if on == self.fullscreen || self.hovered || self.focused { return false }
-        let resting = self.mode == self.rest();
+        let before = self.rest();
+        let resting = self.mode == before;
         self.fullscreen = on;
-        if resting { self.set_mode(Mode::Still) }
+        // Only a rule that moves the rest moves the Island: a Large opened by hand stays so.
+        if resting && self.rest() != before { self.set_mode(Mode::Still) }
         true
     }
 
@@ -1685,6 +1687,11 @@ mod tests {
         assert!(s.large_open());
         s.set_mode(Mode::Quick);
         assert!(!s.large_open());
+        let mut s = island(Config { large_standby: true, eye_breaks: true, ..Config::default() });
+        s.key(&KeyEvent { key: Key::Command('1'), mods: rune::Mods::default() }, &mut Tx::default());
+        s.set_fullscreen(true);
+        s.set_fullscreen(false);
+        assert!(s.large_open(), "a full screen app with no rule leaves a Large opened by hand alone");
     }
 
     #[test]
