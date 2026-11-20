@@ -16,6 +16,7 @@ mod nextcloud;
 mod platform;
 mod plugins;
 mod settings;
+mod stocks;
 mod stremflix;
 mod system;
 mod t3;
@@ -172,6 +173,29 @@ fn island_spec() -> AppSpec<Island> {
                 ];
             }),
             ("t3", |s| { s.mode = Mode::Large; s.set_tab(Tab::T3) }),
+            ("stocks", |s| {
+                s.mode = Mode::Large;
+                s.set_tab(Tab::Stocks);
+                s.cfg.sure_key = "demo".into();
+                let account = |name: &str, balance, cash, positions, cost, value| stocks::Account { name: name.into(), balance, cash, positions, cost, value };
+                s.stocks.portfolio = Some(Ok(stocks::Portfolio {
+                    currency: "EUR".into(),
+                    accounts: vec![account("Trading 212", 26_693.55, 612.45, 5, 21_457.15, 26_081.10), account("Kraken", 8_028.00, 230.50, 2, 5_750.00, 7_797.50)],
+                    history: vec![34_409.06, 34_380.0, 34_450.2, 34_430.0, 34_520.8, 34_610.0, 34_590.4, 34_680.0, 34_721.55],
+                    market: vec![0.0, -29.06, 70.2, -20.2, 90.8, 89.2, -19.6, 89.6, 41.55],
+                }));
+            }),
+            ("stocks-watchlist", |s| {
+                s.mode = Mode::Large;
+                s.set_tab(Tab::Stocks);
+                s.cfg.stocks = ["AAPL", "NVDA", "BTC-USD"].map(Into::into).into();
+                let quote = |name: &str, currency: &str, price: f64, points: Vec<f64>| stocks::Quote { name: name.into(), currency: currency.into(), price, change: price - points[0], points };
+                s.stocks.quotes = [
+                    ("AAPL".to_string(), Ok(quote("Apple Inc.", "USD", 228.52, vec![226.0, 227.1, 226.4, 228.0, 228.52]))),
+                    ("NVDA".to_string(), Ok(quote("NVIDIA Corporation", "USD", 131.04, vec![134.2, 133.0, 132.5, 131.8, 131.04]))),
+                    ("BTC-USD".to_string(), Err("Couldn't reach Yahoo Finance".to_string())),
+                ].into();
+            }),
             ("pomodoro", |s| { s.mode = Mode::Large; s.set_tab(Tab::Pomodoro); s.pomodoro.left = 18.0 * 60.0 + 42.0; s.pomodoro.rounds = 2 }),
             // Ends on the app clock, which starts near zero in a headless render.
             ("timer", |s| { s.mode = Mode::Large; s.set_tab(Tab::Pomodoro); s.pomodoro.clock = tabs::Clock::Timer; s.pomodoro.timer.set(10.0, 0.0); s.pomodoro.timer.left = 4.0 * 60.0 + 12.0 }),

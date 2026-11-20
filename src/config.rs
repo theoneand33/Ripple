@@ -43,6 +43,7 @@ tabs! {
     Pomodoro = 16,
     Calculator = 17,
     Habits = 18,
+    Stocks = 20,
     Plugins = 15,
     Weather = 19,
 }
@@ -69,6 +70,7 @@ impl Tab {
             Tab::Pomodoro => "Pomodoro",
             Tab::Calculator => "Calculator",
             Tab::Habits => "Habits",
+            Tab::Stocks => "Stocks",
         }
     }
 }
@@ -401,6 +403,12 @@ pub struct Config {
     pub t3_detected: bool,
     /// The first launch opens the instructions page once.
     pub new_user: bool,
+    /// Stocks: the watchlist's tickers, as Yahoo Finance spells them.
+    pub stocks: Vec<String>,
+    /// Stocks: the Sure server the portfolio comes from; empty means `https://app.sure.am`.
+    pub sure_url: String,
+    /// Stocks: a Sure API key (Settings → API Keys, Read Only); empty turns the portfolio off.
+    pub sure_key: String,
 }
 
 impl Default for Config {
@@ -462,6 +470,9 @@ impl Default for Config {
             t3_worktree: false,
             t3_detected: false,
             new_user: true,
+            stocks: Vec::new(),
+            sure_url: String::new(),
+            sure_key: String::new(),
         }
     }
 }
@@ -660,7 +671,7 @@ mod tests {
     fn saved_orders_drop_retired_tabs_and_gain_new_ones() {
         use Tab::*;
         let cfg = serde_json::from_str::<Config>(r#"{"tab_order": [7, 2, 3, 0], "hidden_tabs": [3, 0], "default_tab": 7}"#).unwrap().normalized();
-        assert_eq!(cfg.tab_order, [Overview, Search, Workflows, Assistant, Clipboard, Tasks, T3, Notes, Stremflix, Shelf, System, Calendar, Limits, Pomodoro, Calculator, Habits, Plugins, Weather]);
+        assert_eq!(cfg.tab_order, [Overview, Search, Workflows, Assistant, Clipboard, Tasks, T3, Notes, Stremflix, Shelf, System, Calendar, Limits, Pomodoro, Calculator, Habits, Stocks, Plugins, Weather]);
         assert_eq!((cfg.hidden_tabs.as_slice(), cfg.default_tab), ([Search].as_slice(), Overview));
     }
 

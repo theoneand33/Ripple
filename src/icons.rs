@@ -28,6 +28,7 @@ stroke!(COFFEE, "coffee", r#"<path d="M10 2v2"/><path d="M14 2v2"/><path d="M16 
 stroke!(FLAME, "flame", r#"<path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.072-2.143-.224-4.054 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.153.433-2.294 1-3a2.5 2.5 0 0 0 2.5 2.5z"/>"#);
 stroke!(PENCIL, "pencil", r#"<path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/><path d="m15 5 4 4"/>"#);
 stroke!(MAXIMIZE, "maximize-2", r#"<path d="M15 3h6v6"/><path d="m21 3-7 7"/><path d="m3 21 7-7"/><path d="M9 21H3v-6"/>"#);
+stroke!(TRENDING_UP, "trending-up", r#"<path d="M16 7h6v6"/><path d="m22 7-8.5 8.5-5-5L2 17"/>"#);
 stroke!(BATTERY, "battery", r#"<rect width="16" height="10" x="2" y="7" rx="2" ry="2"/><line x1="22" x2="22" y1="11" y2="13"/>"#);
 
 /// Filled, as the playback controls and the default-tab star draw.
@@ -139,5 +140,6 @@ pub fn tab(tab: Tab) -> &'static Icon {
         Tab::Pomodoro => &TIMER,
         Tab::Calculator => &CALCULATOR,
         Tab::Habits => &FLAME,
+        Tab::Stocks => &TRENDING_UP,
     }
 }

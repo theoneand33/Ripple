@@ -14,6 +14,7 @@ mod plugins;
 mod pomodoro;
 mod search;
 mod shelf;
+mod stocks;
 mod stremflix;
 mod t3;
 mod tasks;
@@ -29,6 +30,7 @@ pub use notes::Notes;
 pub use shelf::Shelf;
 pub use pomodoro::{Clock, Pomodoro, bubble as pomodoro_bubble, live as pomodoro_live};
 pub use search::Finder;
+pub use stocks::Stocks;
 pub use stremflix::Stremflix;
 pub use t3::T3;
 pub use tasks::{Every, Task, TaskDraft};
@@ -63,6 +65,7 @@ fn panel(s: &Island, tab: Tab, layer: &mut Vec<El>) -> El {
         Tab::Pomodoro => pomodoro::view(s),
         Tab::Calculator => calculator::view(s),
         Tab::Habits => habits::view(s),
+        Tab::Stocks => stocks::view(s),
     }
 }
 
@@ -80,6 +83,7 @@ pub const fn size(tab: Tab) -> (f32, f32) {
         Tab::Pomodoro => (440.0, 236.0),
         Tab::Calendar => (560.0, 280.0),
         Tab::Overview => (560.0, 320.0),
+        Tab::Stocks => (560.0, 350.0),
         Tab::Assistant => (420.0, 230.0),
         Tab::Clipboard => (420.0, 290.0),
         Tab::Weather => (420.0, 190.0),
@@ -107,6 +111,7 @@ fn load(s: &mut Island, tab: Tab) {
         Tab::Stremflix => s.stremflix_load(),
         Tab::Limits => s.limits_load(),
         Tab::Calculator => s.calc_load(),
+        Tab::Stocks => s.stocks_load(),
         Tab::Notes => s.nextcloud_sync(Kind::Notes),
         Tab::Tasks => {
             if s.task_draft.editing.is_some() { tasks::reset_draft(s) }
@@ -131,6 +136,11 @@ pub fn each_second(s: &mut Island, now: f64) -> bool {
     s.notes_tick();
     s.task_reminders(now);
     crate::system::WANT_PROCESSES.store(s.mode == Mode::Large && s.tab == Tab::System, std::sync::atomic::Ordering::Relaxed);
+    match s.stocks.reload_in.take() {
+        Some(n) if n > 1 => s.stocks.reload_in = Some(n - 1),
+        Some(_) if shows(s, Tab::Stocks) => s.stocks_load(),
+        _ => {}
+    }
     s.pomodoro.tick_all(now) | plugins
 }
 
@@ -146,6 +156,10 @@ pub fn deadline(s: &Island) -> Option<f64> { s.clipboard.copied.map(|c| c.1) }
 /// Picks up a settings change another window made, for the tab showing.
 pub fn reloaded(s: &mut Island, old: &Config) {
     if shows(s, Tab::T3) && old.t3_devices != s.cfg.t3_devices { s.t3_load() }
+    // Settings saves each keystroke: wait until typing stops, and drop answers for what was typed over.
+    if (old.sure_url != s.cfg.sure_url || old.sure_key != s.cfg.sure_key) && !s.cfg.sure_key.is_empty() {
+        (s.stocks.portfolio, s.stocks.generation, s.stocks.reload_in) = (None, s.stocks.generation + 1, Some(2));
+    }
 }
 
 /// What a delete took: a note or an event and where it sat, or the cleared Shelf.
