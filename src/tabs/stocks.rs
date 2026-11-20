@@ -105,11 +105,13 @@ fn portfolio(s: &Island, root: El, p: &Portfolio) -> El {
     let cur = p.currency.as_str();
     let tnum = |size: f32, weight: f32| s.cfg.font(size, weight).features("'tnum' 1");
     let (today, over) = p.changes();
+    // Against the last close: today's deposits aren't part of what moved.
+    let yesterday = p.history.len().checked_sub(2).map_or(p.total() - today, |i| p.history[i]);
     let summary = row().key("stocks-summary").w_full().gap(12.0)
         .child(col().grow(1.0).min_w(0.0).gap(4.0)
             .child(text(format_money(p.total(), cur)).font(tnum(34.0, 700.0)).color(fg).single_line())
             .child(row().gap(6.0)
-                .child(text(format!("{} ({:+.2}%)", signed_money(today, cur), percent(today, p.total() - today))).font(tnum(13.0, 500.0)).color(tint(today)))
+                .child(text(format!("{} ({:+.2}%)", signed_money(today, cur), percent(today, yesterday))).font(tnum(13.0, 500.0)).color(tint(today)))
                 .child(text("today").font(s.cfg.font(13.0, 400.0)).color(muted))))
         .child(col().gap(4.0).align(rune::Align::End)
             .child(sparkline(&p.history, tint(over), 220.0, 56.0))
