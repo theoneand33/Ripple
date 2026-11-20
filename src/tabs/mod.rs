@@ -128,20 +128,49 @@ pub fn icon_of(tab: Tab) -> &'static rune::Icon {
     }
 }
 
+/// Whether a tab has anything to show: T3 Code needs a device, AI Limits a signed-in agent once looked for.
+pub fn has_content(s: &Island, tab: Tab) -> bool {
+    match tab {
+        Tab::T3 => !s.cfg.t3_devices.is_empty(),
+        Tab::Limits => !s.limits.usage.as_ref().is_some_and(Vec::is_empty),
+        _ => true,
+    }
+}
+
 /// Loads what a tab shows, as it opens: the Overview's panels with it.
 pub fn entered(s: &mut Island) {
     s.dashboard.drag = None;
     s.dashboard.add = None;
     load(s, s.tab);
     if s.tab == Tab::Overview {
-        for tile in s.cfg.dashboard.clone() { if let Widget::Panel(tab) = tile.widget { load(s, tab) } }
-        if s.cfg.dashboard.iter().any(|t| t.widget == Widget::Contributions) { s.contributions_load() }
+        for tile in s.cfg.dashboard.clone() { load_widget(s, tile.widget) }
+    }
+}
+
+/// Loads what an Overview widget shows, as it appears.
+fn load_widget(s: &mut Island, widget: Widget) {
+    match widget {
+        Widget::Panel(tab) => load(s, tab),
+        Widget::Contributions => s.contributions_load(),
+        _ => {}
     }
 }
 
 /// Whether Large mode shows a tab: open, or as a panel on the Overview.
-pub fn shows(s: &Island, tab: Tab) -> bool {
-    s.mode == Mode::Large && (s.tab == tab || s.tab == Tab::Overview && s.cfg.dashboard.iter().any(|t| t.widget == Widget::Panel(tab)))
+pub fn shows(s: &Island, tab: Tab) -> bool { shows_widget(s, Widget::Panel(tab)) }
+
+/// Whether Large mode shows a widget: on the open Overview, or a panel's tab open itself.
+fn shows_widget(s: &Island, widget: Widget) -> bool {
+    s.mode == Mode::Large && (widget == Widget::Panel(s.tab) || s.tab == Tab::Overview && s.cfg.on_dashboard(widget))
+}
+
+/// Counts a reload's wait down a second; true once it is over.
+fn waited(countdown: &mut Option<u8>) -> bool {
+    match countdown.take() {
+        Some(n) if n > 1 => { *countdown = Some(n - 1); false }
+        Some(_) => true,
+        None => false,
+    }
 }
 
 fn load(s: &mut Island, tab: Tab) {
@@ -154,16 +183,8 @@ fn load(s: &mut Island, tab: Tab) {
         Tab::Stocks => s.stocks_load(),
         Tab::Clocks => s.clocks_load(),
         Tab::Notes => s.nextcloud_sync(Kind::Notes),
-        Tab::Tasks => {
-            if s.tasks.draft.editing.is_some() { tasks::reset_draft(s) }
-            s.nextcloud_sync(Kind::Tasks);
-        }
-        Tab::Calendar => {
-            (s.calendar.offset, s.calendar.day) = (0, None);
-            if s.calendar.editing.take().is_some() { s.calendar.event.clear() }
-            s.nextcloud_sync(Kind::Events);
-            s.calendar_feeds_load();
-        }
+        Tab::Tasks => tasks::entered(s),
+        Tab::Calendar => calendar::entered(s),
         Tab::Shelf => s.nextcloud_shelf_sync(),
         Tab::Plugins => s.plugins.scan(),
         // Seen: a rung timer leaves the compact Island.
@@ -185,16 +206,8 @@ pub fn each_second(s: &mut Island, now: f64) -> bool {
     s.water_reminders(now);
     s.rain_alert(now);
     s.break_reminders(now);
-    match s.stocks.reload_in.take() {
-        Some(n) if n > 1 => s.stocks.reload_in = Some(n - 1),
-        Some(_) if shows(s, Tab::Stocks) => s.stocks_load(),
-        _ => {}
-    }
-    match s.contributions.reload_in.take() {
-        Some(n) if n > 1 => s.contributions.reload_in = Some(n - 1),
-        Some(_) if s.mode == Mode::Large && s.tab == Tab::Overview && s.cfg.dashboard.iter().any(|t| t.widget == Widget::Contributions) => s.contributions_load(),
-        _ => {}
-    }
+    if waited(&mut s.stocks.reload_in) && shows(s, Tab::Stocks) { s.stocks_load() }
+    if waited(&mut s.contributions.reload_in) && shows_widget(s, Widget::Contributions) { s.contributions_load() }
     s.pomodoro.tick_all(now) | plugins | agents
 }
 

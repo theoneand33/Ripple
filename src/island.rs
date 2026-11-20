@@ -718,15 +718,9 @@ impl Island {
 
     // --- Tabs ---
 
-    /// The dock's tabs: the saved order without the hidden ones and those with nothing to show
-    /// (T3 Code with no device, AI Limits once no signed-in agent was found).
+    /// The dock's tabs: the saved order without the hidden ones and those with nothing to show.
     pub fn visible_tabs(&self) -> Vec<Tab> {
-        let absent = |t: &Tab| match t {
-            Tab::T3 => self.cfg.t3_devices.is_empty(),
-            Tab::Limits => self.limits.usage.as_ref().is_some_and(Vec::is_empty),
-            _ => false,
-        };
-        self.cfg.tab_order.iter().copied().filter(|t| !self.cfg.hidden_tabs.contains(t) && !absent(t)).collect()
+        self.cfg.tab_order.iter().copied().filter(|t| !self.cfg.hidden_tabs.contains(t) && tabs::has_content(self, *t)).collect()
     }
 
     pub fn first_tab(&self) -> Tab {
@@ -1127,7 +1121,7 @@ impl Island {
         let t = LocalTime::at(crate::date::now_ms());
         let mark = (crate::date::days_from_civil(t.year, t.month, t.day), t.hour);
         // Track the hour even while reminders are off, so turning them on or adding the widget mid-hour stays quiet.
-        if !hour_turned(&mut self.water_mark, mark) || !self.cfg.water_reminders || !self.cfg.dashboard.iter().any(|t| t.widget == crate::config::Widget::Water) { return }
+        if !hour_turned(&mut self.water_mark, mark) || !self.cfg.water_reminders || !self.cfg.on_dashboard(crate::config::Widget::Water) { return }
         if water_due(&self.cfg, mark) { self.remind("Drink water".into(), now) }
     }
 
@@ -1463,7 +1457,8 @@ impl Island {
         self.load_background();
         // Their tabs stay hidden until found.
         if self.cfg.t3_devices.is_empty() && !self.cfg.t3_detected { self.t3_detect() }
-        if self.tab != Tab::Limits { self.limits_load() }
+        // Unless entering the tab just did: two renewals at once would spend one refresh token twice.
+        if !tabs::shows(self, Tab::Limits) { self.limits_load() }
         if self.cfg.auto_launch { std::thread::spawn(|| system::set_auto_launch(true)); }
         let chord = self.cfg.hotkey.trim();
         if !chord.is_empty() {

@@ -641,6 +641,8 @@ impl Config {
         Some(if (rise..set).contains(&now) { &self.day_theme } else { &self.night_theme })
     }
     /// The Island's zoom: 1 at 100%.
+    pub fn on_dashboard(&self, widget: Widget) -> bool { self.dashboard.iter().any(|t| t.widget == widget) }
+
     pub fn zoom(&self) -> f32 { self.island_scale / 100.0 }
 
     pub fn win95(&self) -> bool { self.theme == "win95" }

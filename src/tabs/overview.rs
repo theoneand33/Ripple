@@ -130,7 +130,7 @@ fn drawer_cols(s: &Island) -> usize {
 
 /// The widgets the drawer offers: those not on the dashboard.
 fn addable(s: &Island) -> Vec<Widget> {
-    all().filter(|w| !s.cfg.dashboard.iter().any(|t| t.widget == *w)).collect()
+    all().filter(|w| !s.cfg.on_dashboard(*w)).collect()
 }
 
 /// The slot a widget dropped at `(x, y)` on the grid takes: after every tile before it in
@@ -172,12 +172,8 @@ fn all() -> impl Iterator<Item = Widget> {
 /// Puts `widget` at `at` (the end past it), unless it's on the dashboard already: so a press
 /// that follows a drop changes nothing.
 fn add(s: &mut Island, widget: Widget, at: usize) {
-    s.save(|c| if !c.dashboard.iter().any(|t| t.widget == widget) { c.dashboard.insert(at.min(c.dashboard.len()), Tile::new(widget)) });
-    match widget {
-        Widget::Panel(tab) => super::load(s, tab),
-        Widget::Contributions => s.contributions_load(),
-        _ => {}
-    }
+    s.save(|c| if !c.on_dashboard(widget) { c.dashboard.insert(at.min(c.dashboard.len()), Tile::new(widget)) });
+    super::load_widget(s, widget);
 }
 
 fn move_tile(s: &mut Island, from: usize, to: usize) {
@@ -229,7 +225,7 @@ pub fn view(s: &Island, layer: &mut Vec<El>) -> El {
 
     let mut header = row().key("overview-header").w_full().h(HEADER).gap(8.0).center_y();
     // A Clock tile already shows them.
-    header = if s.cfg.dashboard.iter().any(|t| t.widget == Widget::Clock) { header.child(el().grow(1.0)) } else {
+    header = if s.cfg.on_dashboard(Widget::Clock) { header.child(el().grow(1.0)) } else {
         header.child(text(&s.time).key("time").font(s.cfg.font(15.0, 600.0).features("'tnum' 1")).color(fg))
             .child(text(&s.date).font(s.cfg.font(13.0, 500.0)).color(muted).grow(1.0).min_w(0.0).truncate())
     };

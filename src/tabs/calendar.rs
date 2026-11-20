@@ -148,6 +148,14 @@ fn start_edit(s: &mut Island, key: u64) {
     (s.calendar.editing, s.calendar.day) = (Some(key), Some(day));
 }
 
+/// As the tab opens: back to this month, an edit left open dropped, and events and feeds load.
+pub(super) fn entered(s: &mut Island) {
+    (s.calendar.offset, s.calendar.day) = (0, None);
+    if s.calendar.editing.is_some() { cancel_edit(s) }
+    s.nextcloud_sync(Kind::Events);
+    s.calendar_feeds_load();
+}
+
 fn cancel_edit(s: &mut Island) {
     s.calendar.editing = None;
     s.calendar.event.clear();

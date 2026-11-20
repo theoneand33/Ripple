@@ -154,7 +154,13 @@ fn add_task(s: &mut Island, _: &mut Tx) {
     s.nextcloud_sync(Kind::Tasks);
 }
 
-pub fn reset_draft(s: &mut Island) {
+/// As the tab opens: an edit left open is dropped, and the list syncs.
+pub(super) fn entered(s: &mut Island) {
+    if s.tasks.draft.editing.is_some() { reset_draft(s) }
+    s.nextcloud_sync(Kind::Tasks);
+}
+
+fn reset_draft(s: &mut Island) {
     s.tasks.draft = TaskDraft::default();
     s.tasks.field.clear();
 }
