@@ -5,9 +5,7 @@ use std::ffi::OsString;
 use std::process::{Command, Stdio};
 use std::sync::OnceLock;
 
-#[cfg(target_os = "linux")]
 use crate::command::tokenize_args;
-#[cfg(windows)]
 use crate::config::QuickApp;
 
 /// `WAYLAND_DISPLAY` as Ripple was started with it; set only in a Wayland session.
@@ -481,8 +479,31 @@ pub fn camera_in_use() -> bool {
     }
     #[cfg(target_os = "macos")]
     {
-        output("ioreg", &["-l"]).is_some_and(|o| o.lines()
-            .any(|l| (l.contains("FrontCameraActive") || l.contains("FrontCameraStreaming")) && l.contains("= Yes")))
+        // Any CoreMediaIO device (built-in, USB or virtual) some process is capturing from.
+        #[repr(C)]
+        struct Address { selector: u32, scope: u32, element: u32 }
+        #[link(name = "CoreMediaIO", kind = "framework")]
+        unsafe extern "C" {
+            fn CMIOObjectGetPropertyDataSize(object: u32, address: *const Address, qualifier_size: u32, qualifier: *const std::ffi::c_void, size: *mut u32) -> i32;
+            fn CMIOObjectGetPropertyData(object: u32, address: *const Address, qualifier_size: u32, qualifier: *const std::ffi::c_void, size: u32, used: *mut u32, data: *mut std::ffi::c_void) -> i32;
+        }
+        // 'dev#' kCMIOHardwarePropertyDevices, 'gone' kCMIODevicePropertyDeviceIsRunningSomewhere, 'glob' global scope.
+        const GLOBAL: u32 = u32::from_be_bytes(*b"glob");
+        let devices_at = Address { selector: u32::from_be_bytes(*b"dev#"), scope: GLOBAL, element: 0 };
+        let running_at = Address { selector: u32::from_be_bytes(*b"gone"), scope: GLOBAL, element: 0 };
+        // SAFETY: 1 is kCMIOObjectSystemObject; every buffer is sized as the call is told.
+        unsafe {
+            let mut size = 0u32;
+            if CMIOObjectGetPropertyDataSize(1, &devices_at, 0, std::ptr::null(), &mut size) != 0 { return false }
+            let mut ids = vec![0u32; size as usize / 4];
+            let mut used = 0u32;
+            if CMIOObjectGetPropertyData(1, &devices_at, 0, std::ptr::null(), (ids.len() * 4) as u32, &mut used, ids.as_mut_ptr().cast()) != 0 { return false }
+            ids.truncate(used as usize / 4);
+            ids.iter().any(|&id| {
+                let mut running = 0u32;
+                CMIOObjectGetPropertyData(id, &running_at, 0, std::ptr::null(), 4, &mut used, (&raw mut running).cast()) == 0 && running != 0
+            })
+        }
     }
     #[cfg(windows)]
     { capability_in_use("webcam") }
@@ -494,8 +515,29 @@ pub fn microphone_in_use() -> bool {
     { output("pactl", &["list", "short", "source-outputs"]).is_some_and(|o| !o.is_empty()) }
     #[cfg(target_os = "macos")]
     {
-        output("ioreg", &["-l"]).is_some_and(|o| o.lines()
-            .any(|l| (l.contains("IOAudioStreamActive") || l.contains("IOAudioEngine") || l.contains("IOAudioStream")) && l.to_lowercase().contains("yes")))
+        #[repr(C)]
+        struct Address { selector: u32, scope: u32, element: u32 }
+        #[link(name = "CoreAudio", kind = "framework")]
+        unsafe extern "C" {
+            fn AudioObjectGetPropertyDataSize(object: u32, address: *const Address, qualifier_size: u32, qualifier: *const std::ffi::c_void, size: *mut u32) -> i32;
+            fn AudioObjectGetPropertyData(object: u32, address: *const Address, qualifier_size: u32, qualifier: *const std::ffi::c_void, size: *mut u32, data: *mut std::ffi::c_void) -> i32;
+        }
+        // 'dev#' kAudioHardwarePropertyDevices, 'stm#' kAudioDevicePropertyStreams, 'gone' kAudioDevicePropertyDeviceIsRunningSomewhere;
+        // scopes 'glob' (global) and 'inpt' (input). 1 is kAudioObjectSystemObject.
+        let at = |selector: &[u8; 4], scope: &[u8; 4]| Address { selector: u32::from_be_bytes(*selector), scope: u32::from_be_bytes(*scope), element: 0 };
+        // SAFETY (both closures): a size query, and a read into a buffer of the size it gave.
+        let size_of = |object: u32, a: &Address| { let mut n = 0u32; (unsafe { AudioObjectGetPropertyDataSize(object, a, 0, std::ptr::null(), &mut n) } == 0).then_some(n) };
+        let running = |device: u32| { let (mut v, mut n) = (0u32, 4u32); unsafe { AudioObjectGetPropertyData(device, &at(b"gone", b"glob"), 0, std::ptr::null(), &mut n, (&raw mut v).cast()) == 0 && v != 0 } };
+        let devices = at(b"dev#", b"glob");
+        let Some(mut n) = size_of(1, &devices) else { return false };
+        let mut ids = vec![0u32; n as usize / 4];
+        // SAFETY: `ids` holds `n` bytes; `n` is updated to the bytes written.
+        if unsafe { AudioObjectGetPropertyData(1, &devices, 0, std::ptr::null(), &mut n, ids.as_mut_ptr().cast()) } != 0 { return false }
+        ids.truncate(n as usize / 4);
+        // Any device that has input streams: an app may record from a mic that isn't the system default.
+        // shortcut: "running somewhere" is device-wide, so a headset playing music, or a loopback driver carrying audio,
+        // lights the dot; a missed recording is worse, so it is read at global scope too (the input scope may be refused).
+        ids.iter().any(|&d| size_of(d, &at(b"stm#", b"inpt")).is_some_and(|n| n > 0) && running(d))
     }
     #[cfg(windows)]
     { capability_in_use("microphone") }
@@ -924,8 +966,39 @@ pub fn open_external(url: &str) {
     spawn(cmd);
 }
 
+/// Opens a document in its default app; programs are refused, as `open_external` refuses them.
+pub fn open_file(path: &std::path::Path) {
+    // The real name, not a URL's: a `?` or `#` in it must not hide the extension.
+    if runs_as_program(&path.to_string_lossy()) { return }
+    #[cfg(target_os = "linux")]
+    let mut cmd = command("xdg-open");
+    #[cfg(target_os = "macos")]
+    let mut cmd = command("open");
+    #[cfg(windows)]
+    let mut cmd = { let mut cmd = command("rundll32"); cmd.arg("url.dll,FileProtocolHandler"); cmd };
+    cmd.arg(path);
+    spawn(cmd);
+}
+
+/// Shows a file in its folder: selected in Finder and Explorer, the folder itself elsewhere.
+pub fn reveal(path: &std::path::Path) {
+    #[cfg(target_os = "linux")]
+    let cmd = { let mut cmd = command("xdg-open"); cmd.arg(path.parent().unwrap_or(path)); cmd };
+    #[cfg(target_os = "macos")]
+    let cmd = { let mut cmd = command("open"); cmd.arg("-R").arg(path); cmd };
+    #[cfg(windows)]
+    let cmd = {
+        use std::os::windows::process::CommandExt;
+        // Explorer parses `/select,"path"` itself; std's quoting of the whole argument confuses it.
+        let mut cmd = command("explorer");
+        cmd.raw_arg(format!("/select,\"{}\"", path.display()));
+        cmd
+    };
+    spawn(cmd);
+}
+
 /// Web pages, and `file:` documents that wouldn't run as programs.
-fn openable(url: &str) -> bool {
+pub(crate) fn openable(url: &str) -> bool {
     let lower = url.to_ascii_lowercase();
     if lower.starts_with("http://") || lower.starts_with("https://") { return true }
     let Some(path) = lower.strip_prefix("file://") else { return false };
@@ -934,10 +1007,19 @@ fn openable(url: &str) -> bool {
     // and spaces Windows drops (`x.exe.` is `x.exe`).
     let path = crate::net::percent_decode(path.split(['?', '#']).next().unwrap_or_default());
     let path = path.trim_end_matches(['/', '\\', '.', ' ']);
-    const EXECUTABLE: [&str; 29] = [".exe", ".bat", ".cmd", ".com", ".ps1", ".msi", ".scr", ".lnk", ".sh", ".app", ".desktop", ".jar",
+    !path.is_empty() && !runs_as_program(path)
+}
+
+/// Names the OS would run rather than open, by extension.
+fn runs_as_program(path: &str) -> bool {
+    const EXECUTABLE: [&str; 58] = [".exe", ".bat", ".cmd", ".com", ".ps1", ".msi", ".scr", ".lnk", ".sh", ".app", ".desktop", ".jar",
         ".vbs", ".vbe", ".js", ".jse", ".wsf", ".hta", ".reg", ".command", ".tool", ".pkg", ".appimage", ".run", ".py", ".pl",
-        ".cpl", ".msc", ".pif"];
-    !path.is_empty() && !EXECUTABLE.iter().any(|ext| path.ends_with(ext))
+        ".cpl", ".msc", ".pif", ".terminal", ".application", ".appref-ms", ".url", ".scf", ".ws", ".msix", ".appx", ".msixbundle", ".appxbundle", ".jnlp", ".mpkg", ".msp", ".sct", ".wsc", ".msu", ".diagcab",
+        // Windows shell handlers that open as code or redirect: help, setup, search and settings files, Office add-ins.
+        ".website", ".chm", ".inf", ".library-ms", ".search-ms", ".searchconnector-ms", ".settingcontent-ms",
+        ".xll", ".xla", ".xlam", ".ppa", ".ppam"];
+    let path = path.trim_end_matches(['/', '\\', '.', ' ']).to_ascii_lowercase();
+    EXECUTABLE.iter().any(|ext| path.ends_with(ext))
 }
 
 /// Starts an app by name or command line. No shell: the text is split into argv, so it
@@ -1036,7 +1118,120 @@ pub fn open_music_player(source: &str) {
     if source.contains("Apple") { open_app("Music") } else { open_app(source) }
 }
 
-// --- Installed apps (Windows: suggestions for the quick apps field) ---
+// --- Installed apps (Search results; on Windows also suggestions for the quick apps field) ---
+
+/// `.desktop` files in the XDG applications folders, as (Name, Exec without field codes).
+#[cfg(target_os = "linux")]
+pub fn discover_apps() -> Vec<QuickApp> {
+    let home = rune::dirs::home().unwrap_or_default();
+    let data_home = std::env::var("XDG_DATA_HOME").ok().filter(|d| !d.is_empty()).map(std::path::PathBuf::from).unwrap_or_else(|| home.join(".local/share"));
+    let data_dirs = std::env::var("XDG_DATA_DIRS").ok().filter(|d| !d.is_empty()).unwrap_or_else(|| "/usr/local/share:/usr/share".into());
+    let dirs = std::iter::once(data_home.clone())
+        .chain(data_dirs.split(':').map(std::path::PathBuf::from))
+        .chain([data_home.join("flatpak/exports/share"), "/var/lib/flatpak/exports/share".into()]);
+    let mut seen = std::collections::HashSet::new();
+    let mut apps = Vec::new();
+    for dir in dirs {
+        let Ok(entries) = std::fs::read_dir(dir.join("applications")) else { continue };
+        for entry in entries.flatten() {
+            // The first folder wins for a desktop-file id, as XDG says.
+            if !seen.insert(entry.file_name()) { continue }
+            if let Some(app) = std::fs::read_to_string(entry.path()).ok().and_then(|t| parse_desktop(&t)) { apps.push(app) }
+        }
+    }
+    apps.sort_by_key(|a| a.name.to_lowercase());
+    apps.dedup_by(|a, b| a.name == b.name && a.launch == b.launch);
+    apps
+}
+
+/// One `.desktop` file's app, or None when it is hidden or not an app.
+#[cfg_attr(not(any(target_os = "linux", test)), allow(dead_code))]
+fn parse_desktop(text: &str) -> Option<QuickApp> {
+    let (mut name, mut exec, mut app, mut in_entry) = (None, None, false, false);
+    for line in text.lines().map(str::trim) {
+        if line.starts_with('[') { in_entry = line == "[Desktop Entry]"; continue }
+        if !in_entry { continue }
+        let Some((k, v)) = line.split_once('=') else { continue };
+        match (k.trim(), v.trim()) {
+            ("Name", v) => name = Some(v.to_string()),
+            ("Exec", v) => exec = Some(v.to_string()),
+            ("Type", v) => app = v == "Application",
+            // Terminal apps would start with no terminal to show them.
+            ("NoDisplay" | "Hidden" | "Terminal", "true") => return None,
+            _ => {}
+        }
+    }
+    // %f, %U and the like are filled in by a launcher with files; there are none here.
+    let exec = tokenize_args(&exec?).into_iter().filter(|a| !(a.len() == 2 && a.starts_with('%'))).collect::<Vec<_>>();
+    if !app || exec.is_empty() { return None }
+    // Back to one string `launch_app` splits again: tokens with spaces stay quoted.
+    let launch = exec.iter().map(|a| if a.contains(char::is_whitespace) { format!("\"{a}\"") } else { a.clone() }).collect::<Vec<_>>().join(" ");
+    Some(QuickApp { name: name?, launch })
+}
+
+// --- File search: the OS's own index ---
+
+/// Files and folders whose name (or, where the index does, content) matches `query`, from
+/// Spotlight, Windows Search, GNOME's LocalSearch/Tracker or KDE's Baloo. Empty when there's no index.
+#[cfg(target_os = "linux")]
+pub fn find_files(query: &str, limit: usize) -> Vec<std::path::PathBuf> {
+    let n = limit.to_string();
+    let kde = std::env::var("XDG_CURRENT_DESKTOP").is_ok_and(|d| d.to_ascii_uppercase().contains("KDE"));
+    // `--` keeps a query that starts with `-` from reading as an option.
+    let baloo = || ["baloosearch6", "baloosearch"].iter().find_map(|b| output(b, &["-l", &n, "--", query])).map(|o| baloo_paths(&o));
+    let tracker = || ["localsearch", "tracker3"].iter().find_map(|t| output(t, &["search", "-f", "-l", &n, "--", query])).map(|o| tracker_paths(&o));
+    let found = if kde { baloo().or_else(tracker) } else { tracker().or_else(baloo) };
+    found.unwrap_or_default().into_iter().take(limit).collect()
+}
+
+/// `baloosearch` prints one path a line, then how long it took.
+#[cfg_attr(not(any(target_os = "linux", test)), allow(dead_code))]
+fn baloo_paths(out: &str) -> Vec<std::path::PathBuf> {
+    out.lines().map(str::trim).filter(|l| l.starts_with('/')).map(Into::into).collect()
+}
+
+/// `localsearch search` prints a heading, then indented `file://` URIs.
+#[cfg_attr(not(any(target_os = "linux", test)), allow(dead_code))]
+fn tracker_paths(out: &str) -> Vec<std::path::PathBuf> {
+    out.lines().filter_map(|l| l.trim().strip_prefix("file://")).map(|p| crate::net::percent_decode(p).into()).collect()
+}
+
+#[cfg(target_os = "macos")]
+pub fn find_files(query: &str, limit: usize) -> Vec<std::path::PathBuf> {
+    let home = rune::dirs::home().unwrap_or_else(|| "/".into());
+    let out = output("mdfind", &["-onlyin", &home.to_string_lossy(), "-name", query]).unwrap_or_default();
+    out.lines().filter(|l| !l.is_empty()).take(limit).map(Into::into).collect()
+}
+
+#[cfg(windows)]
+pub fn find_files(query: &str, limit: usize) -> Vec<std::path::PathBuf> {
+    // Its own process: a slow index query mustn't hold up the pollers' shared one.
+    static SERVER: PsSlot = std::sync::Mutex::new(None);
+    // The query is a PowerShell literal, then a SQL literal with LIKE's wildcards bracketed.
+    let script = format!(r#"
+$q = '{}' -replace '([\[%_])', '[$1]' -replace "'", "''"
+$c = New-Object -ComObject ADODB.Connection
+$c.Open("Provider=Search.CollatorDSO;Extended Properties='Application=Windows';")
+$r = $c.Execute("SELECT TOP {limit} System.ItemPathDisplay FROM SYSTEMINDEX WHERE SCOPE='file:' AND System.FileName LIKE '%" + $q + "%'")
+while (-not $r.EOF) {{ $r.Fields.Item('System.ItemPathDisplay').Value; $r.MoveNext() }}
+$c.Close()
+"#, ps_quote(query));
+    powershell_in(&SERVER, &script).lines().filter(|l| !l.trim().is_empty()).map(|l| l.trim().into()).collect()
+}
+
+/// `.app` bundles in the Applications folders; `open -a` takes the name.
+#[cfg(target_os = "macos")]
+pub fn discover_apps() -> Vec<QuickApp> {
+    let home = rune::dirs::home().unwrap_or_default();
+    let dirs = ["/Applications".into(), "/Applications/Utilities".into(), "/System/Applications".into(), "/System/Applications/Utilities".into(), home.join("Applications")];
+    let mut apps: Vec<QuickApp> = dirs.iter().filter_map(|d: &std::path::PathBuf| std::fs::read_dir(d).ok()).flatten().flatten()
+        .filter_map(|e| e.file_name().to_str()?.strip_suffix(".app").map(|n| QuickApp { name: n.into(), launch: n.into() }))
+        .collect();
+    apps.sort_by_key(|a| a.name.to_lowercase());
+    apps.dedup_by(|a, b| a.name == b.name);
+    apps
+}
+
 
 /// Start Menu shortcuts and Store apps as (name, launch target), sorted by name.
 #[cfg(windows)]
@@ -1134,6 +1329,21 @@ mod tests {
     }
 
     #[test]
+    fn desktop_files_give_visible_apps_without_field_codes() {
+        let app = parse_desktop("[Desktop Entry]\nType=Application\nName=Code\nName[de]=Kode\nExec=\"/opt/my code/code\" --new %F\n[Desktop Action new]\nName=New Window\nExec=code -n");
+        assert_eq!(app, Some(QuickApp { name: "Code".into(), launch: "\"/opt/my code/code\" --new".into() }));
+        assert_eq!(parse_desktop("[Desktop Entry]\nType=Application\nName=X\nExec=x\nNoDisplay=true"), None);
+        assert_eq!(parse_desktop("[Desktop Entry]\nType=Link\nName=X\nExec=x"), None);
+        assert_eq!(parse_desktop("[Desktop Entry]\nType=Application\nName=htop\nExec=htop\nTerminal=true"), None);
+    }
+
+    #[test]
+    fn index_search_output_becomes_paths() {
+        assert_eq!(baloo_paths("/home/me/a b.txt\n/home/me/c\nElapsed: 1.2 msecs\n"), ["/home/me/a b.txt", "/home/me/c"].map(std::path::PathBuf::from));
+        assert_eq!(tracker_paths("Files:\n  file:///home/me/a%20b.txt\n  file:///home/me/c\n"), ["/home/me/a b.txt", "/home/me/c"].map(std::path::PathBuf::from));
+    }
+
+    #[test]
     fn quick_app_entries_open_as_links_hosts_or_apps() {
         assert_eq!(classify("https://example.com/a?b=1&c=2"), Target::Url);
         assert_eq!(classify("file:///home/me/notes.pdf"), Target::Url);
@@ -1161,6 +1371,11 @@ mod tests {
         assert!(!openable("file:///C:/x%2Eexe"));
         assert!(!openable("file:///Users/me/run.command"));
         assert!(!openable("file:///home/me/Tool.AppImage"));
+        assert!(!openable("file:///C:/Users/me/Desktop/site.url"));
+        assert!(!openable("file:///C:/x/setup.application"));
+        assert!(!openable("file:///C:/x/help.chm"));
+        assert!(!openable("file:///C:/x/invoice.jnlp"));
+        assert!(!openable("file:///C:/x/addin.xll"));
         assert!(!openable("javascript:alert(1)"));
         assert!(!openable("file://"));
     }

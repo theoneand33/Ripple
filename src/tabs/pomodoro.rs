@@ -164,16 +164,22 @@ fn color(focus: bool) -> rune::Color { if focus { accent::orange() } else { acce
 /// The compact Island's live activity: the Pomodoro, else the timer, else the stopwatch, as a
 /// ring and its time.
 pub fn live(p: &Pomodoro, style: TextStyle) -> El {
-    let (key, glyph, tint, percent, label) = if p.running() {
+    let (key, glyph, tint, percent, label) = shown(p);
+    row().key(key).role("img").label(label).gap(6.0).center_y()
+        .child(ring(18.0, percent, tint, icon(glyph, 10.0).color(tint)))
+        .child(text(p.live_label()).font(style.features("'tnum' 1")).color(tint).a11y_hidden())
+}
+
+/// The clock the Island shows: the Pomodoro, else the timer, else the stopwatch, as its key,
+/// icon, colour, ring percent and spoken label.
+fn shown(p: &Pomodoro) -> (&'static str, &'static rune::Icon, rune::Color, f32, String) {
+    if p.running() {
         ("pomodoro", if p.focus { &icons::TIMER } else { &icons::COFFEE }, color(p.focus), f32::from(p.percent()), format!("{}, {} left", if p.focus { "Focus" } else { "Break" }, p.label()))
     } else if p.timer.ends.is_some() || p.timer.rung {
         ("timer", &icons::TIMER, if p.timer.rung { accent::red() } else { accent::teal() }, p.timer.percent(), if p.timer.rung { "Timer done".into() } else { format!("Timer, {} left", p.timer.label()) })
     } else {
         ("stopwatch", &icons::TIMER, accent::indigo(), p.stopwatch.percent(), format!("Stopwatch, {}", p.stopwatch.label()))
-    };
-    row().key(key).role("img").label(label).gap(6.0).center_y()
-        .child(ring(18.0, percent, tint, icon(glyph, 10.0).color(tint)))
-        .child(text(p.live_label()).font(style.features("'tnum' 1")).color(tint).a11y_hidden())
+    }
 }
 
 /// A chip that picks one of the tab's clocks.
@@ -213,6 +219,12 @@ fn stopwatch_view(s: &Island) -> El {
             .child(tinted(s, "stopwatch-start", if w.since.is_some() { "Pause" } else { "Start" }, tint)
                 .on_press_tx(|s: &mut Island, tx: &mut Tx| s.pomodoro.stopwatch.toggle(tx.clock())))
             .child(tool(s, "stopwatch-reset", &icons::ROTATE_CCW, "Reset").on_press(|s: &mut Island| s.pomodoro.stopwatch.reset())))
+}
+
+/// The ring alone, for the bubble beside the compact Island while music has the Island.
+pub fn bubble(p: &Pomodoro, size: f32) -> El {
+    let (_, glyph, tint, percent, label) = shown(p);
+    el().role("img").label(label).child(ring(size, percent, tint, icon(glyph, size / 2.0).color(tint)))
 }
 
 pub fn view(s: &Island) -> El {

@@ -27,9 +27,10 @@ https://github.com/user-attachments/assets/a7b9ed8a-97b5-4603-bad7-6f4c4bef1f5d
 
 ### Tabs
 
-- Browser Search sends queries to Google, DuckDuckGo, Brave Search, Bing, or Startpage. Pick the engine in Settings.
+- Search works like Spotlight: it lists matching apps first, then files from the OS search index (Spotlight, Windows Search, or on Linux GNOME LocalSearch or KDE Baloo), then a web search on Google, DuckDuckGo, Brave Search, Bing, or Startpage. Pick the engine in Settings.
 - Workflows & QA opens a saved set of URLs with one click and keeps quick-access apps.
-- Overview shows the time, weather, and battery. Weather shows the current conditions and a five-day forecast. While music plays, it also shows the current track with playback controls. Long titles scroll with soft blurred edges, and the track stays on screen for 3 seconds after you pause.
+- Overview shows the time, weather, and battery. While music plays, it also shows the current track with playback controls. Long titles scroll with soft blurred edges, and the track stays on screen for 3 seconds after you pause.
+- Weather shows the current conditions and a five-day forecast for the location set in Settings.
 - AI Assistant answers questions using Groq.
 - Clipboard keeps your clipboard history, images included. Search it, and pin items with the star to keep them on top and across restarts.
 - Tasks is a to-do list. The controls under the field set a task's priority, due date and time (the arrows step a day or 30 minutes), and whether it repeats daily, weekly or monthly. Press a task to edit it. Ticking a repeating task brings it back due next time, and the Island shows a reminder when a task falls due (9:00 for a day without a time). One that fell due while Ripple was closed shows when it next runs. Tasks can sync with Nextcloud Tasks (CalDAV), where these are its priority, due date and repeat; ticking a task marks it done there.

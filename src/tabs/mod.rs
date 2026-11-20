@@ -25,23 +25,28 @@ pub use calendar::Calendar;
 pub use clipboard::{Clipboard, Content};
 pub use limits::Limits;
 pub use notes::Notes;
-pub use pomodoro::{Clock, Pomodoro, live as pomodoro_live};
+pub use shelf::Shelf;
+pub use pomodoro::{Clock, Pomodoro, bubble as pomodoro_bubble, live as pomodoro_live};
+pub use search::Finder;
 pub use stremflix::Stremflix;
 pub use t3::T3;
 pub use tasks::{Every, Task, TaskDraft};
 
 use rune::{Color, El, Key, KeyEvent, ScrollSpec, TextEdit, Tx, el, icon, row, text, text_input};
 
-use crate::config::{Config, Item, Tab};
+use crate::config::{Config, Item, Tab, Widget};
 use crate::nextcloud::{self, Kind};
 use crate::icons;
 use crate::island::{Island, Mode};
 
-pub fn view(s: &Island, layer: &mut Vec<El>) -> El {
-    match s.tab {
+pub fn view(s: &Island, layer: &mut Vec<El>) -> El { panel(s, s.tab, layer) }
+
+/// A tab's view, on its own or as a tile on the Overview.
+fn panel(s: &Island, tab: Tab, layer: &mut Vec<El>) -> El {
+    match tab {
         Tab::Search => search::view(s),
         Tab::Workflows => workflows::view(s),
-        Tab::Overview => overview::view(s),
+        Tab::Overview => overview::view(s, layer),
         Tab::Weather => weather::view(s),
         Tab::Assistant => assistant::view(s),
         Tab::Clipboard => clipboard::view(s),
@@ -49,7 +54,7 @@ pub fn view(s: &Island, layer: &mut Vec<El>) -> El {
         Tab::T3 => t3::view(s, layer),
         Tab::Notes => notes::view(s),
         Tab::Stremflix => stremflix::view(s),
-        Tab::Shelf => shelf::view(s),
+        Tab::Shelf => shelf::view(s, layer),
         Tab::System => monitor::view(s),
         Tab::Limits => limits::view(s),
         Tab::Calendar => calendar::view(s),
@@ -60,9 +65,9 @@ pub fn view(s: &Island, layer: &mut Vec<El>) -> El {
 }
 
 /// The Large Island's size on each tab, before any notch inset.
-pub fn size(tab: Tab) -> (f32, f32) {
+pub const fn size(tab: Tab) -> (f32, f32) {
     match tab {
-        Tab::Search => (445.0, 160.0),
+        Tab::Search => (480.0, 330.0),
         Tab::Workflows => (520.0, 250.0),
         Tab::Notes | Tab::Stremflix | Tab::Limits => (520.0, 290.0),
         Tab::Shelf => (520.0, 230.0),
@@ -71,15 +76,30 @@ pub fn size(tab: Tab) -> (f32, f32) {
         Tab::Tasks => (480.0, 320.0),
         Tab::Pomodoro => (440.0, 236.0),
         Tab::Calendar => (560.0, 280.0),
-        Tab::Overview | Tab::Assistant => (420.0, 230.0),
+        Tab::Overview => (560.0, 320.0),
+        Tab::Assistant => (420.0, 230.0),
         Tab::Clipboard => (420.0, 290.0),
         Tab::Weather => (420.0, 190.0),
     }
 }
 
-/// Loads what a tab shows, as it opens.
+/// Loads what a tab shows, as it opens: the Overview's panels with it.
 pub fn entered(s: &mut Island) {
-    match s.tab {
+    s.dashboard_drag = None;
+    load(s, s.tab);
+    if s.tab == Tab::Overview {
+        for tile in s.cfg.dashboard.clone() { if let Widget::Panel(tab) = tile.widget { load(s, tab) } }
+    }
+}
+
+/// Whether Large mode shows a tab: open, or as a panel on the Overview.
+pub fn shows(s: &Island, tab: Tab) -> bool {
+    s.mode == Mode::Large && (s.tab == tab || s.tab == Tab::Overview && s.cfg.dashboard.iter().any(|t| t.widget == Widget::Panel(tab)))
+}
+
+fn load(s: &mut Island, tab: Tab) {
+    match tab {
+        Tab::Search => s.search_load(),
         Tab::T3 => s.t3_load(),
         Tab::Stremflix => s.stremflix_load(),
         Tab::Limits => s.limits_load(),
@@ -94,6 +114,7 @@ pub fn entered(s: &mut Island) {
             if s.calendar.editing.take().is_some() { s.calendar.event.clear() }
             s.nextcloud_sync(Kind::Events);
         }
+        Tab::Shelf => s.nextcloud_shelf_sync(),
         Tab::Plugins => s.plugins.scan(),
         // Seen: a rung timer leaves the compact Island.
         Tab::Pomodoro => s.pomodoro.timer.rung = false,
@@ -103,7 +124,7 @@ pub fn entered(s: &mut Island) {
 
 /// Once a second, from `Island::poll`.
 pub fn each_second(s: &mut Island, now: f64) -> bool {
-    let plugins = s.mode == Mode::Large && s.tab == Tab::Plugins && s.plugins.tick();
+    let plugins = shows(s, Tab::Plugins) && s.plugins.tick();
     s.notes_tick();
     s.task_reminders(now);
     crate::system::WANT_PROCESSES.store(s.mode == Mode::Large && s.tab == Tab::System, std::sync::atomic::Ordering::Relaxed);
@@ -111,14 +132,17 @@ pub fn each_second(s: &mut Island, now: f64) -> bool {
 }
 
 /// Before every frame, from `Island::poll`.
-pub fn poll(s: &mut Island, now: f64, tx: &mut Tx) -> bool { s.clipboard_poll(now, tx) }
+pub fn poll(s: &mut Island, now: f64, tx: &mut Tx) -> bool {
+    if shows(s, Tab::Search) { s.search_poll() }
+    s.clipboard_poll(now, tx)
+}
 
 /// The next time a tab needs a poll.
 pub fn deadline(s: &Island) -> Option<f64> { s.clipboard.copied.map(|c| c.1) }
 
 /// Picks up a settings change another window made, for the tab showing.
 pub fn reloaded(s: &mut Island, old: &Config) {
-    if s.mode == Mode::Large && s.tab == Tab::T3 && old.t3_devices != s.cfg.t3_devices { s.t3_load() }
+    if shows(s, Tab::T3) && old.t3_devices != s.cfg.t3_devices { s.t3_load() }
 }
 
 /// What a delete took: a note or an event and where it sat, or the cleared Shelf.
@@ -137,7 +161,10 @@ impl Island {
                 self.nextcloud_sync(kind);
             }
             // Files dropped since stay in front.
-            Some(Undo::Shelf(files)) => self.save(|c| { let back: Vec<_> = files.into_iter().filter(|f| !c.shelf.contains(f)).collect(); c.shelf.extend(back) }),
+            Some(Undo::Shelf(files)) => {
+                self.save(|c| { let back: Vec<_> = files.into_iter().filter(|f| !c.shelf.contains(f)).collect(); c.shelf.extend(back) });
+                self.nextcloud_shelf_sync();
+            }
             None => {}
         }
     }
