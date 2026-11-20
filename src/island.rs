@@ -1092,8 +1092,9 @@ impl Island {
     /// Once a second: alerts that `ripple notify` queued; several at once, or while one shows, share one.
     pub fn notifications(&mut self, now: f64) {
         let Some(dir) = self.store.dir() else { return };
-        // Large draws no alerts: they stay queued until the Island is compact (`take` drops ones over 5 minutes old).
-        if self.mode == Mode::Large { return }
+        // An open Large draws no alerts: they stay queued until the Island is compact (`take` drops ones over 5 minutes old).
+        // Resting in Large (Large standby) isn't open: `remind` shows the alert compact.
+        if self.large_open() { return }
         // The alert showing counts as the alerts it merged when it is this one's, else as one.
         let shown = match &self.reminder { Some(r) if now < r.1 => if r.1 == self.notified.0 { self.notified.1 } else { 1 }, _ => 0 };
         if let Some((text, n)) = crate::notify::merge(shown, crate::notify::take(&dir)) {
