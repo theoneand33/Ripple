@@ -21,6 +21,7 @@ Ripple is a Dynamic Island-style bar for Windows, Linux, and macOS. It is one Ru
 | `src/platform.rs` | Displays, click-through around the Island (X11 input shape), and focus hand-back |
 | `src/mac.rs` | macOS status-bar item and the notch window frame |
 | `src/date.rs` | Calendar date maths and the wall clock |
+| `src/agents.rs` | `ripple hook <agent>`: records agent sessions and waits for the Island's answer to a permission or question. `integrations/opencode/ripple.ts` calls it from OpenCode |
 | `src/notify.rs` | `ripple notify "text"`: queues a script's alert as a file the Island picks up |
 | `src/command.rs` | Splits a launch string into argv without a shell |
 | `src/icons.rs` | Lucide icons as Rune icon bodies |

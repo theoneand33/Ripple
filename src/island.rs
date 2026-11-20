@@ -342,6 +342,7 @@ pub struct Island {
     pub stocks: tabs::Stocks,
     pub contributions: tabs::Contributions,
     pub clocks: tabs::Clocks,
+    pub agents: tabs::Agents,
     /// A file drag is over the Island.
     pub dropping: bool,
     /// A drag started elsewhere on the desktop opened the Shelf; it rests when the drag ends.
@@ -470,6 +471,7 @@ impl Island {
             stocks: tabs::Stocks::default(),
             contributions: tabs::Contributions::default(),
             clocks: tabs::Clocks::default(),
+            agents: tabs::Agents::default(),
             dropping: false,
             desktop_drag: false,
             t3: tabs::T3::new(store.dir().as_deref()),
@@ -725,6 +727,8 @@ impl Island {
         self.large_by_hand = mode == Mode::Large;
         if self.mode == Mode::Large && was != Mode::Large {
             if self.cfg.open_default_tab { self.tab = self.first_tab() }
+            // An agent waiting on an answer goes over the default tab.
+            if !self.agents.requests.is_empty() && self.visible_tabs().contains(&Tab::Agents) { self.tab = Tab::Agents }
             self.entered_tab();
         }
         // Resting closes an open select even when the Island rests in Large.

@@ -42,6 +42,7 @@ https://github.com/user-attachments/assets/a7b9ed8a-97b5-4603-bad7-6f4c4bef1f5d
 - AI Limits shows how much of each coding agent's plan is used and when it resets: Claude Code, Codex, GitHub Copilot, OpenCode Go and Grok Build. It reads the sign-in each CLI already saved and lists only the agents signed in on this computer. For more accounts, add Claude Code or Codex config folders (one per account) in its settings; every Claude and Codex account in CLIProxyAPI's auth folder (`~/.cli-proxy-api` by default) shows too. When a token in a Claude Code or Codex config folder has expired, Ripple renews it with the saved refresh token and writes the new tokens back, so the CLI stays signed in. CLIProxyAPI renews its own.
 - Shelf stashes files: drag a file over the Island and it opens the Shelf to drop it in. Drag files back out to use them. Both directions work on macOS, Windows, X11, KDE Plasma and other layer-shell compositors, and GNOME (where the Island runs under XWayland).
 - T3 Code starts an agent thread on a project on one of your T3 devices. You choose the model, the worktree, and the linked environment.
+- Coding Agents lists your running Claude Code, Codex, OpenCode and other agent sessions, and whether each is working, idle or waiting on you. Allow or deny an agent's permission request, or answer its questions, right on the Island. A new request brings the Island up on this tab. See [Connecting coding agents](#connecting-coding-agents).
 - Pomodoro runs 25-minute focus rounds with 5-minute breaks, and has a timer and a stopwatch beside it. While one runs, the compact Island shows its time beside a ring; a finished timer stays there until you open the tab.
 - Calculator shows the answer as you type a sum (+ - × ÷ ^, % as remainder, and brackets). It also converts units and currencies, like `5 km to mi`, `100 °F to C` or `20 usd in eur` (reference rates from Frankfurter, fetched when the tab first opens). Press Enter to keep it on the history tape, which is kept across restarts.
 - Habits tracks things to do every day. Tick off today or any of the last six days; each habit shows its streak of days in a row.
@@ -81,6 +82,30 @@ Download the latest release for your platform:
 ### Connecting T3 Code
 
 Open Settings and add a device under T3 Code Devices with a name, URL, and bearer token. For linked environments, Ripple signs in to the device's `/mcp` endpoint and caches the 30-day token (`t3-mcp-tokens.json` next to the settings file), so it does not register a new client on every launch.
+
+### Connecting coding agents
+
+The Coding Agents tab learns about sessions from a hook: `ripple hook <agent>` reads the agent's hook event as JSON on stdin. For a permission request it waits until you answer on the Island, then prints the decision. If Ripple isn't running, or you leave the request alone until the agent's hook timeout, the agent asks in its terminal as usual. The files go in an `agents` folder next to `prefs.json`.
+
+Claude Code: add this to `~/.claude/settings.json`. For Codex, put the same `hooks` in `~/.codex/hooks.json` with `ripple hook codex`, then trust them with `/hooks`.
+
+```json
+{
+  "hooks": {
+    "SessionStart": [{ "hooks": [{ "type": "command", "command": "ripple hook claude" }] }],
+    "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "ripple hook claude" }] }],
+    "PermissionRequest": [{ "hooks": [{ "type": "command", "command": "ripple hook claude", "timeout": 600 }] }],
+    "Stop": [{ "hooks": [{ "type": "command", "command": "ripple hook claude" }] }],
+    "SessionEnd": [{ "hooks": [{ "type": "command", "command": "ripple hook claude" }] }]
+  }
+}
+```
+
+Claude Code's questions (AskUserQuestion) come through `PermissionRequest` and show as choices to pick. Codex has no hook for its questions, so you answer those in Codex.
+
+OpenCode: copy [`integrations/opencode/ripple.ts`](integrations/opencode/ripple.ts) to `~/.config/opencode/plugins/`. It reports sessions and permission requests. You answer OpenCode's questions in OpenCode.
+
+Any other agent: run `ripple hook <name>` from its hooks with Claude Code's JSON fields (`session_id`, `cwd`, `hook_event_name`, `prompt`, `tool_name`, `tool_input`, `last_assistant_message`). For `PermissionRequest`, it prints `{"hookSpecificOutput": {"decision": {"behavior": "allow"}}}` or `"deny"`, or prints nothing when it has no answer.
 
 ## How to use
 
