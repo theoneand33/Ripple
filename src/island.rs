@@ -269,6 +269,8 @@ pub struct Island {
     pub weather: Weather,
     pub track: Option<Track>,
     pub art: Option<Image>,
+    /// The track's synced lyrics, once LRCLIB has them.
+    pub lyrics: Option<Vec<crate::net::Lyric>>,
     pub art_hovered: bool,
     /// The bubble under the pointer: a bubble that goes away takes no hover-leave with it.
     bubble_hovered: Option<Bubble>,
@@ -426,6 +428,7 @@ impl Island {
             charging: false,
             weather: Weather::default(),
             track: None,
+            lyrics: None,
             art: None,
             art_hovered: false,
             bubble_hovered: None,
@@ -1027,6 +1030,7 @@ impl Island {
         if old.bg_image != self.cfg.bg_image { self.load_background() }
         if old.hour12 != self.cfg.hour12 { self.set_clock() }
         if old.hide_from_capture != self.cfg.hide_from_capture && let Some(w) = self.passthrough.window() { platform::hide_from_capture(w, self.cfg.hide_from_capture) }
+        if !old.lyrics && self.cfg.lyrics { self.fetch_lyrics() }
         if old.overlap_panels != self.cfg.overlap_panels && let Some(Host::Overlay(h, ..)) = &self.me { h.set_overlap_panels(self.cfg.overlap_panels) }
         tabs::reloaded(self, &old);
     }
@@ -1248,6 +1252,19 @@ impl Island {
         self.schedule(tx);
     }
 
+    /// Drops the lyrics and looks up the current track's, when the setting is on and the length known.
+    fn fetch_lyrics(&mut self) {
+        self.lyrics = None;
+        let Some(t) = self.track.as_ref().filter(|t| self.cfg.lyrics && !t.name.trim().is_empty()) else { return };
+        let (Some((_, length)), Some(me)) = (t.progress, self.me.clone()) else { return };
+        let (name, artist) = (t.name.clone(), t.artist.clone());
+        std::thread::spawn(move || {
+            let Some(lines) = crate::net::lyrics(&artist, &name, length) else { return };
+            // The track may have changed while the lyrics loaded.
+            me.update(move |s, _| if s.track.as_ref().is_some_and(|t| t.name == name && t.artist == artist) { s.lyrics = Some(lines) });
+        });
+    }
+
     /// A polled track, unless it is the old state of a play/pause the player has not applied yet.
     fn poll_track(&mut self, track: Option<Track>, tx: &mut Tx) -> bool {
         if let (Some((want, until)), Some(old), Some(new)) = (self.expect_playing, &self.track, &track) {
@@ -1278,9 +1295,13 @@ impl Island {
         } else if !paused {
             self.paused_until = None;
         }
+        // A length that arrives after the title counts as a change: the lookup needs it.
+        let song = |t: &Option<Track>| t.as_ref().map(|t| (t.name.clone(), t.artist.clone(), t.progress.is_some()));
+        let new_song = song(&self.track) != song(&track);
         let art_url = |t: &Option<Track>| t.as_ref().and_then(|t| t.artwork_url.clone());
         let (old_art, new_art) = (art_url(&self.track), art_url(&track));
         self.track = track;
+        if new_song { self.fetch_lyrics() }
         if old_art != new_art {
             self.art = None;
             if let (Some(url), Some(me)) = (new_art, self.me.clone()) {

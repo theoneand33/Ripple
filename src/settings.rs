@@ -342,6 +342,9 @@ fn panel(s: &Settings, k: &Kit, layer: &mut Vec<El>, tab: Tab) -> Vec<El> {
                     setting(s, &format!("From {}:00", cfg.water_from), slider(s, "water-from", "Reminders from", (0.0, 24.0, 1.0), |c| c.water_from as f32, |c, v| c.water_from = v as u32)).key("water-from-row"),
                     setting(s, &format!("Until {}:00", cfg.water_to), slider(s, "water-to", "Reminders until", (0.0, 24.0, 1.0), |c| c.water_to as f32, |c, v| c.water_to = v as u32)).key("water-to-row"),
                 ]));
+                sections.push(section(s, "music", "Music", vec![
+                    toggle(s, k, "Synced lyrics (from LRCLIB)", cfg.lyrics, |c| c.lyrics = !c.lyrics),
+                ]));
                 sections.push(section(s, "contributions", "Contribution graphs", vec![
                     setting(s, "GitHub user", TextInput::new(&s.github_user).label("GitHub user").placeholder("octocat").width(Some(200.0))
                         .binds(|s| &mut s.github_user, |c, v| c.github_user = v.trim().into()).build(k)),

@@ -364,6 +364,14 @@ fn island_spec() -> AppSpec<Island> {
                 let mut tx = rune::Tx::default();
                 s.set_track(Some(system::Track { name: "Song".into(), artist: "Artist".into(), playing: true, progress: Some((89, 200)), ..Default::default() }), &mut tx);
             }),
+            ("overview-lyrics", |s| {
+                s.cfg.lyrics = true;
+                s.mode = Mode::Large;
+                s.set_tab(Tab::Overview);
+                let mut tx = rune::Tx::default();
+                s.set_track(Some(system::Track { name: "Song".into(), artist: "Artist".into(), playing: true, progress: Some((89, 200)), ..Default::default() }), &mut tx);
+                s.lyrics = Some(net::parse_lrc("[01:20.00]The line before\n[01:28.50]And this is the line sung now"));
+            }),
             ("overview", |s| { s.mode = Mode::Large; s.set_tab(Tab::Overview); s.cfg.location = "Lisbon".into(); s.weather.temp = Some(21); s.percent = Some(64) }),
             ("overview-panels", |s| {
                 s.mode = Mode::Large;
