@@ -188,7 +188,9 @@ impl Island {
         self.shelf_sync.running = false;
         let current = self.cfg.nextcloud.account() == account;
         if current { self.shelf_sync.error = out.error }
-        if current && let Some(both) = out.both {
+        // The Shelf changed while it ran: the queued rerun works from the Shelf as it is now, so a
+        // file dropped meanwhile isn't taken off again by this run's older view.
+        if current && !self.shelf_sync.again && let Some(both) = out.both {
             self.save(|c| {
                 adopt(c, account);
                 c.shelf.retain(|f| !out.gone.contains(f));
@@ -688,14 +690,16 @@ fn shelf(c: &Client, folder: &str, files: &[PathBuf], base: &[String], cache: &P
 }
 
 /// The files (not folders) a PROPFIND of a folder lists, by name, with their sizes. A name that
-/// could leave the cache folder is left out.
+/// could leave the cache folder, or that Windows takes as a device or a stream, is left out.
 fn folder_files(xml: &str) -> Vec<(String, Option<u64>)> {
     elements(xml, "response").into_iter().filter_map(|r| {
         let href = unescape(elements(r, "href").first()?);
         if href.ends_with('/') { return None }
         let name = percent_decode(href.rsplit('/').next()?);
         let size = elements(r, "getcontentlength").first().and_then(|s| s.trim().parse().ok());
-        (Path::new(&name).file_name() == Some(name.as_ref()) && !name.contains(['/', '\\'])).then_some((name, size))
+        let stem = name.split('.').next().unwrap_or_default().trim_end().to_ascii_uppercase();
+        let device = matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL") || (stem.len() == 4 && (stem.starts_with("COM") || stem.starts_with("LPT")) && stem.as_bytes()[3].is_ascii_digit());
+        (Path::new(&name).file_name() == Some(name.as_ref()) && !name.contains(['/', '\\', ':']) && !device).then_some((name, size))
     }).collect()
 }
 
@@ -958,7 +962,7 @@ mod tests {
             let res = |status, body: &str| Response { status, headers: vec![], body: body.into() };
             let file = |name: &str, size: u64| format!("<d:response><d:href>{dir}{name}</d:href><d:propstat><d:prop><d:getcontentlength>{size}</d:getcontentlength></d:prop></d:propstat></d:response>");
             match (r.method.as_str(), r.path.as_str()) {
-                ("PROPFIND", p) if p == dir => res(207, &format!("<d:multistatus xmlns:d=\"DAV:\"><d:response><d:href>{dir}</d:href></d:response>{}{}{}{}{}<d:response><d:href>{dir}sub/</d:href></d:response></d:multistatus>", file("kept.txt", 8), file("their%20file.txt", 5), file("dropped.txt", 1), file("%2E%2E%2Fevil", 1), file("clash.txt", 99))),
+                ("PROPFIND", p) if p == dir => res(207, &format!("<d:multistatus xmlns:d=\"DAV:\"><d:response><d:href>{dir}</d:href></d:response>{}{}{}{}{}{}{}{}<d:response><d:href>{dir}sub/</d:href></d:response></d:multistatus>", file("kept.txt", 8), file("their%20file.txt", 5), file("dropped.txt", 1), file("%2E%2E%2Fevil", 1), file("clash.txt", 99), file("a%3Ab", 1), file("nul.txt", 1), file("COM1", 1))),
                 ("PROPFIND", _) => res(404, ""),
                 ("GET", p) if p == format!("{dir}their%20file.txt") => res(200, "hello"),
                 ("PUT", p) if p.ends_with("big.txt") => res(507, ""),
@@ -999,6 +1003,8 @@ mod tests {
         let out = sync_shelf(&nc, "Ripple Shelf", &[tmp.join("old.txt")], &["old.txt".into(), "x.txt".into()], &cache);
         assert_eq!(out.error.as_deref(), Some("Nextcloud refused the user or app password"));
         assert_eq!((out.both.unwrap(), out.gone), (vec!["x.txt".to_string(), "old.txt".into()], Vec::new()));
+        let names = ["a%3Ab", "nul.txt", "COM1", "con", "COM", "console.log", "%2E%2E"].map(|n| format!("<d:response><d:href>/d/{n}</d:href></d:response>")).concat();
+        assert_eq!(folder_files(&names), [("COM".to_string(), None), ("console.log".into(), None)], "devices, streams and '..' are left out");
         let folder = |f: &str| Nextcloud { shelf_folder: f.into(), ..Nextcloud::default() }.shelf_folder();
         assert_eq!([folder(""), folder(".."), folder(" /./ "), folder("/A/../ B /")], ["Ripple Shelf", "Ripple Shelf", "Ripple Shelf", "A/B"]);
         assert_eq!([in_folder("A/x", "A"), in_folder("A/B/x", "A"), in_folder("AB/x", "A")], [Some("x"), None, None]);
