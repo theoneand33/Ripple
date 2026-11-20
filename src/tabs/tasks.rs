@@ -194,10 +194,12 @@ pub fn natural_due(title: &str, today: Date, now: u32) -> (String, Option<(Date,
                 "tomorrow" | "tmrw" => (Some(shift_days(today, 1)), 1),
                 "next" | "on" | "this" if at(i + 1).and_then(weekday_named).is_some() => (at(i + 1).and_then(weekday_named).map(ahead), 2),
                 "in" => match (at(i + 1).and_then(|n| n.parse::<i64>().ok()), at(i + 2)) {
-                    (Some(n), Some("day" | "days")) if n <= 3650 => (Some(shift_days(today, n)), 3),
-                    (Some(n), Some("week" | "weeks")) if n <= 520 => (Some(shift_days(today, n * 7)), 3),
+                    (Some(n @ 0..=3650), Some("day" | "days")) => (Some(shift_days(today, n)), 3),
+                    (Some(n @ 0..=520), Some("week" | "weeks")) => (Some(shift_days(today, n * 7)), 3),
                     _ => (None, 0),
                 },
+                // "every monday" is a repeat, which the Repeat control sets: left in the title.
+                _ if i > 0 && lower[i - 1] == "every" => (None, 0),
                 _ => match weekday_named(w) { Some(t) => (Some(ahead(t)), 1), None => (None, 0) },
             };
         }
@@ -221,7 +223,8 @@ pub fn natural_due(title: &str, today: Date, now: u32) -> (String, Option<(Date,
         for k in &mut keep[i..i + used] { *k = false }
         i += used.max(1);
     }
-    if tonight && time.is_none() { time = Some((20, 0)) }
+    // Tonight is 20:00, or no time at all once that has passed.
+    if tonight && time.is_none() && now < 20 * 60 { time = Some((20, 0)) }
     let rest: Vec<&str> = words.iter().zip(&keep).filter(|(_, k)| **k).map(|(w, _)| *w).collect();
     if (day.is_none() && time.is_none()) || rest.is_empty() { return (title.to_string(), None) }
     let day = day.unwrap_or_else(|| if time.is_some_and(|(h, m)| h * 60 + m <= now) { shift_days(today, 1) } else { today });
@@ -477,6 +480,9 @@ mod tests {
         assert_eq!(due("Lunch 12 pm today"), ("Lunch".into(), Some(((2026, 11, 20), Some((12, 0))))));
         assert_eq!(due("Renew passport in 2 weeks"), ("Renew passport".into(), Some(((2026, 12, 4), None))));
         assert_eq!(due("Midnight snack 12am tomorrow").1, Some(((2026, 11, 21), Some((0, 0)))));
+        assert_eq!(super::natural_due("Dinner tonight", (2026, 11, 20), 21 * 60), ("Dinner".into(), Some(((2026, 11, 20), None))), "no time already passed");
+        assert_eq!(due("Call Bob in -200000000000 days"), ("Call Bob in -200000000000 days".into(), None));
+        assert_eq!(due("Water plants every monday"), ("Water plants every monday".into(), None));
         for plain in ["Read Monday's paper", "Buy 3 apples", "Tomorrow", "Fix bug 1:5", "Buy sun cream", "Sat exam prep"] {
             assert_eq!(due(plain), (plain.into(), None), "{plain}");
         }
