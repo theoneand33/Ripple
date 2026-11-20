@@ -1,7 +1,7 @@
 //! The Settings window. Every change saves at once and the Island picks it up.
 
-use rune::{Color, Cursor, Cx, Drag, El, Phase, ScrollSpec, TextEdit, Tx, col, el, icon, row, text};
-use rune_kit::{Button, ButtonVariant, IconButton, Kit, RadioGroup, RadioItem, Select, Switch, TextArea, TextInput};
+use rune::{Color, Cursor, Cx, Drag, El, Phase, ScrollSpec, Shortcut, ShortcutError, TextEdit, Tx, col, el, icon, row, text};
+use rune_kit::{Button, ButtonVariant, IconButton, Kit, RadioGroup, RadioItem, Select, ShortcutRecorder, ShortcutRecorderState, Switch, TextArea, TextInput};
 
 use crate::config::{Config, POSITIONS, PROVIDERS, QuickApp, SEARCH_ENGINES, Store, T3Device, THEMES, Tab, Workflow};
 use crate::icons;
@@ -74,6 +74,7 @@ pub struct Settings {
     nc_shelf: TextEdit,
     sure_url: TextEdit,
     sure_key: TextEdit,
+    pub hotkey: ShortcutRecorderState,
     github_user: TextEdit,
     leetcode_user: TextEdit,
 }
@@ -110,6 +111,7 @@ impl Settings {
             nc_shelf: edit(&cfg.nextcloud.shelf_folder),
             sure_url: edit(&cfg.sure_url),
             sure_key: TextEdit::new("").secure(),
+            hotkey: ShortcutRecorderState::new(cfg.hotkey.parse().ok()),
             github_user: edit(&cfg.github_user),
             leetcode_user: edit(&cfg.leetcode_user),
             screens: screens.iter().map(|s| s.name.clone()).collect(),
@@ -158,6 +160,16 @@ impl Settings {
         self.save(|c| c.workflows.push(Workflow { name, urls }));
         self.workflow_name.clear();
         self.workflow_urls.clear();
+    }
+
+    /// Registers the new shortcut before letting the old one go, so a refused chord keeps the old.
+    fn set_hotkey(&mut self, next: Option<&Shortcut>, _: &mut Tx) -> Result<(), ShortcutError> {
+        let island = self.island.clone().ok_or(ShortcutError::NotRunning)?;
+        let id = next.map(|k| island.register_hotkey(k.clone())).transpose()?;
+        island.update(move |s, _| if let Some(old) = std::mem::replace(&mut s.hotkey, id) && let Some(me) = &s.me { me.unregister_hotkey(old) });
+        let chord = next.map_or(String::new(), Shortcut::to_string);
+        self.save(|c| c.hotkey = chord);
+        Ok(())
     }
 
     fn t3_addable(&self) -> bool {
@@ -526,6 +538,8 @@ fn page(s: &Settings, k: &Kit, layer: &mut Vec<El>, page: Page) -> Vec<El> {
                     .on_choose(|s: &mut Settings, name: &str, _: &mut Tx| { s.open = None; let name = name.to_string(); s.save(|c| c.display = name) })
                     .build(k, layer)));
             }
+            general.push(setting(s, "Open Large Mode", ShortcutRecorder::new("hotkey", &s.hotkey, |s: &mut Settings| &mut s.hotkey)
+                .label("Open Large Mode").width(190.0).on_change(Settings::set_hotkey).build(k)));
             sections.push(section(s, "general", "System", general));
         }
         Page::Tabs => {
