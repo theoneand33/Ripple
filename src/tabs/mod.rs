@@ -29,8 +29,9 @@ pub use assistant::Assistant;
 pub use calculator::Calculator;
 pub use calendar::{link_host, Calendar};
 pub use clipboard::{Clipboard, Content};
-pub use overview::{Contributions, height as overview_height, width as overview_width};
+pub use overview::{Contributions, Dashboard, height as overview_height, width as overview_width};
 pub use clocks::Clocks;
+pub use habits::Habits;
 pub use limits::Limits;
 pub use notes::Notes;
 pub use shelf::Shelf;
@@ -40,7 +41,7 @@ pub use stocks::Stocks;
 pub use stremflix::Stremflix;
 pub use sync::SyncState;
 pub use t3::T3;
-pub use tasks::TaskDraft;
+pub use tasks::{TaskDraft, Tasks};
 
 use rune::{Color, El, Key, KeyEvent, ScrollSpec, TextEdit, Tx, el, icon, row, text, text_input};
 
@@ -129,8 +130,8 @@ pub fn icon_of(tab: Tab) -> &'static rune::Icon {
 
 /// Loads what a tab shows, as it opens: the Overview's panels with it.
 pub fn entered(s: &mut Island) {
-    s.dashboard_drag = None;
-    s.dashboard_add = None;
+    s.dashboard.drag = None;
+    s.dashboard.add = None;
     load(s, s.tab);
     if s.tab == Tab::Overview {
         for tile in s.cfg.dashboard.clone() { if let Widget::Panel(tab) = tile.widget { load(s, tab) } }
@@ -154,7 +155,7 @@ fn load(s: &mut Island, tab: Tab) {
         Tab::Clocks => s.clocks_load(),
         Tab::Notes => s.nextcloud_sync(Kind::Notes),
         Tab::Tasks => {
-            if s.task_draft.editing.is_some() { tasks::reset_draft(s) }
+            if s.tasks.draft.editing.is_some() { tasks::reset_draft(s) }
             s.nextcloud_sync(Kind::Tasks);
         }
         Tab::Calendar => {

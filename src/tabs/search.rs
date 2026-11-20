@@ -17,6 +17,8 @@ const PER_KIND: usize = 3;
 
 #[derive(Default)]
 pub struct Finder {
+    /// What is typed into the search bar.
+    pub field: rune::TextEdit,
     /// Installed apps, found once.
     pub apps: Option<Vec<QuickApp>>,
     /// The OS index's answer for `query`.
@@ -50,7 +52,7 @@ impl Island {
     /// Asks the OS's file index about the query once typing pauses, off the UI thread.
     pub fn search_poll(&mut self) {
         let Some(me) = self.me.clone() else { return };
-        let q = self.search.text.trim().to_string();
+        let q = self.finder.field.text.trim().to_string();
         if q == self.finder.query { return }
         self.finder.query = q.clone();
         let id = self.finder.sent.fetch_add(1, Ordering::SeqCst) + 1;
@@ -68,7 +70,7 @@ impl Island {
     }
 
     pub fn search_hits(&self) -> Vec<Hit<'_>> {
-        let q = self.search.text.trim().to_lowercase();
+        let q = self.finder.field.text.trim().to_lowercase();
         if q.is_empty() { return Vec::new() }
         let apps = self.finder.apps.iter().flatten().map(|a| (a.name.to_lowercase(), a));
         let mut hits: Vec<Hit> = ranked(apps, &q).map(Hit::App).collect();
@@ -85,7 +87,7 @@ impl Island {
             Hit::File(path) => system::open_external(&file_url(path)),
             Hit::Web => system::open_external(&self.web_url()),
         }
-        self.search.clear();
+        self.finder.field.clear();
         (self.finder.pick, self.finder.query) = (0, String::new());
         self.finder.files.clear();
         tx.blur();
@@ -94,7 +96,7 @@ impl Island {
 
     /// A URL as typed, or a search for the text.
     fn web_url(&self) -> String {
-        let query = self.search.text.trim();
+        let query = self.finder.field.text.trim();
         let lower = query.to_ascii_lowercase();
         if !query.contains('.') || query.contains(' ') { format!("{}{}", self.cfg.search_engine().1, crate::net::percent_encode(query)) }
         else if lower.starts_with("http://") || lower.starts_with("https://") { query.to_string() }
@@ -146,10 +148,10 @@ fn keys(s: &mut Island, ev: &KeyEvent, tx: &mut Tx) -> bool {
 
 pub fn view(s: &Island) -> El {
     let fg = s.cfg.text();
-    let input = text_input(&s.search, s.cfg.font(16.0, 400.0).lh(22.0)).key("browser-searchbar").label("Search").single_line().grow(1.0).min_w(0.0)
+    let input = text_input(&s.finder.field, s.cfg.font(16.0, 400.0).lh(22.0)).key("browser-searchbar").label("Search").single_line().grow(1.0).min_w(0.0)
         .color(fg).placeholder("Search apps, files and the web", fg.alpha(0.5 * fg.a))
         // Any edit can change the results, so the first one is highlighted again.
-        .on_edit(|s: &mut Island| { s.finder.pick = 0; &mut s.search })
+        .on_edit(|s: &mut Island| { s.finder.pick = 0; &mut s.finder.field })
         .on_submit(Island::search_open)
         .on_input_key(keys);
     let bar = row().key("searchbar").w_full().h(46.0).px(16.0).gap(10.0).center_y()
@@ -166,7 +168,7 @@ pub fn view(s: &Island) -> El {
             Hit::App(app) => (&icons::MONITOR, app.name.clone(), "App".to_string()),
             Hit::File(path) => (&icons::FILE, path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
                 path.parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default()),
-            Hit::Web => (&icons::GLOBE, s.search.text.trim().to_string(), format!("Search {}", s.cfg.search_engine().0)),
+            Hit::Web => (&icons::GLOBE, s.finder.field.text.trim().to_string(), format!("Search {}", s.cfg.search_engine().0)),
         };
         list = list.child(
             row().key(format!("search-hit-{i}")).role("button").label(name.clone()).focusable(true)

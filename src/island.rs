@@ -8,7 +8,7 @@ use std::sync::mpsc::Sender;
 use rune::time::LocalTime;
 use rune::{
     AppHandle, Color, Curve, Cx, DisplayTarget, Drag, Easing, Edge, Effect, GesturePhase, El, Image, ImageCache, Key, KeyEvent, LoopSpec, OverlayHandle, OverlayPlacement,
-    Phase, Shadow, Shortcut, ShortcutError, ShortcutId, Spring, SurfaceFit, TextEdit, Transition, Tx, Vec2, Waker, WheelEvent, WindowHandle, col, el, icon, row, text,
+    Phase, Shadow, Shortcut, ShortcutError, ShortcutId, Spring, SurfaceFit, Transition, Tx, Vec2, Waker, WheelEvent, WindowHandle, col, el, icon, row, text,
 };
 
 use crate::config::{Config, Store, Tab};
@@ -328,8 +328,6 @@ pub struct Island {
     break_left: [Option<f64>; 2],
     /// The clock at the last count.
     break_tick: f64,
-    /// The minute task reminders were last checked, as `YYYY-MM-DDTHH:MM`; empty until the first.
-    pub task_mark: String,
     /// The hour a water reminder last came, as (day, hour).
     water_mark: Option<(i64, u32)>,
     capture: Option<(Alert, f64)>,
@@ -339,7 +337,6 @@ pub struct Island {
     /// still report the old state are ignored while the player catches up.
     expect_playing: Option<(bool, f64)>,
 
-    pub search: TextEdit,
     pub finder: tabs::Finder,
     pub ai: tabs::Assistant,
     pub clipboard: tabs::Clipboard,
@@ -350,15 +347,12 @@ pub struct Island {
     download_done: Option<f64>,
     pub calc: tabs::Calculator,
     pub shelf: tabs::Shelf,
-    pub task: TextEdit,
-    pub task_draft: tabs::TaskDraft,
-    pub habit: TextEdit,
+    pub tasks: tabs::Tasks,
+    pub habits: tabs::Habits,
     pub calendar: tabs::Calendar,
     pub notes: tabs::Notes,
     /// Nextcloud sync of Notes, Tasks and events, by `nextcloud::Kind`.
     pub nextcloud: [tabs::SyncState; 3],
-    /// Nextcloud sync of the Shelf.
-    pub shelf_sync: tabs::SyncState,
     pub stremflix: tabs::Stremflix,
     /// The System tab's figures; None until the first sample.
     pub stats: Option<system::Stats>,
@@ -367,20 +361,9 @@ pub struct Island {
     pub contributions: tabs::Contributions,
     pub clocks: tabs::Clocks,
     pub agents: tabs::Agents,
-    /// A file drag is over the Island.
-    pub dropping: bool,
-    /// A drag started elsewhere on the desktop opened the Shelf; it rests when the drag ends.
-    pub desktop_drag: bool,
     pub t3: tabs::T3,
     pub plugins: crate::plugins::Plugins,
-    /// The Overview's layout is being edited.
-    pub dashboard_edit: bool,
-    /// The Overview tile being dragged: its index, the pointer's travel, and whether its corner (a resize).
-    pub dashboard_drag: Option<(usize, f32, f32, bool)>,
-    /// A widget being dragged out of the edit drawer, and the slot on the grid it would take.
-    pub dashboard_add: Option<(crate::config::Widget, Option<usize>)>,
-    /// Where the Overview's grid draws, in window points, to place a widget dropped on it.
-    pub dashboard_grid: rune::Live<[f32; 4]>,
+    pub dashboard: tabs::Dashboard,
 
     pub me: Option<Host>,
     pub settings: Option<WindowHandle>,
@@ -480,7 +463,6 @@ impl Island {
             bluetooth_alert_until: None,
             reminder: None,
             reminder_link: None,
-            task_mark: String::new(),
             notified: (0.0, 0),
             water_mark: None,
             rain_alerted: None,
@@ -490,7 +472,6 @@ impl Island {
             capture_queue: Vec::new(),
             paused_until: None,
             expect_playing: None,
-            search: TextEdit::default(),
             finder: tabs::Finder::default(),
             ai: tabs::Assistant::default(),
             clipboard: tabs::Clipboard::new(&cfg, store.dir().as_deref()),
@@ -499,13 +480,11 @@ impl Island {
             download_done: None,
             calc: tabs::Calculator::default(),
             shelf: tabs::Shelf::default(),
-            task: TextEdit::default(),
-            task_draft: tabs::TaskDraft::default(),
-            habit: TextEdit::default(),
+            tasks: tabs::Tasks::default(),
+            habits: tabs::Habits::default(),
             calendar: tabs::Calendar::default(),
             notes: tabs::Notes::new(&cfg),
             nextcloud: Default::default(),
-            shelf_sync: Default::default(),
             stremflix: tabs::Stremflix::default(),
             stats: None,
             limits: tabs::Limits::default(),
@@ -513,14 +492,9 @@ impl Island {
             contributions: tabs::Contributions::default(),
             clocks: tabs::Clocks::default(),
             agents: tabs::Agents::default(),
-            dropping: false,
-            desktop_drag: false,
             t3: tabs::T3::new(store.dir().as_deref()),
             plugins: crate::plugins::Plugins::new(store.dir().as_deref()),
-            dashboard_edit: false,
-            dashboard_drag: None,
-            dashboard_add: None,
-            dashboard_grid: rune::Live::new([0.0; 4]),
+            dashboard: tabs::Dashboard::default(),
             me: None,
             settings: None,
             settings_app: None,
@@ -955,10 +929,10 @@ impl Island {
 
     /// A file drag over the Island opens the Shelf; one that leaves without dropping lets it rest.
     pub fn drop_hover(&mut self, over: bool, _: &mut Tx) {
-        self.dropping = over;
+        self.shelf.dropping = over;
         if over {
             self.open_shelf();
-        } else if !self.hovered && !self.desktop_drag {
+        } else if !self.hovered && !self.shelf.desktop_drag {
             self.set_mode(Mode::Still);
         }
     }
@@ -969,9 +943,9 @@ impl Island {
     pub fn desktop_drag(&mut self, active: bool) {
         if active {
             if !self.visible_tabs().contains(&Tab::Shelf) { return }
-            self.desktop_drag = true;
+            self.shelf.desktop_drag = true;
             self.open_shelf();
-        } else if std::mem::take(&mut self.desktop_drag) && !self.dropping {
+        } else if std::mem::take(&mut self.shelf.desktop_drag) && !self.shelf.dropping {
             self.set_mode(Mode::Still);
         }
     }
@@ -983,8 +957,8 @@ impl Island {
             c.shelf.splice(0..0, files.iter().cloned());
         });
         self.shelf_new_files(files);
-        self.dropping = false;
-        self.desktop_drag = false;
+        self.shelf.dropping = false;
+        self.shelf.desktop_drag = false;
         self.open_shelf();
     }
 
@@ -2467,10 +2441,10 @@ mod tests {
         rt.frame(0.0);
         rt.drag_files(vec!["/a".into(), "/b".into()], at);
         rt.frame(1.0 / 60.0);
-        assert_eq!((rt.state.mode, rt.state.tab, rt.state.dropping), (Mode::Large, Tab::Shelf, true));
+        assert_eq!((rt.state.mode, rt.state.tab, rt.state.shelf.dropping), (Mode::Large, Tab::Shelf, true));
         rt.drop_files(vec!["/a".into(), "/b".into()], at);
         rt.frame(2.0 / 60.0);
-        assert_eq!((rt.state.mode, rt.state.dropping), (Mode::Large, false));
+        assert_eq!((rt.state.mode, rt.state.shelf.dropping), (Mode::Large, false));
         assert_eq!(rt.state.store.get().shelf, [std::path::PathBuf::from("/a"), "/b".into()]);
         // A drag that leaves without dropping lets the Island rest.
         rt.drag_files(vec!["/c".into()], at);
@@ -2548,12 +2522,12 @@ mod tests {
     fn arrows_switch_tabs_even_while_typing_in_the_search_field() {
         let mut s = island(Config { default_tab: Tab::Search, ..Config::default() });
         s.mode = Mode::Large;
-        s.search.focused = true;
+        s.finder.field.focused = true;
         let mut rt = rune::Runtime::new(s, view, CANVAS, rune::Env { system_dark: true, scale: 1.0 });
         rt.frame(0.0);
         rt.key(KeyEvent { key: Key::Text("a".into()), mods: rune::Mods::default() });
         rt.frame(1.0 / 60.0);
-        assert_eq!(rt.state.search.text, "a");
+        assert_eq!(rt.state.finder.field.text, "a");
         rt.key(KeyEvent { key: Key::Right, mods: rune::Mods::default() });
         rt.frame(1.0 / 60.0);
         assert_eq!(rt.state.tab, Tab::Workflows);

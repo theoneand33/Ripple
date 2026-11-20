@@ -25,6 +25,12 @@ pub struct Shelf {
     pub name: TextEdit,
     /// The last action's error, or the work in progress.
     status: String,
+    /// Nextcloud sync of the Shelf.
+    pub sync: super::SyncState,
+    /// A file drag is over the Island.
+    pub dropping: bool,
+    /// A drag started elsewhere on the desktop opened the Shelf; it rests when the drag ends.
+    pub desktop_drag: bool,
 }
 
 fn close_menu(s: &mut Island) {
@@ -170,7 +176,7 @@ pub fn view(s: &Island, layer: &mut Vec<El>) -> El {
     let mut header = row().key("shelf-header").w_full().h(28.0).gap(8.0).center_y()
         .child(text("Shelf").font(s.cfg.font(17.0, 700.0)).color(fg))
         .child(icon(&icons::INBOX, 16.0).color(muted).a11y_hidden());
-    let status = if s.shelf.status.is_empty() { s.shelf_sync.error.as_deref().unwrap_or_default() } else { &s.shelf.status };
+    let status = if s.shelf.status.is_empty() { s.shelf.sync.error.as_deref().unwrap_or_default() } else { &s.shelf.status };
     if !status.is_empty() {
         header = header.child(text(status).font(s.cfg.font(12.0, 400.0)).color(muted).shrink().min_w(0.0).max_lines(1));
     }
@@ -187,11 +193,11 @@ pub fn view(s: &Island, layer: &mut Vec<El>) -> El {
     let root = col().key("shelf").w_full().h_full().px(16.0).pt(14.0).pb(14.0).gap(10.0).child(header);
 
     // The drop zone, while a drag is over the Island or nothing is stashed.
-    if s.dropping || s.cfg.shelf.is_empty() {
-        let line = fg.alpha(if s.dropping { 0.6 } else { 0.3 } * fg.a);
+    if s.shelf.dropping || s.cfg.shelf.is_empty() {
+        let line = fg.alpha(if s.shelf.dropping { 0.6 } else { 0.3 } * fg.a);
         return root.child(
             col().key("shelf-drop").w_full().grow(1.0).min_h(0.0).gap(4.0).center().radius(s.cfg.radius(16.0))
-                .fill(fg.alpha(if s.dropping { 0.08 } else { 0.0 } * fg.a)).border(1.5, line).border_dash(6.0, 5.0)
+                .fill(fg.alpha(if s.shelf.dropping { 0.08 } else { 0.0 } * fg.a)).border(1.5, line).border_dash(6.0, 5.0)
                 .child(icon(&icons::DOWNLOAD, 26.0).color(muted).a11y_hidden())
                 .child(text("Drop files here").font(s.cfg.font(15.0, 600.0)).color(fg).mt(4.0))
                 .child(text("Stash files here. Drag them out when you need them.").font(s.cfg.font(12.0, 400.0)).color(muted)),
@@ -219,7 +225,7 @@ pub fn view(s: &Island, layer: &mut Vec<El>) -> El {
             .on_drag_end(move |s: &mut Island, outcome, _| {
                 if outcome == DragOutcome::Moved { s.save(|c| c.shelf.retain(|f| *f != moved)); s.nextcloud_shelf_sync() }
                 // Back over the Island, the drop decides.
-                if !s.dropping { s.set_mode(Mode::Still) }
+                if !s.shelf.dropping { s.set_mode(Mode::Still) }
             })
             .on_secondary_press(move |s: &mut Island, at, _| { s.shelf.menu = Some((target.clone(), at)); s.open_select = Some(MENU) })
             .child(

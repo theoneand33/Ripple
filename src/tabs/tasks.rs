@@ -105,6 +105,15 @@ fn due_label(task: &Task, today: Date) -> String {
     match time { Some((h, m)) => format!("{name} {h:02}:{m:02}"), None => name }
 }
 
+/// The Tasks tab: the field a task is typed in, its controls, and the last reminder check.
+#[derive(Default)]
+pub struct Tasks {
+    pub field: rune::TextEdit,
+    pub draft: TaskDraft,
+    /// The minute task reminders were last checked, as `YYYY-MM-DDTHH:MM`; empty until the first.
+    mark: String,
+}
+
 /// What the controls under the field hold: the next task's, or the edited task's.
 #[derive(Default)]
 pub struct TaskDraft {
@@ -119,13 +128,13 @@ pub struct TaskDraft {
 /// Adds the typed task with the controls' settings, or saves the one being edited in place, so
 /// sync writes the change over it on Nextcloud.
 fn add_task(s: &mut Island, _: &mut Tx) {
-    let d = &s.task_draft;
+    let d = &s.tasks.draft;
     // Typed `due:tomorrow` and the like still work: read as of today, then saved as dates.
     // Priority comes from its control only, so leading bangs stay in the title.
-    let typed = s.task.text.trim();
+    let typed = s.tasks.field.text.trim();
     let typed = if typed.split_whitespace().next().is_some_and(is_bangs) { format!("\\{typed}") } else { typed.to_string() };
     // An edit's field holds the title as it is, which may itself contain such words.
-    let mut task = if d.editing.is_some() { Task { title: s.task.text.split_whitespace().collect::<Vec<_>>().join(" "), ..Task::default() } } else { Task::parse(&typed, s.today) };
+    let mut task = if d.editing.is_some() { Task { title: s.tasks.field.text.split_whitespace().collect::<Vec<_>>().join(" "), ..Task::default() } } else { Task::parse(&typed, s.today) };
     if d.editing.is_none() && d.due.is_none() && task.due.is_none() {
         let t = LocalTime::at(crate::date::now_ms());
         let (title, due) = natural_due(&task.title, s.today, t.hour * 60 + t.minute);
@@ -136,7 +145,7 @@ fn add_task(s: &mut Island, _: &mut Tx) {
     if d.every.is_some() { task.every = d.every }
     if task.title.is_empty() { return }
     let text = task.to_string();
-    match s.task_draft.editing {
+    match s.tasks.draft.editing {
         // Gone since the edit began (done elsewhere, removed by a sync): saved as a new task, not lost.
         Some(key) => s.save(|c| match c.tasks.iter_mut().find(|t| t.key == key) { Some(t) => t.text = text, None => c.tasks.push(Item::new(text)) }),
         None => s.save(|c| c.tasks.push(Item::new(text))),
@@ -146,15 +155,15 @@ fn add_task(s: &mut Island, _: &mut Tx) {
 }
 
 pub fn reset_draft(s: &mut Island) {
-    s.task_draft = TaskDraft::default();
-    s.task.clear();
+    s.tasks.draft = TaskDraft::default();
+    s.tasks.field.clear();
 }
 
 fn start_edit(s: &mut Island, key: u64) {
     let Some(task) = s.cfg.tasks.iter().find(|t| t.key == key).map(|t| Task::parse(&t.text, s.today)) else { return };
-    s.task.replace_text(task.title.clone());
-    s.task.focused = true;
-    s.task_draft = TaskDraft { priority: task.priority, due: task.due.map(|d| d.0), time: task.due.and_then(|d| d.1), every: task.every, editing: Some(key) };
+    s.tasks.field.replace_text(task.title.clone());
+    s.tasks.field.focused = true;
+    s.tasks.draft = TaskDraft { priority: task.priority, due: task.due.map(|d| d.0), time: task.due.and_then(|d| d.1), every: task.every, editing: Some(key) };
 }
 
 /// The time 30 minutes either way, round the clock.
@@ -172,7 +181,7 @@ fn tick(s: &mut Island, key: u64) {
         s.nextcloud[Kind::Tasks as usize].error = Some("This task repeats by a rule only Nextcloud follows: tick it there".into());
         return;
     }
-    if s.task_draft.editing == Some(key) { reset_draft(s) }
+    if s.tasks.draft.editing == Some(key) { reset_draft(s) }
     let today = s.today;
     s.save(|c| {
         if let Some((i, item)) = nextcloud::remove(c, Kind::Tasks, key)
@@ -202,7 +211,7 @@ impl Island {
         if rune::is_headless() || self.large_open() || self.reminder.is_some() { return }
         let t = LocalTime::at(crate::date::now_ms());
         let mark = format!("{:04}-{:02}-{:02}T{:02}:{:02}", t.year, t.month, t.day, t.hour, t.minute);
-        if std::mem::replace(&mut self.task_mark, mark.clone()) == mark { return }
+        if std::mem::replace(&mut self.tasks.mark, mark.clone()) == mark { return }
         let due = due_reminders(&self.cfg.tasks, &self.cfg.reminded_tasks, &mark, self.today);
         if due.is_empty() { return }
         let title = if due.len() == 1 { due[0].1.clone() } else { format!("{} tasks due", due.len()) };
@@ -233,7 +242,7 @@ pub fn view(s: &Island) -> El {
     let mut tasks: Vec<_> = s.cfg.tasks.iter().map(|i| (i.key, Task::parse(&i.text, s.today))).collect();
     tasks.sort_by_key(|(_, t)| (std::cmp::Reverse(t.priority), t.due_key().unwrap_or_else(|| "~".into())));
     for (key, task) in tasks {
-        let editing = s.task_draft.editing == Some(key);
+        let editing = s.tasks.draft.editing == Some(key);
         let overdue = task.due_key().is_some_and(|k| !rune::is_headless() && k <= now);
         let mut meta = row().gap(8.0).center_y();
         if task.due.is_some() {
@@ -261,9 +270,9 @@ pub fn view(s: &Island) -> El {
         }
         list = list.child(line);
     }
-    let editing = s.task_draft.editing.is_some();
+    let editing = s.tasks.draft.editing.is_some();
     let mut input = row().key("task-input").w_full().gap(8.0).center_y()
-        .child(field(s, "new-task", &s.task, if editing { "Task title" } else { "New task, like call Bob tomorrow 9am" }, |s: &mut Island| &mut s.task, add_task));
+        .child(field(s, "new-task", &s.tasks.field, if editing { "Task title" } else { "New task, like call Bob tomorrow 9am" }, |s: &mut Island| &mut s.tasks.field, add_task));
     if editing { input = input.child(tool(s, "cancel-edit", &icons::X, "Cancel edit").on_press(reset_draft)) }
     col().key("tasks").w_full().h_full().px(16.0).pt(18.0).pb(14.0).gap(10.0)
         .child(col().key("task-scroll").w_full().grow(1.0).min_h(0.0).scrolls().child(list))
@@ -287,26 +296,26 @@ fn stepper(s: &Island, key: &'static str, middle: El, set: bool, step: fn(&mut I
 
 /// Priority, due date and time, and repeat, for the task being written or edited.
 fn controls(s: &Island) -> El {
-    let d = &s.task_draft;
+    let d = &s.tasks.draft;
     let priority = ["Priority", "Low", "Medium", "High"][usize::from(d.priority)];
     let mut row_ = row().key("task-controls").w_full().gap(6.0).center_y()
-        .child(toggle(s, "task-priority", priority, priority_color(d.priority), d.priority > 0, |s| s.task_draft.priority = (s.task_draft.priority + 1) % 4));
+        .child(toggle(s, "task-priority", priority, priority_color(d.priority), d.priority > 0, |s| s.tasks.draft.priority = (s.tasks.draft.priority + 1) % 4));
     let date = d.due.map_or("Date".to_string(), |day| due_label(&Task { due: Some((day, None)), ..Task::default() }, s.today));
     row_ = row_.child(stepper(s, "task-date",
         toggle(s, "task-due", &date, accent::teal(), d.due.is_some(), |s| {
-            let d = &mut s.task_draft;
+            let d = &mut s.tasks.draft;
             (d.due, d.time) = if d.due.is_some() { (None, None) } else { (Some(s.today), None) };
         }),
-        d.due.is_some(), |s, by| if let Some(day) = s.task_draft.due { s.task_draft.due = Some(add_days(day, by.into())) }));
+        d.due.is_some(), |s, by| if let Some(day) = s.tasks.draft.due { s.tasks.draft.due = Some(add_days(day, by.into())) }));
     if d.due.is_some() {
         let time = d.time.map_or("Time".to_string(), |(h, m)| format!("{h:02}:{m:02}"));
         row_ = row_.child(stepper(s, "task-time",
-            toggle(s, "task-at", &time, accent::teal(), d.time.is_some(), |s| s.task_draft.time = if s.task_draft.time.is_some() { None } else { Some((9, 0)) }),
-            d.time.is_some(), |s, by| if let Some(t) = s.task_draft.time { s.task_draft.time = Some(step_time(t, by)) }));
+            toggle(s, "task-at", &time, accent::teal(), d.time.is_some(), |s| s.tasks.draft.time = if s.tasks.draft.time.is_some() { None } else { Some((9, 0)) }),
+            d.time.is_some(), |s, by| if let Some(t) = s.tasks.draft.time { s.tasks.draft.time = Some(step_time(t, by)) }));
     }
     let every = match d.every { None => "Repeat", Some(Every::Day) => "Daily", Some(Every::Week) => "Weekly", Some(Every::Month) => "Monthly", Some(Every::Custom) => "Custom" };
     row_.child(toggle(s, "task-repeat", every, accent::indigo(), d.every.is_some(), |s| {
-        s.task_draft.every = match s.task_draft.every { None => Some(Every::Day), Some(Every::Day) => Some(Every::Week), Some(Every::Week) => Some(Every::Month), Some(Every::Month) | Some(Every::Custom) => None };
+        s.tasks.draft.every = match s.tasks.draft.every { None => Some(Every::Day), Some(Every::Day) => Some(Every::Week), Some(Every::Week) => Some(Every::Month), Some(Every::Month) | Some(Every::Custom) => None };
     }))
 }
 
@@ -348,36 +357,36 @@ mod tests {
         use crate::island::Island;
         let mut s = Island::new(Store::memory(Config::default()), Vec::new());
         s.today = (2026, 1, 1);
-        s.task.replace_text("  Pay   rent ");
-        s.task_draft = super::TaskDraft { priority: 2, due: Some((2026, 1, 31)), time: Some(super::step_time((0, 0), -1)), every: Some(Every::Month), editing: None };
+        s.tasks.field.replace_text("  Pay   rent ");
+        s.tasks.draft = super::TaskDraft { priority: 2, due: Some((2026, 1, 31)), time: Some(super::step_time((0, 0), -1)), every: Some(Every::Month), editing: None };
         super::add_task(&mut s, &mut rune::Tx::default());
         assert_eq!(s.cfg.tasks[0].text, "!! Pay rent due:2026-01-31T23:30 every:month");
-        assert!(s.task.text.is_empty() && s.task_draft.priority == 0, "the controls reset");
+        assert!(s.tasks.field.text.is_empty() && s.tasks.draft.priority == 0, "the controls reset");
         let key = s.cfg.tasks[0].key;
         super::start_edit(&mut s, key);
-        assert_eq!((s.task.text.as_str(), s.task_draft.time, s.task_draft.editing), ("Pay rent", Some((23, 30)), Some(key)));
-        s.task_draft.every = None;
+        assert_eq!((s.tasks.field.text.as_str(), s.tasks.draft.time, s.tasks.draft.editing), ("Pay rent", Some((23, 30)), Some(key)));
+        s.tasks.draft.every = None;
         super::add_task(&mut s, &mut rune::Tx::default());
         assert_eq!((s.cfg.tasks.len(), s.cfg.tasks[0].key, s.cfg.tasks[0].text.as_str()), (1, key, "!! Pay rent due:2026-01-31T23:30"));
-        s.task.replace_text("Call Bob due:tomorrow");
+        s.tasks.field.replace_text("Call Bob due:tomorrow");
         super::add_task(&mut s, &mut rune::Tx::default());
         assert_eq!(s.cfg.tasks[1].text, "Call Bob due:2026-01-02", "a typed relative day is saved as its date");
-        s.task.replace_text("Call Ann tomorrow 9am");
+        s.tasks.field.replace_text("Call Ann tomorrow 9am");
         super::add_task(&mut s, &mut rune::Tx::default());
         assert_eq!(s.cfg.tasks[2].text, "Call Ann due:2026-01-02T09:00", "a day said in words too");
         s.save(|c| { c.tasks.pop(); });
         let bob = s.cfg.tasks[1].key;
         super::start_edit(&mut s, bob);
         s.save(|c| c.tasks.retain(|t| t.key != bob));
-        s.task.replace_text("Call Bob back");
+        s.tasks.field.replace_text("Call Bob back");
         super::add_task(&mut s, &mut rune::Tx::default());
         assert_eq!(s.cfg.tasks[1].text, "Call Bob back due:2026-01-02", "an edit of a task gone meanwhile is kept as a new one");
         let read = s.cfg.tasks[1].key;
         super::start_edit(&mut s, read);
-        s.task.replace_text("Read every:week article");
+        s.tasks.field.replace_text("Read every:week article");
         super::add_task(&mut s, &mut rune::Tx::default());
         assert_eq!(Task::parse(&s.cfg.tasks[1].text, s.today).title, "Read every:week article", "an edit's title is taken as typed");
-        s.task.replace_text("! call mom");
+        s.tasks.field.replace_text("! call mom");
         super::add_task(&mut s, &mut rune::Tx::default());
         assert_eq!(Task::parse(&s.cfg.tasks.last().unwrap().text, s.today), Task { title: "! call mom".into(), ..Task::default() });
     }

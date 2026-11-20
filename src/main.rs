@@ -118,7 +118,7 @@ fn island_spec() -> AppSpec<Island> {
                 s.set_tab(Tab::Search);
                 s.finder.apps = Some(vec![config::QuickApp { name: "Notes".into(), launch: "notes".into() }]);
                 s.finder.files = ["~/Documents/notes.md", "~/Projects/ripple-notes"].map(Into::into).into();
-                s.search.replace_text("notes");
+                s.finder.field.replace_text("notes");
             }),
             ("workflows", |s| { s.mode = Mode::Large; s.set_tab(Tab::Workflows) }),
             ("assistant", |s| { s.mode = Mode::Large; s.set_tab(Tab::Assistant); s.ai.asked = true; s.ai.answer = Some("**Rust** is a systems language.\n\n```rust\nfn main() {}\n```".into()) }),
@@ -150,8 +150,8 @@ fn island_spec() -> AppSpec<Island> {
                 s.set_tab(Tab::Tasks);
                 s.cfg.tasks = ["!!! Ship v0.5 due:2026-01-02T17:00", "Water the plants due:2026-01-01 every:week"].map(config::Item::new).into();
                 let key = s.cfg.tasks[0].key;
-                s.task_draft = tabs::TaskDraft { priority: 3, due: Some((2026, 1, 2)), time: Some((17, 0)), every: Some(crate::task::Every::Week), editing: Some(key) };
-                s.task.replace_text("Ship v0.5");
+                s.tasks.draft = tabs::TaskDraft { priority: 3, due: Some((2026, 1, 2)), time: Some((17, 0)), every: Some(crate::task::Every::Week), editing: Some(key) };
+                s.tasks.field.replace_text("Ship v0.5");
             }),
             ("reminder", |s| s.remind("Ship v0.5 release notes".into(), 0.0)),
             ("event-alert", |s| s.remind_event("Standup".into(), Some("https://meet.example.com/abc".into()), 0.0)),
@@ -314,9 +314,9 @@ fn island_spec() -> AppSpec<Island> {
                 if s.plugins.list.is_empty() { s.plugins.list.push(plugins::Plugin::load("example.lua".into(), None, include_str!("../plugins/example.lua"))) }
             }),
             ("plugins-empty", |s| { s.mode = Mode::Large; s.set_tab(Tab::Plugins); s.plugins = Default::default() }),
-            ("shelf-drop", |s| { s.mode = Mode::Large; s.set_tab(Tab::Shelf); s.dropping = true }),
+            ("shelf-drop", |s| { s.mode = Mode::Large; s.set_tab(Tab::Shelf); s.shelf.dropping = true }),
             ("shelf", |s| { s.mode = Mode::Large; s.set_tab(Tab::Shelf); s.cfg.shelf = vec!["/home/me/Report final.pdf".into(), "/home/me/photo.png".into()] }),
-            ("shelf-sync-error", |s| { s.mode = Mode::Large; s.set_tab(Tab::Shelf); s.cfg.shelf = vec!["/home/me/photo.png".into()]; s.shelf_sync.error = Some("Nextcloud refused the user or app password".into()) }),
+            ("shelf-sync-error", |s| { s.mode = Mode::Large; s.set_tab(Tab::Shelf); s.cfg.shelf = vec!["/home/me/photo.png".into()]; s.shelf.sync.error = Some("Nextcloud refused the user or app password".into()) }),
             ("shelf-menu", |s| {
                 s.mode = Mode::Large;
                 s.set_tab(Tab::Shelf);
@@ -413,9 +413,9 @@ fn island_spec() -> AppSpec<Island> {
                 // Too tall for four columns: side by side in five.
                 s.cfg.dashboard = [(config::Widget::Media, 3), (config::Widget::Clock, 2), (config::Widget::Quote, 3), (config::Widget::Battery, 2)].map(|(w, n)| config::Tile::new(w).sized(n, 3)).into();
             }),
-            ("overview-edit", |s| { s.mode = Mode::Large; s.set_tab(Tab::Overview); s.dashboard_edit = true }),
-            ("overview-drag-in", |s| { s.mode = Mode::Large; s.set_tab(Tab::Overview); s.dashboard_edit = true; s.dashboard_add = Some((config::Widget::Quote, Some(2))) }),
-            ("overview-resize", |s| { s.mode = Mode::Large; s.set_tab(Tab::Overview); s.dashboard_edit = true; s.dashboard_drag = Some((0, -130.0, -60.0, true)) }),
+            ("overview-edit", |s| { s.mode = Mode::Large; s.set_tab(Tab::Overview); s.dashboard.edit = true }),
+            ("overview-drag-in", |s| { s.mode = Mode::Large; s.set_tab(Tab::Overview); s.dashboard.edit = true; s.dashboard.add = Some((config::Widget::Quote, Some(2))) }),
+            ("overview-resize", |s| { s.mode = Mode::Large; s.set_tab(Tab::Overview); s.dashboard.edit = true; s.dashboard.drag = Some((0, -130.0, -60.0, true)) }),
             ("camera", |s| { let mut tx = rune::Tx::default(); s.set_capture(Some(true), None, &mut tx); }),
             ("capture-both", |s| {
                 let mut tx = rune::Tx::default();

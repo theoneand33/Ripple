@@ -60,10 +60,10 @@ impl Island {
 
     /// Syncs the Shelf with its Nextcloud folder in the background, as `nextcloud_sync` does a kind.
     pub fn nextcloud_shelf_sync(&mut self) {
-        if !self.cfg.nextcloud.enabled() { self.shelf_sync.error = None; return }
+        if !self.cfg.nextcloud.enabled() { self.shelf.sync.error = None; return }
         let (Some(me), Some(dir)) = (self.me.clone(), self.store.dir()) else { return };
-        if self.shelf_sync.running { self.shelf_sync.again = true; return }
-        self.shelf_sync.running = true;
+        if self.shelf.sync.running { self.shelf.sync.again = true; return }
+        self.shelf.sync.running = true;
         let account = self.cfg.nextcloud.account();
         let nc = self.cfg.nextcloud.clone();
         let folder = nc.shelf_folder();
@@ -79,17 +79,17 @@ impl Island {
     pub fn shelf_new_files(&mut self, files: &[PathBuf]) {
         let names: Vec<_> = files.iter().filter_map(|f| f.file_name().map(|n| n.to_string_lossy().into_owned())).collect();
         self.save(|c| c.nextcloud.shelf_synced.retain(|e| !names.iter().any(|n| e.rsplit('/').next() == Some(n.as_str()))));
-        if self.shelf_sync.running { self.shelf_sync.dropped.extend(names) }
+        if self.shelf.sync.running { self.shelf.sync.dropped.extend(names) }
         self.nextcloud_shelf_sync();
     }
 
     fn nextcloud_shelf_synced(&mut self, account: &str, folder: &str, out: ShelfOutcome) {
-        self.shelf_sync.running = false;
+        self.shelf.sync.running = false;
         let current = self.cfg.nextcloud.account() == account;
-        if current { self.shelf_sync.error = out.error }
-        let changed = self.shelf_sync.again;
+        if current { self.shelf.sync.error = out.error }
+        let changed = self.shelf.sync.again;
         // Dropped while it ran: new files whose names this run's record would wrongly mark as synced.
-        let dropped = std::mem::take(&mut self.shelf_sync.dropped);
+        let dropped = std::mem::take(&mut self.shelf.sync.dropped);
         if current && let Some(mut both) = out.both {
             self.save(|c| {
                 adopt(c, account);
@@ -110,6 +110,6 @@ impl Island {
                 c.nextcloud.shelf_synced = both.into_iter().map(|n| format!("{folder}/{n}")).collect();
             });
         }
-        if std::mem::take(&mut self.shelf_sync.again) && current { self.nextcloud_shelf_sync() }
+        if std::mem::take(&mut self.shelf.sync.again) && current { self.nextcloud_shelf_sync() }
     }
 }
