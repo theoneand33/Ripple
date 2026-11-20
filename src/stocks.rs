@@ -98,6 +98,8 @@ pub struct Portfolio {
     pub accounts: Vec<Account>,
     /// Every account's balance summed by day, oldest first.
     pub history: Vec<f64>,
+    /// Each of those days' market gain or loss, without deposits and withdrawals.
+    pub market: Vec<f64>,
 }
 
 impl Portfolio {
@@ -105,11 +107,11 @@ impl Portfolio {
     pub fn cash(&self) -> f64 { self.accounts.iter().map(|a| a.cash).sum() }
     pub fn cost(&self) -> f64 { self.accounts.iter().map(|a| a.cost).sum() }
     pub fn open(&self) -> f64 { self.accounts.iter().map(Account::open).sum() }
-    /// The change over the last day of `history`, and over all of it.
+    /// The market's change on the last day, and since the first day's close.
     pub fn changes(&self) -> (f64, f64) {
-        let h = &self.history;
-        if h.len() < 2 { return (0.0, 0.0) }
-        (h[h.len() - 1] - h[h.len() - 2], h[h.len() - 1] - h[0])
+        let m = &self.market;
+        if m.len() < 2 { return (0.0, 0.0) }
+        (m[m.len() - 1], m[1..].iter().sum())
     }
 }
 
@@ -168,7 +170,8 @@ pub fn portfolio(url: &str, key: &str, range: Range) -> Result<Portfolio, String
     let ids: Vec<&str> = accounts.iter().filter_map(|a| a["id"].as_str()).collect();
     // The last week's holdings: each account's latest day of them is what it holds now.
     let holdings = if ids.is_empty() { Vec::new() } else { pages(url, key, "holdings", &[("start_date", days_ago(7))], "holdings", 20)? };
-    let mut history: BTreeMap<String, f64> = BTreeMap::new();
+    // Per day: the balance, and its net market flows.
+    let mut history: BTreeMap<String, [f64; 2]> = BTreeMap::new();
     let mut out = Vec::new();
     for a in &accounts {
         let id = a["id"].as_str().unwrap_or_default();
@@ -195,13 +198,16 @@ pub fn portfolio(url: &str, key: &str, range: Range) -> Result<Portfolio, String
         // shortcut: up to 2,000 days of balances per account under All.
         for b in pages(url, key, "balances", &query, "balances", 20)? {
             if let (Some(day), Some(cents)) = (b["date"].as_str(), b["end_balance_cents"].as_f64()) {
-                *history.entry(day.into()).or_default() += cents / minor(cur);
+                let d = history.entry(day.into()).or_default();
+                d[0] += cents / minor(cur);
+                d[1] += b["net_market_flows_cents"].as_f64().unwrap_or(0.0) / minor(cur);
             }
         }
         out.push(acct);
     }
     // shortcut: totals add each account in its own currency; right while they share one.
-    Ok(Portfolio { currency, accounts: out, history: history.into_values().collect() })
+    let (history, market) = history.into_values().map(|[b, m]| (b, m)).unzip();
+    Ok(Portfolio { currency, accounts: out, history, market })
 }
 
 /// "€34,721.55": the currency's sign, thousands grouped, two decimals.
@@ -286,8 +292,8 @@ mod tests {
                     {"date": "2026-01-02", "qty": "0", "amount": "€0,00", "avg_cost": null, "account": {"id": "a"}},
                 ])),
                 "/api/v1/balances" => page("balances", serde_json::json!([
-                    {"date": "2026-01-02", "end_balance_cents": 1_000_00},
-                    {"date": "2026-01-01", "end_balance_cents": 900_00},
+                    {"date": "2026-01-02", "end_balance_cents": 1_000_00, "net_market_flows_cents": 40_00},
+                    {"date": "2026-01-01", "end_balance_cents": 900_00, "net_market_flows_cents": -5_00},
                 ])),
                 p => json(404, serde_json::json!({"error": "not_found", "message": format!("no {p}")})),
             }
@@ -296,7 +302,7 @@ mod tests {
         assert_eq!(p.accounts.len(), 1);
         let a = &p.accounts[0];
         assert_eq!((a.balance, a.cash, a.positions, a.cost, a.value), (1000.0, 100.0, 1, 700.0, 900.0));
-        assert_eq!((p.history.clone(), p.changes(), p.open()), (vec![900.0, 1000.0], (100.0, 100.0), 200.0));
+        assert_eq!((p.history.clone(), p.changes(), p.open()), (vec![900.0, 1000.0], (40.0, 40.0), 200.0));
         assert_eq!(portfolio(&base, "bad", Range::Day), Err("Sure refused the API key".into()));
     }
 }
