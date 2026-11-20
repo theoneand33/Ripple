@@ -362,6 +362,10 @@ pub struct Island {
     pub dashboard_edit: bool,
     /// The Overview tile being dragged: its index, the pointer's travel, and whether its corner (a resize).
     pub dashboard_drag: Option<(usize, f32, f32, bool)>,
+    /// A widget being dragged out of the edit drawer, and the slot on the grid it would take.
+    pub dashboard_add: Option<(crate::config::Widget, Option<usize>)>,
+    /// Where the Overview's grid draws, in window points, to place a widget dropped on it.
+    pub dashboard_grid: rune::Live<[f32; 4]>,
 
     pub me: Option<Host>,
     pub settings: Option<WindowHandle>,
@@ -490,6 +494,8 @@ impl Island {
             plugins: crate::plugins::Plugins::new(store.dir().as_deref()),
             dashboard_edit: false,
             dashboard_drag: None,
+            dashboard_add: None,
+            dashboard_grid: rune::Live::new([0.0; 4]),
             me: None,
             settings: None,
             settings_app: None,
@@ -685,6 +691,8 @@ impl Island {
         };
         if notch && track && !alerting && self.mode != Mode::Large { w = (w + 40.0).max(300.0) }
         let h = match self.mode {
+            // The Overview fits its tiles.
+            Mode::Large if self.tab == Tab::Overview => (self.notch_inset() - LARGE_EDGE).max(0.0) + 2.0 * LARGE_EDGE + tabs::overview_height(self),
             Mode::Large => (self.notch_inset() - LARGE_EDGE).max(0.0) + large.1,
             _ => if self.cfg.notch_mode { 34.0 } else { 40.0 }, // Mini notch keeps the notch height
         };

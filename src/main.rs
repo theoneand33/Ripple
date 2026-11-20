@@ -404,6 +404,7 @@ fn island_spec() -> AppSpec<Island> {
                 s.cfg.tasks = ["Ship v0.5 due:2026-01-01T17:00"].map(config::Item::new).into();
             }),
             ("overview-edit", |s| { s.mode = Mode::Large; s.set_tab(Tab::Overview); s.dashboard_edit = true }),
+            ("overview-drag-in", |s| { s.mode = Mode::Large; s.set_tab(Tab::Overview); s.dashboard_edit = true; s.dashboard_add = Some((config::Widget::Quote, Some(2))) }),
             ("overview-resize", |s| { s.mode = Mode::Large; s.set_tab(Tab::Overview); s.dashboard_edit = true; s.dashboard_drag = Some((0, -130.0, -60.0, true)) }),
             ("camera", |s| { let mut tx = rune::Tx::default(); s.set_capture(Some(true), None, &mut tx); }),
             ("capture-both", |s| {
