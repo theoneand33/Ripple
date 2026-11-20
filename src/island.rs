@@ -258,6 +258,10 @@ pub struct Island {
     bluetooth_alert_until: Option<f64>,
     /// The task that fell due, and until when its reminder shows.
     pub reminder: Option<(String, f64)>,
+    /// Seconds until each break reminder (eye, hourly), counted only while no app is full screen.
+    break_left: [Option<f64>; 2],
+    /// The clock at the last count.
+    break_tick: f64,
     /// The minute task reminders were last checked, as `YYYY-MM-DDTHH:MM`; empty until the first.
     pub task_mark: String,
     capture: Option<(Alert, f64)>,
@@ -380,6 +384,8 @@ impl Island {
             bluetooth_alert_until: None,
             reminder: None,
             task_mark: String::new(),
+            break_left: [None; 2],
+            break_tick: 0.0,
             capture: None,
             capture_queue: Vec::new(),
             paused_until: None,
@@ -936,6 +942,17 @@ impl Island {
         if self.mode != Mode::Large { self.set_mode(Mode::Quick) }
     }
 
+    /// Once a second: the 20-20-20 eye break and the hourly break, paused while an app is full
+    /// screen. One due while Large is open waits until it closes.
+    pub fn break_reminders(&mut self, now: f64) {
+        let elapsed = now - std::mem::replace(&mut self.break_tick, now);
+        if rune::is_headless() { return }
+        let on = [self.cfg.eye_breaks, self.cfg.hourly_breaks];
+        if let Some(i) = count_breaks(&mut self.break_left, on, elapsed, self.fullscreen || self.mode == Mode::Large) {
+            self.remind(["Look away 20s", "Take a break"][i].into(), now);
+        }
+    }
+
     pub fn set_battery(&mut self, battery: Option<(u8, bool)>, tx: &mut Tx) -> bool {
         let (percent, charging) = battery.map_or((None, false), |(p, c)| (Some(p), c));
         if (percent, charging) == (self.percent, self.charging) { return false }
@@ -1202,8 +1219,8 @@ impl Island {
         std::thread::spawn(move || system::watch_drags(|active| h.update(move |s, _| s.desktop_drag(active))));
         let h = me.clone();
         let store = self.store.clone();
-        // No rule, no query: the default pays nothing.
-        every(1000, move || { let f = store.get().fullscreen != "none" && platform::fullscreen(); h.update_if(move |s, _| s.set_fullscreen(f)); });
+        // No rule and no break reminders, no query: the default pays nothing.
+        every(1000, move || { let f = { let c = store.get(); (c.fullscreen != "none" || c.eye_breaks || c.hourly_breaks) && platform::fullscreen() }; h.update_if(move |s, _| s.set_fullscreen(f)); });
         let h = me.clone();
         every(250, move || { let on = system::caps_lock().unwrap_or(false); h.update_if(move |s, _| s.set_caps_lock(on)); });
         let h = me.clone();
@@ -1238,6 +1255,23 @@ impl Island {
     pub fn set_window(&mut self, window: WindowHandle) {
         self.passthrough.set_window(window);
     }
+}
+
+/// Each break's period in seconds: 20 minutes for the eyes, an hour to get up.
+const BREAKS: [f64; 2] = [20.0 * 60.0, 3600.0];
+
+/// Counts `elapsed` off the breaks that are on, unless `paused`; returns the one that fell due,
+/// which starts its period again.
+fn count_breaks(left: &mut [Option<f64>; 2], on: [bool; 2], elapsed: f64, paused: bool) -> Option<usize> {
+    let mut due = None;
+    for i in 0..2 {
+        if !on[i] { left[i] = None; continue }
+        let l = left[i].get_or_insert(BREAKS[i]);
+        if paused { continue }
+        *l -= elapsed;
+        if *l <= 0.0 && due.is_none() { *l = BREAKS[i]; due = Some(i) }
+    }
+    due
 }
 
 /// Fetches an image (blocking) and hands it, loaded, to `put` on the UI thread.
@@ -1590,6 +1624,20 @@ mod tests {
 
     fn island(cfg: Config) -> Island {
         Island::new(Store::memory(cfg), Vec::new())
+    }
+
+    #[test]
+    fn breaks_fall_due_on_their_period_and_pause_while_full_screen() {
+        let mut left = [None; 2];
+        assert_eq!(count_breaks(&mut left, [true, true], 0.0, false), None);
+        assert_eq!(count_breaks(&mut left, [true, true], 1199.0, false), None);
+        assert_eq!(count_breaks(&mut left, [true, true], 600.0, true), None, "paused");
+        assert_eq!(count_breaks(&mut left, [true, true], 1.0, false), Some(0));
+        assert_eq!(left[0], Some(BREAKS[0]), "starts again");
+        assert_eq!(count_breaks(&mut left, [true, true], 2400.0, false), Some(0));
+        assert_eq!(count_breaks(&mut left, [true, true], 0.0, false), Some(1), "the hourly one comes next");
+        assert_eq!(count_breaks(&mut left, [false, false], 5000.0, false), None);
+        assert_eq!(left, [None, None]);
     }
 
     #[test]

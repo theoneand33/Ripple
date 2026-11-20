@@ -584,6 +584,10 @@ fn page(s: &Settings, k: &Kit, layer: &mut Vec<El>, page: Page) -> Vec<El> {
                     &cfg.fullscreen, |c, v| c.fullscreen = v.into())),
                 toggle(s, k, "Show info when idle", cfg.show_info_idle, |c| c.show_info_idle = !c.show_info_idle),
             ]));
+            sections.push(section(s, "breaks", "Break reminders (paused while an app is full screen)", vec![
+                toggle(s, k, "20-20-20 eye break", cfg.eye_breaks, |c| c.eye_breaks = !c.eye_breaks),
+                toggle(s, k, "Hourly break", cfg.hourly_breaks, |c| c.hourly_breaks = !c.hourly_breaks),
+            ]));
         }
     }
     sections
