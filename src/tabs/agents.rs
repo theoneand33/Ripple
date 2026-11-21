@@ -52,7 +52,7 @@ impl Island {
         changed
     }
 
-    pub fn agents_answer(&mut self, key: &str, answer: Answer) {
+    fn agents_answer(&mut self, key: &str, answer: Answer) {
         let Some(dir) = self.store.dir().map(|d| agents::folder(&d)) else { return };
         // Left up on failure: the hook still waits, and the next scan shows it again.
         if let Err(e) = agents::answer(&dir, key, &answer) { return eprintln!("Ripple: could not answer the agent: {e}") }

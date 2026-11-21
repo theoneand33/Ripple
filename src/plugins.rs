@@ -135,7 +135,7 @@ impl Plugin {
     }
 
     /// The handler of the button with this key, as `--test-plugin --press` finds it.
-    pub fn press_key(&mut self, key: &str) -> bool {
+    fn press_key(&mut self, key: &str) -> bool {
         fn find(n: &Node, key: &str) -> Option<usize> {
             match n {
                 Node::Button { key: k, action, .. } if k == key => Some(*action),

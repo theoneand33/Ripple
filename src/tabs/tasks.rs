@@ -39,7 +39,7 @@ fn weekday_named(w: &str) -> Option<i64> {
 /// allowed), `in 3 days` or `in 2 weeks`, and a time (`9am`, `9:30pm`, `17:00`, `noon`, `at 5`).
 /// A time with no day is today, or tomorrow once that time has passed (`now`, minutes since
 /// midnight). Nothing found, or nothing left of the title, leaves it as it is.
-pub fn natural_due(title: &str, today: Date, now: u32) -> (String, Option<(Date, Option<(u32, u32)>)>) {
+fn natural_due(title: &str, today: Date, now: u32) -> (String, Option<(Date, Option<(u32, u32)>)>) {
     let words: Vec<&str> = title.split_whitespace().collect();
     let lower: Vec<String> = words.iter().map(|w| w.to_lowercase().trim_end_matches([',', '.', ';']).to_string()).collect();
     let at = |i: usize| lower.get(i).map(String::as_str);
@@ -200,7 +200,7 @@ fn tick(s: &mut Island, key: u64) {
 
 /// The tasks due by `now` (`YYYY-MM-DDTHH:MM`) that `reminded` doesn't hold yet, as their
 /// reminder id (`key@due`, so a task moved to a new time reminds again) and title.
-pub fn due_reminders(tasks: &[Item], reminded: &[String], now: &str, today: Date) -> Vec<(String, String)> {
+fn due_reminders(tasks: &[Item], reminded: &[String], now: &str, today: Date) -> Vec<(String, String)> {
     tasks.iter().filter_map(|item| {
         let task = Task::parse(&item.text, today);
         let due = task.due_key().filter(|k| k.as_str() <= now)?;

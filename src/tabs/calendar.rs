@@ -34,7 +34,7 @@ pub struct Calendar {
 
 impl Island {
     /// Fetches the ICS links once every 30 minutes, or at once when they changed.
-    pub fn calendar_feeds_load(&mut self) {
+    fn calendar_feeds_load(&mut self) {
         let now = crate::date::now_secs();
         let feeds = self.cfg.calendar_feeds.clone();
         if feeds == self.calendar.feeds_loaded.0 && now - self.calendar.feeds_loaded.1 < 1800 { return }
@@ -59,7 +59,7 @@ const MONTHS: [&str; 12] = ["January", "February", "March", "April", "May", "Jun
 
 /// The first `https://` link in an event's title, and the title without it. An `http://` link
 /// stays in the title and gets no Join button.
-pub fn meeting_link(title: &str) -> (Option<String>, String) {
+fn meeting_link(title: &str) -> (Option<String>, String) {
     let link = title.split_whitespace().find(|w| w.starts_with("https://"));
     let rest = title.split_whitespace().filter(|w| Some(*w) != link).collect::<Vec<_>>().join(" ");
     (link.map(str::to_string), rest)

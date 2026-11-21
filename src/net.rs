@@ -36,7 +36,7 @@ pub struct Weather {
 }
 
 /// Whether a WMO code is rain (false) or snow (true); None for neither.
-pub fn precip_kind(code: u64) -> Option<bool> {
+fn precip_kind(code: u64) -> Option<bool> {
     match code { 51..=67 | 80..=82 | 95..=99 => Some(false), 71..=77 | 85 | 86 => Some(true), _ => None }
 }
 

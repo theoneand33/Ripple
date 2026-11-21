@@ -43,7 +43,7 @@ impl Island {
         self.notes.editor = TextEdit::new(self.cfg.notes.get(self.notes.index).map_or("", |n| n.text.as_str()));
     }
 
-    pub fn add_note(&mut self) {
+    fn add_note(&mut self) {
         // An empty note on top is reused rather than stacking blanks.
         if self.cfg.notes.first().is_none_or(|n| !n.text.trim().is_empty()) { self.save(|c| c.notes.insert(0, Item::new(""))) }
         self.open_note(0);
@@ -56,14 +56,14 @@ impl Island {
     }
 
     /// The notes the list shows, by index: pinned first, each matching the search.
-    pub fn listed_notes(&self) -> Vec<usize> {
+    fn listed_notes(&self) -> Vec<usize> {
         let query = self.notes.search.text.trim().to_lowercase();
         let mut shown: Vec<usize> = (0..self.cfg.notes.len()).filter(|i| query.is_empty() || self.cfg.notes[*i].text.to_lowercase().contains(&query)).collect();
         shown.sort_by_key(|i| !self.cfg.pinned_notes.contains(&self.cfg.notes[*i].key));
         shown
     }
 
-    pub fn delete_note(&mut self) {
+    fn delete_note(&mut self) {
         let mut gone = None;
         if let Some(key) = self.cfg.notes.get(self.notes.index).map(|n| n.key) { self.save(|c| { gone = nextcloud::remove(c, Kind::Notes, key); c.pinned_notes.retain(|k| *k != key) }) }
         if let Some((i, item)) = gone { self.undo = Some(Undo::Item(Kind::Notes, i, item)) }
@@ -81,7 +81,7 @@ impl Island {
         }
     }
 
-    pub fn note_edited(&mut self) {
+    fn note_edited(&mut self) {
         let (i, text) = (self.notes.index, self.notes.editor.text.clone());
         if self.cfg.notes.get(i).is_some_and(|n| n.text != text) {
             // Saved to disk once a second by `notes_tick`, not on every key.

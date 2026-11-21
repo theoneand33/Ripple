@@ -51,7 +51,7 @@ impl Island {
         });
     }
 
-    pub fn ask_another(&mut self) {
+    fn ask_another(&mut self) {
         self.ai.generation += 1;
         self.ai.asked = false;
         self.ai.answer = None;

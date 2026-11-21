@@ -69,7 +69,7 @@ impl Island {
         });
     }
 
-    pub fn search_hits(&self) -> Vec<Hit<'_>> {
+    fn search_hits(&self) -> Vec<Hit<'_>> {
         let q = self.finder.field.text.trim().to_lowercase();
         if q.is_empty() { return Vec::new() }
         let apps = self.finder.apps.iter().flatten().map(|a| (a.name.to_lowercase(), a));
@@ -79,7 +79,7 @@ impl Island {
         hits
     }
 
-    pub fn search_open(&mut self, tx: &mut Tx) {
+    fn search_open(&mut self, tx: &mut Tx) {
         let hits = self.search_hits();
         let Some(hit) = hits.get(self.finder.pick.min(hits.len().saturating_sub(1))) else { return };
         match hit {

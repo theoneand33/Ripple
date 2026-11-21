@@ -6,7 +6,7 @@ use crate::date::{add_days, days_in};
 pub type Date = (i32, u32, u32);
 
 /// A minute as due times compare: `YYYY-MM-DDTHH:MM`, which sorts as text.
-pub fn minute_key((y, m, d): Date, (h, min): (u32, u32)) -> String { format!("{y:04}-{m:02}-{d:02}T{h:02}:{min:02}") }
+fn minute_key((y, m, d): Date, (h, min): (u32, u32)) -> String { format!("{y:04}-{m:02}-{d:02}T{h:02}:{min:02}") }
 
 /// Now on this clock, as a `minute_key`.
 pub fn now_key() -> String {

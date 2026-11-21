@@ -127,7 +127,7 @@ impl Host {
         match self { Host::Window(h) => h.update(f), Host::Overlay(h, ..) => h.update(f) }
     }
 
-    pub fn update_if(&self, f: impl FnOnce(&mut Island, &mut Tx) -> bool + Send + 'static) {
+    fn update_if(&self, f: impl FnOnce(&mut Island, &mut Tx) -> bool + Send + 'static) {
         match self { Host::Window(h) => h.update_if(f), Host::Overlay(h, ..) => h.update_if(f) }
     }
 
@@ -238,7 +238,7 @@ impl Placement {
     }
 
     /// The tallest the Island gets with its dock and shadow still on the display.
-    pub fn max_h(&self) -> f32 {
+    fn max_h(&self) -> f32 {
         (if self.top { self.visible_h - self.y } else { self.y }) - DOCK.0 - DOCK.1 - 8.0
     }
 
@@ -549,7 +549,7 @@ impl Island {
     pub fn playing(&self) -> bool { self.track.as_ref().is_some_and(|t| t.playing) }
 
     /// The compact view shows the track: while it plays, and for 3 seconds after a pause.
-    pub fn shows_track(&self) -> bool { self.playing() || self.paused_until.is_some() }
+    fn shows_track(&self) -> bool { self.playing() || self.paused_until.is_some() }
 
     /// Hide when inactive, unless an app is full screen and its rule says otherwise.
     pub fn hiding(&self) -> bool {
@@ -590,7 +590,7 @@ impl Island {
     }
 
     /// A reminder shows: other alerts of its kind wait their turn.
-    pub fn reminding(&self) -> bool { self.shown_until(Alert::Reminder).is_some() }
+    fn reminding(&self) -> bool { self.shown_until(Alert::Reminder).is_some() }
 
     /// Live activities the compact Island has no room for, each in a circle of its own beside it:
     /// away from the display edge the Island hugs, or taking turns right then left when centred.
@@ -618,7 +618,7 @@ impl Island {
     fn joinable(&self) -> bool { self.alert() == Some(Alert::Reminder) && self.reminder_link.is_some() }
 
     /// The Island colour at the opacity set for the mode it is in.
-    pub fn island_bg(&self) -> Color {
+    fn island_bg(&self) -> Color {
         let bg = self.cfg.bg();
         bg.alpha(bg.a * if self.mode == Mode::Large { self.cfg.large_opacity } else { self.cfg.compact_opacity } / 100.0)
     }
@@ -659,7 +659,7 @@ impl Island {
     /// True when the Island must clear a physical notch (Notch Mode, not Mini).
     fn clears_notch(&self) -> bool { self.cfg.notch_mode && !self.cfg.notch_mini }
 
-    pub fn notch_inset(&self) -> f32 { if self.clears_notch() { 34.0 } else { 0.0 } }
+    fn notch_inset(&self) -> f32 { if self.clears_notch() { 34.0 } else { 0.0 } }
 
     /// Notch Mode's compact width: the notch, plus the wider half of the glance and its padding on
     /// each side, so neither half sits under the notch. Mirrors `glance`.
@@ -710,7 +710,7 @@ impl Island {
 
     /// The tab dock's rect, the gap to the Island included: under the Large Island, or over it
     /// when the Island stands on the bottom of the display.
-    pub fn dock_rect(&self) -> Option<[f32; 4]> {
+    fn dock_rect(&self) -> Option<[f32; 4]> {
         if self.mode != Mode::Large { return None }
         let (h, gap, button, space) = DOCK;
         let n = self.visible_tabs().len() as f32;
@@ -728,7 +728,7 @@ impl Island {
         self.cfg.tab_order.iter().copied().filter(|t| !self.cfg.hidden_tabs.contains(t) && tabs::has_content(self, *t)).collect()
     }
 
-    pub fn first_tab(&self) -> Tab {
+    fn first_tab(&self) -> Tab {
         let visible = self.visible_tabs();
         if visible.contains(&self.cfg.default_tab) { self.cfg.default_tab } else { visible.first().copied().unwrap_or(Tab::Search) }
     }
@@ -762,7 +762,7 @@ impl Island {
 
     pub fn hover(&mut self, hovered: bool, tx: &mut Tx) { self.set_over(0, hovered, tx) }
 
-    pub fn hover_dock(&mut self, hovered: bool, tx: &mut Tx) { self.set_over(1, hovered, tx) }
+    fn hover_dock(&mut self, hovered: bool, tx: &mut Tx) { self.set_over(1, hovered, tx) }
 
     /// Moving from the Island to its dock leaves one before entering the other: the Island
     /// rests only if the pointer is over neither by the next poll.
@@ -808,7 +808,7 @@ impl Island {
     }
 
     /// A click on a bubble opens Large, on the activity's tab when it has a visible one.
-    pub fn open_bubble(&mut self, kind: Bubble, tx: &mut Tx) {
+    fn open_bubble(&mut self, kind: Bubble, tx: &mut Tx) {
         tx.blur();
         self.set_mode(Mode::Large);
         if kind == Bubble::Pomodoro && self.visible_tabs().contains(&Tab::Pomodoro) {
@@ -901,7 +901,7 @@ impl Island {
     }
 
     /// The user's tab change: `set_tab`, and it earns the linger.
-    pub fn open_tab(&mut self, tab: Tab) {
+    fn open_tab(&mut self, tab: Tab) {
         if self.tab != tab && self.mode == Mode::Large { self.tab_changed = true }
         self.set_tab(tab);
     }
@@ -923,7 +923,7 @@ impl Island {
     }
 
     /// A file drag over the Island opens the Shelf; one that leaves without dropping lets it rest.
-    pub fn drop_hover(&mut self, over: bool, _: &mut Tx) {
+    fn drop_hover(&mut self, over: bool, _: &mut Tx) {
         self.shelf.dropping = over;
         if over {
             self.open_by_hand(Tab::Shelf);
@@ -946,7 +946,7 @@ impl Island {
     }
 
     /// Dropped files go on top of the Shelf; one already there moves up.
-    pub fn drop_files(&mut self, files: &[std::path::PathBuf], _: &mut Tx) {
+    fn drop_files(&mut self, files: &[std::path::PathBuf], _: &mut Tx) {
         self.save(|c| {
             c.shelf.retain(|f| !files.contains(f));
             c.shelf.splice(0..0, files.iter().cloned());
@@ -977,7 +977,7 @@ impl Island {
 
     /// Typing while a dock button has focus jumps to the tab of that name; letters typed within
     /// a second of each other add up ("ca" picks Calendar over Clipboard).
-    pub fn dock_key(&mut self, ev: &KeyEvent, tx: &mut Tx) -> bool {
+    fn dock_key(&mut self, ev: &KeyEvent, tx: &mut Tx) -> bool {
         let Key::Text(typed) = &ev.key else { return false };
         let now = tx.clock();
         if now > self.type_ahead.1 { self.type_ahead.0.clear() }
@@ -1108,7 +1108,7 @@ impl Island {
 
     /// Once a second: the 20-20-20 eye break and the hourly break, paused while an app is full
     /// screen. One due while Large is open waits until it closes.
-    pub fn break_reminders(&mut self, now: f64) {
+    fn break_reminders(&mut self, now: f64) {
         let elapsed = now - std::mem::replace(&mut self.break_tick, now);
         let on = [self.cfg.eye_breaks, self.cfg.hourly_breaks];
         let paused = self.fullscreen || !self.can_remind() || self.quiet();
@@ -1136,7 +1136,7 @@ impl Island {
     }
 
     /// Once a second: an alert once rain or snow is due within the hour; Large waits for compact.
-    pub fn rain_alert(&mut self, now: f64) {
+    fn rain_alert(&mut self, now: f64) {
         // `rain_alerted` stays through a pause in the rain: `rain_due` lets only rain 3 hours away from it alert again.
         let Some((at, _)) = self.weather.precip else { return };
         if !self.cfg.rain_alerts || !self.can_remind() || self.quiet() { return }
@@ -1171,7 +1171,7 @@ impl Island {
         }
     }
 
-    pub fn set_battery(&mut self, battery: Option<(u8, bool)>, tx: &mut Tx) -> bool {
+    fn set_battery(&mut self, battery: Option<(u8, bool)>, tx: &mut Tx) -> bool {
         let (percent, charging) = battery.map_or((None, false), |(p, c)| (Some(p), c));
         if (percent, charging) == (self.percent, self.charging) { return false }
         let now = tx.clock();
@@ -1219,7 +1219,7 @@ impl Island {
     }
 
     /// The full screen rule applies to a resting Island; one held open stays until it rests.
-    pub fn set_fullscreen(&mut self, on: bool) -> bool {
+    fn set_fullscreen(&mut self, on: bool) -> bool {
         // Hovered or focused, the focused-window check may read Ripple itself; keep the last reading.
         if on == self.fullscreen || self.hovered || self.focused { return false }
         let before = self.rest();
