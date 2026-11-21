@@ -11,7 +11,7 @@ use rune::{El, Transition, Tx, col, el, row, text};
 use super::{Scrolls, accent, button, checkbox, chip, empty, field, tool};
 use crate::config::Item;
 use crate::date::{add_days, format_date};
-use crate::task::{Date, Every, Task, is_bangs};
+use crate::task::{Date, Every, Task, is_bangs, now_key};
 use crate::icons;
 use crate::island::Island;
 use crate::nextcloud::{self, Kind};
@@ -214,8 +214,7 @@ impl Island {
     /// that fell due while Ripple wasn't running. Several at once share one reminder.
     pub fn task_reminders(&mut self, now: f64) {
         if !self.can_remind() { return }
-        let t = LocalTime::at(crate::date::now_ms());
-        let mark = format!("{:04}-{:02}-{:02}T{:02}:{:02}", t.year, t.month, t.day, t.hour, t.minute);
+        let mark = now_key();
         if std::mem::replace(&mut self.tasks.mark, mark.clone()) == mark { return }
         let due = due_reminders(&self.cfg.tasks, &self.cfg.reminded_tasks, &mark, self.today);
         if due.is_empty() { return }
@@ -242,7 +241,7 @@ pub fn view(s: &Island) -> El {
         list = list.child(text(e).font(s.cfg.font(12.0, 400.0)).color(muted).wrap_anywhere());
     }
     if s.cfg.tasks.is_empty() { list = list.child(empty(s, "No tasks yet")) }
-    let now = { let t = LocalTime::at(crate::date::now_ms()); format!("{:04}-{:02}-{:02}T{:02}:{:02}", t.year, t.month, t.day, t.hour, t.minute) };
+    let now = now_key();
     // Highest priority first, then soonest due; the rest keep their order.
     let mut tasks: Vec<_> = s.cfg.tasks.iter().map(|i| (i.key, Task::parse(&i.text, s.today))).collect();
     tasks.sort_by_key(|(_, t)| (std::cmp::Reverse(t.priority), t.due_key().unwrap_or_else(|| "~".into())));

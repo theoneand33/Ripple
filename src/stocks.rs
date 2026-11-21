@@ -162,7 +162,7 @@ fn pages(url: &str, key: &str, path: &str, query: &[(&str, String)], field: &str
 
 /// The day `days` before today (UTC), as `YYYY-MM-DD`.
 fn days_ago(days: i64) -> String {
-    let t = rune::time::LocalTime::at_offset(crate::date::now_ms() - days * 86_400_000, 0);
+    let t = crate::date::utc_days_ago(days);
     format!("{:04}-{:02}-{:02}", t.year, t.month, t.day)
 }
 

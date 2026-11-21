@@ -5,6 +5,15 @@ use crate::date::{add_days, days_in};
 
 pub type Date = (i32, u32, u32);
 
+/// A minute as due times compare: `YYYY-MM-DDTHH:MM`, which sorts as text.
+pub fn minute_key((y, m, d): Date, (h, min): (u32, u32)) -> String { format!("{y:04}-{m:02}-{d:02}T{h:02}:{min:02}") }
+
+/// Now on this clock, as a `minute_key`.
+pub fn now_key() -> String {
+    let t = rune::time::LocalTime::at(crate::date::now_ms());
+    minute_key((t.year, t.month, t.day), (t.hour, t.minute))
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Every {
     Day,
@@ -59,11 +68,10 @@ impl Task {
     }
 
     /// The due time reminders and order go by: a day without a time is due at 9:00.
-    pub fn due_key(&self) -> Option<String> {
-        let ((y, m, d), time) = self.due?;
-        let (h, min) = time.unwrap_or((9, 0));
-        Some(format!("{y:04}-{m:02}-{d:02}T{h:02}:{min:02}"))
-    }
+    pub fn due_at(&self) -> Option<(Date, (u32, u32))> { self.due.map(|(day, time)| (day, time.unwrap_or((9, 0)))) }
+
+    /// `due_at` as a `minute_key`.
+    pub fn due_key(&self) -> Option<String> { self.due_at().map(|(day, time)| minute_key(day, time)) }
 
     /// The next one of a recurring task, due the first repeat after its due day that is not
     /// before today; one with no due day is due a repeat from today.

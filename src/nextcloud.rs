@@ -631,7 +631,7 @@ fn sync_events(c: &Client, want: &str, items: &[Item], pending: &[String], out: 
 
 /// Now, or `days_ago` days back, in UTC.
 fn utc_stamp(days_ago: i64) -> String {
-    let t = rune::time::LocalTime::at_offset(crate::date::now_ms() - days_ago * 86_400_000, 0);
+    let t = crate::date::utc_days_ago(days_ago);
     format!("{:04}{:02}{:02}T{:02}{:02}{:02}Z", t.year, t.month, t.day, t.hour, t.minute, t.second)
 }
 

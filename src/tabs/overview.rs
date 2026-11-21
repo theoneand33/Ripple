@@ -566,8 +566,7 @@ fn timeline(s: &Island) -> Vec<(u32, String, bool)> {
     });
     let tasks = s.cfg.tasks.iter().filter_map(|t| {
         let task = Task::parse(&t.text, s.today);
-        let (_, time) = task.due.filter(|(d, _)| *d == s.today)?;
-        let (h, m) = time.unwrap_or((9, 0));
+        let (_, (h, m)) = task.due_at().filter(|(d, _)| *d == s.today)?;
         Some((h * 60 + m, task.title, true))
     });
     let mut items: Vec<_> = events.chain(tasks).collect();
