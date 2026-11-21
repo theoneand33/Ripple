@@ -10,7 +10,6 @@ use crate::island::Island;
 use crate::nextcloud::{self, Kind};
 
 pub struct Notes {
-    /// The open note's editor.
     pub editor: TextEdit,
     /// Which note the editor edits.
     pub index: usize,
@@ -151,7 +150,6 @@ pub fn view(s: &Island) -> El {
     let editor = text_input(&s.notes.editor, s.cfg.font(14.0, 400.0).lh(20.0)).key("note-editor").label("Note").w_full()
         .color(fg).placeholder("Title, then your note", fg.alpha(0.5 * fg.a))
         .on_edit(|s: &mut Island| &mut s.notes.editor)
-        // Return breaks the line.
         .on_submit(|s: &mut Island, _| { s.notes.editor.insert("\n"); s.note_edited() })
         .on_input_change(|s: &mut Island, _| s.note_edited());
     root.child(

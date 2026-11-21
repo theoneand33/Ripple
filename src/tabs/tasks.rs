@@ -242,7 +242,6 @@ pub fn view(s: &Island) -> El {
     }
     if s.cfg.tasks.is_empty() { list = list.child(empty(s, "No tasks yet")) }
     let now = now_key();
-    // Highest priority first, then soonest due; the rest keep their order.
     let mut tasks: Vec<_> = s.cfg.tasks.iter().map(|i| (i.key, Task::parse(&i.text, s.today))).collect();
     tasks.sort_by_key(|(_, t)| (std::cmp::Reverse(t.priority), t.due_key().unwrap_or_else(|| "~".into())));
     for (key, task) in tasks {
@@ -284,7 +283,6 @@ pub fn view(s: &Island) -> El {
         .child(controls(s))
 }
 
-/// A chip that does something when pressed.
 fn toggle(s: &Island, key: &str, label: &str, tint: rune::Color, on: bool, press: impl Fn(&mut Island) + 'static) -> El {
     chip(s, key, label, tint, on).role("button").label(label.to_string()).focusable(true).on_press(press)
 }

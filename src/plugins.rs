@@ -102,7 +102,6 @@ impl Plugin {
         self.error.get_or_insert(e.to_string());
     }
 
-    /// Calls `spec[name](state)` when the plugin defines it.
     fn call(&mut self, name: &str, deadline: Instant) {
         let Some(spec) = &self.spec else { return };
         let r = guarded(&self.lua, deadline, || match spec.get::<Option<Function>>(name)? {
@@ -158,7 +157,6 @@ impl Plugin {
     }
 }
 
-/// Runs `f`, stopping it at `deadline`.
 fn guarded<R>(lua: &Lua, deadline: Instant, f: impl FnOnce() -> mlua::Result<R>) -> mlua::Result<R> {
     lua.set_app_data(deadline);
     lua.set_global_hook(HookTriggers::new().every_nth_instruction(10_000), move |_, _| {
@@ -204,7 +202,6 @@ fn node(v: &Value, handlers: &mut Vec<Function>, depth: usize, count: &mut usize
     })
 }
 
-/// The plugins found, and the one the tab shows.
 #[derive(Default)]
 pub struct Plugins {
     pub list: Vec<Plugin>,

@@ -90,7 +90,6 @@ pub enum Answer {
     Answers(BTreeMap<String, String>),
 }
 
-/// How the Island names an agent.
 pub fn name(agent: &str) -> &str {
     match agent {
         "claude" => "Claude Code",
@@ -280,7 +279,6 @@ pub fn scan(dir: &Path, processes: bool) -> (Vec<Session>, Vec<Request>) {
     (sessions, requests)
 }
 
-/// The Island's answer to a waiting hook.
 pub fn answer(dir: &Path, key: &str, answer: &Answer) -> std::io::Result<()> {
     write_atomic(&dir.join("requests").join(format!("{key}.answer")), &serde_json::to_string(answer)?)
 }

@@ -44,7 +44,6 @@ pub fn merge(shown: usize, texts: Vec<String>) -> Option<(String, usize)> {
     }
 }
 
-/// The command itself: queues its arguments as one text. Returns the exit code.
 pub fn cli(args: &[String]) -> i32 {
     let text = args.join(" ");
     if text.trim().is_empty() { eprintln!("Usage: ripple notify \"text\""); return 2 }

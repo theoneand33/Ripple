@@ -25,7 +25,6 @@ pub struct Shelf {
     pub name: TextEdit,
     /// The last action's error, or the work in progress.
     status: String,
-    /// Nextcloud sync of the Shelf.
     pub sync: super::SyncState,
     /// A file drag is over the Island.
     pub dropping: bool,

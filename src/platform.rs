@@ -63,7 +63,6 @@ pub struct Passthrough {
 }
 
 impl Passthrough {
-    /// A new native window: whatever was applied to the old one is gone.
     /// Resizes the window, in points.
     pub fn resize(&self, size: (f32, f32)) {
         if let Some(w) = &self.window { w.resize_instant(size) }
@@ -71,6 +70,7 @@ impl Passthrough {
 
     pub fn window(&self) -> Option<&WindowHandle> { self.window.as_ref() }
 
+    /// A new native window: whatever was applied to the old one is gone.
     pub fn set_window(&mut self, window: WindowHandle) {
         self.window = Some(window);
         self.applied = None;

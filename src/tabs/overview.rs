@@ -422,7 +422,6 @@ fn water(s: &Island, h: f32) -> El {
 
 /// The Overview's layout editing.
 pub struct Dashboard {
-    /// The layout is being edited.
     pub edit: bool,
     /// The tile being dragged: its index, the pointer's travel, and whether its corner (a resize).
     pub drag: Option<(usize, f32, f32, bool)>,

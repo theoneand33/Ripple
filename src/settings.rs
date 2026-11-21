@@ -138,7 +138,6 @@ impl Settings {
         }
     }
 
-    /// Saves a change and tells the Island.
     fn save(&mut self, f: impl FnOnce(&mut Config)) {
         self.cfg = self.store.update(f);
         // A theme rewrites both colours; the fields show what it set unless one is being typed in.
@@ -333,7 +332,6 @@ fn matches(query: &str, label: &str) -> bool {
     query.split_whitespace().all(|w| label.contains(&w.to_lowercase()))
 }
 
-/// A titled card of rows.
 fn section(s: &Settings, key: &str, title: &str, rows: Vec<El>) -> El {
     let fg = s.cfg.text().alpha(1.0);
     let card = rows.into_iter().fold(
@@ -417,7 +415,6 @@ fn has_panel(tab: Tab) -> bool {
     }
 }
 
-/// The settings for one tab's panel, as sections.
 fn panel(s: &Settings, k: &Kit, layer: &mut Vec<El>, tab: Tab) -> Vec<El> {
     let cfg = &s.cfg;
     let fg = cfg.text().alpha(1.0);
@@ -619,7 +616,6 @@ fn panel(s: &Settings, k: &Kit, layer: &mut Vec<El>, tab: Tab) -> Vec<El> {
     sections
 }
 
-/// The sections of an app-wide page.
 fn page(s: &Settings, k: &Kit, layer: &mut Vec<El>, page: Page) -> Vec<El> {
     let cfg = &s.cfg;
     let fg = cfg.text().alpha(1.0);

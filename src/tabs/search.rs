@@ -17,7 +17,6 @@ const PER_KIND: usize = 3;
 
 #[derive(Default)]
 pub struct Finder {
-    /// What is typed into the search bar.
     pub field: rune::TextEdit,
     /// Installed apps, found once.
     pub apps: Option<Vec<QuickApp>>,

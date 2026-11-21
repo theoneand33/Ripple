@@ -180,7 +180,6 @@ fn renew(s: &Saved, expired: &str) -> Result<String, String> {
     saved
 }
 
-/// Posts the refresh token and puts the answer's tokens into `creds`; returns the access token.
 fn renew_into(s: &Saved, creds: &mut Value) -> Result<String, String> {
     let refresh = creds[s.refresh].as_str().ok_or(EXPIRED)?.to_string();
     let mut body = serde_json::json!({"grant_type": "refresh_token", "refresh_token": refresh, "client_id": s.oauth.client});

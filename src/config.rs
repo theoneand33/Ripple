@@ -673,13 +673,11 @@ impl Config {
         self.quiet_hours && if from <= to { (from..to).contains(&hour) } else { hour >= from || hour < to }
     }
 
-    /// The Stocks base currency's code; empty means USD.
     pub fn stocks_currency(&self) -> String {
         let c = self.stocks_currency.trim().to_uppercase();
         if c.is_empty() { "USD".into() } else { c }
     }
 
-    /// Glasses of water drunk on `day`.
     pub fn water(&self, day: i64) -> u32 { if self.water_day == day { self.water_count } else { 0 } }
 
     pub fn provider(&self) -> &'static Provider {
@@ -801,7 +799,6 @@ impl Store {
         inner.cfg.clone()
     }
 
-    /// Saves what `update_unsaved` changed.
     pub fn flush(&self) { self.update(|_| {}); }
 
     /// Where Rune keeps this app's files, for the T3 token cache and the app cache.

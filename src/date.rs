@@ -1,11 +1,9 @@
 //! Calendar dates as (year, month, day), and the wall clock.
 
-/// Unix milliseconds now.
 pub fn now_ms() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64)
 }
 
-/// Unix seconds now.
 pub fn now_secs() -> i64 { now_ms() / 1000 }
 
 /// "9:41", or on a 12-hour clock "9:41" for 21:41 too.
@@ -61,16 +59,13 @@ pub fn days_in(year: i32, month: u32) -> u32 {
     }
 }
 
-/// The month `offset` months from (year, month).
 pub fn shift_month(year: i32, month: u32, offset: i32) -> (i32, u32) {
     let i = year * 12 + month as i32 - 1 + offset;
     (i.div_euclid(12), i.rem_euclid(12) as u32 + 1)
 }
 
-/// The UTC time `days` days ago.
 pub fn utc_days_ago(days: i64) -> rune::time::LocalTime { rune::time::LocalTime::at_offset(now_ms() - days * 86_400_000, 0) }
 
-/// The day `days` days after (year, month, day).
 pub fn add_days((y, m, d): (i32, u32, u32), days: i64) -> (i32, u32, u32) {
     let t = rune::time::LocalTime::at_offset((days_from_civil(y, m, d) + days) * 86_400_000, 0);
     (t.year, t.month, t.day)

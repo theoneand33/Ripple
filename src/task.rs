@@ -39,7 +39,6 @@ impl Every {
     }
 }
 
-/// A task's text, read.
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct Task {
     /// 0 for none, up to 3 for `!!!`.
@@ -70,7 +69,6 @@ impl Task {
     /// The due time reminders and order go by: a day without a time is due at 9:00.
     pub fn due_at(&self) -> Option<(Date, (u32, u32))> { self.due.map(|(day, time)| (day, time.unwrap_or((9, 0)))) }
 
-    /// `due_at` as a `minute_key`.
     pub fn due_key(&self) -> Option<String> { self.due_at().map(|(day, time)| minute_key(day, time)) }
 
     /// The next one of a recurring task, due the first repeat after its due day that is not

@@ -155,7 +155,6 @@ impl Client {
     /// A WebDAV path (`/remote.php/dav/...`) as a URL on this server; `server_path` keeps out any other host.
     fn at(&self, href: &str) -> String { format!("{}{href}", self.origin) }
 
-    /// One request: its status, ETag header and body.
     fn call(&self, method: &str, url: &str, headers: &[(&str, &str)], body: &str) -> Result<(u16, String, String), String> {
         let mut req = ureq::http::Request::builder().method(method).uri(url).header("authorization", &self.auth);
         for (k, v) in headers { req = req.header(*k, *v) }
@@ -634,7 +633,6 @@ fn sync_events(c: &Client, want: &str, items: &[Item], pending: &[String], out: 
     Ok(())
 }
 
-/// Now, or `days_ago` days back, in UTC.
 fn utc_stamp(days_ago: i64) -> String {
     let t = crate::date::utc_days_ago(days_ago);
     format!("{:04}{:02}{:02}T{:02}{:02}{:02}Z", t.year, t.month, t.day, t.hour, t.minute, t.second)

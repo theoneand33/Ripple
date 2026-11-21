@@ -28,7 +28,7 @@ pub struct Calendar {
     pub feed_error: Option<String>,
     /// The links last fetched, and when (Unix seconds).
     feeds_loaded: (Vec<String>, i64),
-    /// An event alert due in quiet hours, (title, meeting link): it shows once they end.
+    /// An event alert due in quiet hours, (title, meeting link, how many it stands for): it shows once they end.
     held: Option<(String, Option<String>, usize)>,
 }
 
@@ -192,7 +192,6 @@ pub fn view(s: &Island) -> El {
                 .child(text(year.to_string()).font(s.cfg.font(17.0, 400.0).features("'tnum' 1")).color(fg.alpha(0.5 * fg.a))),
         );
     if s.calendar.offset != 0 || s.calendar.day.is_some_and(|d| d != s.today) {
-        // Shaped like `tool`, so it sits quietly beside the arrows.
         header = header.child(pill(s, "calendar-today", "Today").on_press(|s: &mut Island| (s.calendar.offset, s.calendar.day) = (0, None)));
     }
     header = header

@@ -220,7 +220,6 @@ fn unescape_text(value: &str) -> String {
     out
 }
 
-/// A TEXT value for iCalendar.
 fn escape_text(value: &str) -> String { value.replace('\\', "\\\\").replace(';', "\\;").replace(',', "\\,").replace('\n', "\\n").replace('\r', "") }
 
 /// A to-do from a task's text; `open_task` reads it back as the same text.

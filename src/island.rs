@@ -24,7 +24,7 @@ pub const CANVAS: (f32, f32) = (1060.0, 600.0);
 /// Room kept around the Island inside the window for its shadow and hover scale.
 const PAD: f32 = 30.0;
 /// The tab dock under the Large Island: its height, the gap above it, one button and the space between.
-// 28pt buttons 3pt apart leave room past all 21 tabs in the canvas.
+// 28pt buttons 3pt apart leave room for every tab in the canvas (a test checks it).
 const DOCK: (f32, f32, f32, f32) = (44.0, 12.0, 28.0, 3.0);
 /// Room between the Large Island's edge and its tab's content.
 pub const LARGE_EDGE: f32 = 12.0;
@@ -253,7 +253,6 @@ impl Placement {
         [self.window.0 * k, self.window.1 * k, CANVAS.0 * k, CANVAS.1 * k]
     }
 
-    /// The Island's rect inside the window for a size.
     pub fn rect(&self, (w, h): (f32, f32)) -> [f32; 4] {
         let left = match self.align { -1 => self.x, 0 => self.x - w / 2.0, _ => self.x - w };
         [left, if self.top { self.y } else { self.y - h }, w, h]
@@ -314,7 +313,6 @@ pub struct Island {
     fullscreen: bool,
     /// The alerts showing for a while, each until when; `alert` picks the first in `Alert` order.
     timed: Vec<(Alert, f64)>,
-    /// The reminder's text.
     reminder: String,
     /// The reminder's meeting link, for its Join button.
     reminder_link: Option<String>,
@@ -556,7 +554,6 @@ impl Island {
         match self.fullscreen_rule() { "hidden" => true, "standby" | "still" => false, _ => self.cfg.hide_inactive }
     }
 
-    /// The full screen rule in force now; "none" while no app is full screen.
     fn fullscreen_rule(&self) -> &str { if self.fullscreen { &self.cfg.fullscreen } else { "none" } }
 
     /// Hide when inactive: resting with no track or live activity to show.
@@ -705,7 +702,6 @@ impl Island {
         (w, h)
     }
 
-    /// The Island's rect inside its window.
     pub fn rect(&self) -> [f32; 4] { self.placement.rect(self.size()) }
 
     /// The tab dock's rect, the gap to the Island included: under the Large Island, or over it
@@ -1082,7 +1078,6 @@ impl Island {
 
     // --- What the pollers report ---
 
-    /// Shows a reminder for 6 seconds.
     pub fn remind(&mut self, title: String, now: f64) { self.remind_for(title, None, now + 6.0) }
 
     fn remind_for(&mut self, title: String, link: Option<String>, until: f64) {
