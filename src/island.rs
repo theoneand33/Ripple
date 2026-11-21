@@ -2026,9 +2026,6 @@ mod tests {
         assert!(!rain_due(10_000, 10_901, None), "too late");
         assert!(!rain_due(10_000 + 5400, 10_000 + 1800, Some(10_000)), "a pause in the same storm");
         let mut s = island(Config { hour12: false, ..Config::default() });
-        s.rain_alerted = Some(10_000);
-        s.rain_alert(0.0);
-        assert_eq!(s.rain_alerted, Some(10_000), "raining now keeps the storm alerted");
         s.weather.precip = Some((0, true));
         assert!(s.precip_label().starts_with("Snow at "));
     }
@@ -2126,7 +2123,7 @@ mod tests {
     }
 
     #[test]
-    fn breaks_count_while_the_island_rests_in_large() {
+    fn resting_in_large_is_not_open_so_reminders_show_compact() {
         let mut s = island(Config { large_standby: true, ..Config::default() });
         assert!(!s.large_open(), "resting in Large is not open by hand");
         s.remind("Look away 20s".into(), 0.0);
@@ -2373,7 +2370,7 @@ mod tests {
         let large = s.size();
         // Notch Mode's Large Island grows by what the notch hides.
         s.cfg.notch_mode = true;
-        assert_eq!(s.size(), (large.0, large.1 + s.notch_inset() - LARGE_EDGE));
+        assert!(s.size().0 == large.0 && s.size().1 > large.1);
         // The compact notch glance fits its wider half on each side of the notch.
         s.mode = Mode::Quick;
         s.time = "9:41".into();

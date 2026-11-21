@@ -37,7 +37,7 @@ struct Account {
 /// config folders in `extra_dirs`, and CLIProxyAPI's auth files in `cliproxy_dir`.
 pub fn all(extra_dirs: &[String], cliproxy_dir: &str) -> Vec<Usage> {
     let Some(home) = rune::dirs::home() else { return Vec::new() };
-    let accounts = accounts(&home, extra_dirs, cliproxy_dir);
+    let accounts = accounts(&home, &|k| std::env::var_os(k), extra_dirs, cliproxy_dir);
     // Two files with one account: one may hold an older, already-used refresh token, and spending it can revoke the sign-in.
     let renew: Vec<bool> = accounts.iter().map(|a| a.renews.as_ref().is_some_and(|id| accounts.iter().filter(|b| b.renews.as_ref() == Some(id)).count() == 1)).collect();
     let handles: Vec<_> = accounts.into_iter().zip(renew)
@@ -45,10 +45,11 @@ pub fn all(extra_dirs: &[String], cliproxy_dir: &str) -> Vec<Usage> {
     handles.into_iter().map(|(name, h)| Usage { name, windows: h.join().unwrap_or_else(|_| Err("Couldn't read its limits".into())) }).collect()
 }
 
-fn accounts(home: &Path, extra_dirs: &[String], cliproxy_dir: &str) -> Vec<Account> {
+/// `var` reads the environment, where each CLI's own folder may be set.
+fn accounts(home: &Path, var: &dyn Fn(&str) -> Option<std::ffi::OsString>, extra_dirs: &[String], cliproxy_dir: &str) -> Vec<Account> {
     let mut out = Vec::new();
     let extra: Vec<PathBuf> = extra_dirs.iter().map(|d| d.trim()).filter(|d| !d.is_empty()).map(|d| crate::paths::expand_home(home, d)).collect();
-    let claude_dirs = std::iter::once(dir("CLAUDE_CONFIG_DIR", home.join(".claude"))).chain(extra.iter().cloned());
+    let claude_dirs = std::iter::once(dir(var, "CLAUDE_CONFIG_DIR", home.join(".claude"))).chain(extra.iter().cloned());
     for (i, d) in claude_dirs.enumerate() {
         let Some(creds) = read_json(d.join(".credentials.json")).or_else(|| if i == 0 { claude_keychain() } else { None }) else { continue };
         let Some(token) = creds["claudeAiOauth"]["accessToken"].as_str() else { continue };
@@ -61,7 +62,7 @@ fn accounts(home: &Path, extra_dirs: &[String], cliproxy_dir: &str) -> Vec<Accou
         let id = account["accountUuid"].as_str().or(email).filter(|_| saved.is_some()).map(|id| format!("claude:{id}"));
         out.push(Account { renews: id, ..claude(named("Claude Code", email), token, saved) });
     }
-    for d in std::iter::once(dir("CODEX_HOME", home.join(".codex"))).chain(extra.iter().cloned()) {
+    for d in std::iter::once(dir(var, "CODEX_HOME", home.join(".codex"))).chain(extra.iter().cloned()) {
         let Some(auth) = read_json(d.join("auth.json")) else { continue };
         let t = &auth["tokens"];
         let Some(token) = t["access_token"].as_str() else { continue };
@@ -92,7 +93,7 @@ fn accounts(home: &Path, extra_dirs: &[String], cliproxy_dir: &str) -> Vec<Accou
     if let Some(key) = read_json(home.join(".local/share/opencode/auth.json")).and_then(|v| v["opencode-go"]["key"].as_str().map(str::to_string)) {
         out.push(opencode_go(key));
     }
-    if let Some(auth) = read_json(dir("GROK_HOME", home.join(".grok")).join("auth.json")) {
+    if let Some(auth) = read_json(dir(var, "GROK_HOME", home.join(".grok")).join("auth.json")) {
         let keys: Vec<&str> = auth.as_object().into_iter().flat_map(|o| o.values()).filter_map(|e| e["key"].as_str()).collect();
         for (i, key) in keys.iter().enumerate() {
             let name = if keys.len() > 1 { format!("Grok Build {}", i + 1) } else { "Grok Build".into() };
@@ -113,8 +114,8 @@ fn read_json(path: PathBuf) -> Option<Value> {
     serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()
 }
 
-fn dir(var: &str, fallback: PathBuf) -> PathBuf {
-    std::env::var_os(var).filter(|v| !v.is_empty()).map_or(fallback, PathBuf::from)
+fn dir(var: &dyn Fn(&str) -> Option<std::ffi::OsString>, name: &str, fallback: PathBuf) -> PathBuf {
+    var(name).filter(|v| !v.is_empty()).map_or(fallback, PathBuf::from)
 }
 
 fn named(agent: &str, who: Option<&str>) -> String {
@@ -444,7 +445,7 @@ mod tests {
         put("proxy/codex-d.json", json!({"type": "codex", "email": "d@x.com", "access_token": "x2"}));
         put("proxy/gemini.json", json!({"type": "gemini", "access_token": "g"}));
         put(".config/github-copilot/apps.json", json!({"github.com:1": {"user": "octo", "oauth_token": "gh1"}, "github.com:2": {"user": "cat", "oauth_token": "gh2"}}));
-        let found = accounts(&home, &["~/work".into(), " ".into()], &home.join("proxy").to_string_lossy());
+        let found = accounts(&home, &|_| None, &["~/work".into(), " ".into()], &home.join("proxy").to_string_lossy());
         let _ = std::fs::remove_dir_all(&home);
         // Only a CLI's own file with a known account renews: not CLIProxyAPI or Copilot.
         let ids: Vec<Option<&str>> = found.iter().map(|a| a.renews.as_deref()).collect();

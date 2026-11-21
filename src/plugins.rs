@@ -285,7 +285,9 @@ mod tests {
         let mut p = plugin(include_str!("../plugins/example.lua"));
         assert_eq!(p.error, None);
         assert_eq!(p.name, "Focus Timer");
-        assert!(p.press_key("start"));
+        let label = |p: &Plugin| format!("{:?}", p.view);
+        assert!(label(&p).contains("\"Start\"") && p.press_key("start"));
+        assert!(label(&p).contains("\"Pause\""), "the press ran the handler and rendered again");
         assert!(!p.press_key("missing"));
         assert_eq!(p.error, None);
     }

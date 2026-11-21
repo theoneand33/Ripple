@@ -922,8 +922,12 @@ mod tests {
         for step in 1..=10 { rt.pointer_move(x, y + step as f32 * 10.0); rt.frame(1.0 / 60.0); }
         rt.pointer_up(x, y + 100.0);
         rt.frame(1.0 / 60.0);
-        use Tab::*;
-        assert_eq!(store.get().tab_order, [Overview, Workflows, Assistant, Search, Clipboard, Tasks, T3, Agents, Notes, Stremflix, Shelf, System, Calendar, Limits, Pomodoro, Calculator, Habits, Stocks, Clocks, Plugins, Weather]);
+        // Two rows down: Search (tab-0) lands after the two tabs below it.
+        let mut want = Tab::ALL.to_vec();
+        let from = want.iter().position(|t| *t == Tab::Search).unwrap();
+        let moved = want.remove(from);
+        want.insert(from + 2, moved);
+        assert_eq!(store.get().tab_order, want);
     }
 
     #[test]
