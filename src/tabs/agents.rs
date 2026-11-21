@@ -29,7 +29,7 @@ impl Island {
     pub fn agents_poll(&mut self, now: f64) -> bool {
         // A hidden tab can't be answered: without `alive`, hooks leave agents to ask in their terminals.
         if rune::is_headless() || !self.visible_tabs().contains(&Tab::Agents) { return false }
-        let Some(dir) = self.store.dir().map(|d| d.join("agents")) else { return false };
+        let Some(dir) = self.store.dir().map(|d| agents::folder(&d)) else { return false };
         let processes = now - self.agents.processes_at >= 10.0;
         if processes { self.agents.processes_at = now }
         let (sessions, mut requests) = agents::scan(&dir, processes);
@@ -53,7 +53,7 @@ impl Island {
     }
 
     pub fn agents_answer(&mut self, key: &str, answer: Answer) {
-        let Some(dir) = self.store.dir().map(|d| d.join("agents")) else { return };
+        let Some(dir) = self.store.dir().map(|d| agents::folder(&d)) else { return };
         // Left up on failure: the hook still waits, and the next scan shows it again.
         if let Err(e) = agents::answer(&dir, key, &answer) { return eprintln!("Ripple: could not answer the agent: {e}") }
         self.agents.requests.retain(|r| r.key != key);

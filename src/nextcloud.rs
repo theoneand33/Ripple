@@ -165,9 +165,7 @@ impl Client {
         let text = res.body_mut().with_config().limit(32 << 20).read_to_string().map_err(|e| e.to_string())?;
         Ok((res.status().as_u16(), etag, text))
     }
-}
 
-impl Client {
     /// A file transfer: an hour, not 30 seconds, as a big file takes long; a stalled one still ends.
     fn transfer(&self, method: &str, url: &str, body: impl ureq::AsSendBody) -> Result<ureq::http::Response<ureq::Body>, String> {
         let req = ureq::http::Request::builder().method(method).uri(url).header("authorization", &self.auth).body(body).map_err(|e| e.to_string())?;
@@ -457,8 +455,9 @@ pub struct ShelfOutcome {
 /// Two-way sync of the Shelf with `folder`, by file name, against `base`, what both had at the
 /// last sync: a name one side lacks is new on the other, unless it is in `base`, when it was removed.
 /// shortcut: a file changed on one side after it synced isn't sent again; compare ETags if people ask.
-pub fn sync_shelf(nc: &Nextcloud, folder: &str, files: &[PathBuf], base: &[String], cache: &Path) -> ShelfOutcome {
+pub fn sync_shelf(nc: &Nextcloud, files: &[PathBuf], base: &[String], cache: &Path) -> ShelfOutcome {
     let c = Client::new(nc);
+    let folder = &nc.shelf_folder();
     let mut out = ShelfOutcome::default();
     out.error = match shelf(&c, folder, files, base, cache, &mut out) {
         Ok(skipped) => skipped,
@@ -480,7 +479,7 @@ pub fn sync_shelf(nc: &Nextcloud, folder: &str, files: &[PathBuf], base: &[Strin
 fn shelf(c: &Client, folder: &str, files: &[PathBuf], base: &[String], cache: &Path, out: &mut ShelfOutcome) -> Result<Option<String>, String> {
     let mut url = format!("{}/remote.php/dav/files/{}/", c.base, percent_encode(&c.user));
     let mut made = Vec::new();
-    for part in folder.split('/').filter(|p| !matches!(*p, "" | "." | "..")) {
+    for part in folder.split('/') {
         url = format!("{url}{}/", percent_encode(part));
         made.push(url.clone());
     }
@@ -829,7 +828,7 @@ mod tests {
         // twin.txt has the same bytes there, so it is that file.
         let files = names.map(|n| tmp.join(n));
         // dropped.txt left the Shelf here and old.txt left Nextcloud since the last sync.
-        let out = sync_shelf(&nc, "Ripple Shelf", &files, &["dropped.txt".into(), "old.txt".into(), "kept.txt".into()], &cache);
+        let out = sync_shelf(&nc, &files, &["dropped.txt".into(), "old.txt".into(), "kept.txt".into()], &cache);
         assert_eq!(out.error.as_deref(), Some("Couldn't upload big.txt: Nextcloud answered 507"));
         assert_eq!(out.both.unwrap(), ["kept.txt", "twin.txt", "mine.txt", "their file.txt"]);
         assert_eq!(out.gone, [tmp.join("old.txt")]);
@@ -840,7 +839,7 @@ mod tests {
         let sent: Vec<_> = first.iter().filter(|r| r.0 == "PUT" || r.0 == "DELETE").map(|r| (r.0.as_str(), r.1.as_str(), r.2.as_str())).collect();
         assert_eq!(sent, [("DELETE", &*format!("{dir}dropped.txt"), ""), ("PUT", &*format!("{dir}big.txt"), "big.txt"), ("PUT", &*format!("{dir}mine.txt"), "mine.txt")]);
         // A folder not made yet is made, level by level, and counts as empty.
-        let out = sync_shelf(&nc, "/A/../B/", &[], &[], &cache);
+        let out = sync_shelf(&Nextcloud { shelf_folder: "/A/../B/".into(), ..nc.clone() }, &[], &[], &cache);
         assert_eq!((out.error, out.both), (None, Some(Vec::new())));
         let made: Vec<_> = seen.lock().unwrap().iter().filter(|r| r.0 == "MKCOL").map(|r| r.1.clone()).collect();
         assert_eq!(made, ["/remote.php/dav/files/me/A/", "/remote.php/dav/files/me/A/B/"], "'..' is dropped, not followed");
@@ -851,7 +850,7 @@ mod tests {
         });
         let nc = Nextcloud { url: base, user: "me".into(), password: "pw".into(), ..Nextcloud::default() };
         // gone.txt, on neither side any more, is forgotten: a new gone.txt there later isn't taken as removed here.
-        let out = sync_shelf(&nc, "Ripple Shelf", &[tmp.join("old.txt")], &["old.txt".into(), "x.txt".into(), "gone.txt".into()], &cache);
+        let out = sync_shelf(&nc, &[tmp.join("old.txt")], &["old.txt".into(), "x.txt".into(), "gone.txt".into()], &cache);
         assert_eq!(out.error.as_deref(), Some("Nextcloud refused the user or app password"));
         assert_eq!((out.both.unwrap(), out.gone), (vec!["x.txt".to_string(), "old.txt".into()], Vec::new()));
         let names = ["a:b", "nul.txt", "COM1", "con", "COM", "console.log", "..", "../x"];

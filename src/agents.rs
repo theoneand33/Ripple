@@ -19,6 +19,9 @@ use serde_json::{Value, json};
 
 use crate::paths::write_atomic;
 
+/// Where hooks and the Island meet: a folder beside prefs.json.
+pub fn folder(app_dir: &Path) -> std::path::PathBuf { app_dir.join("agents") }
+
 /// How old `alive`, or a waiting hook's request, may get before it counts as gone.
 const GONE: Duration = Duration::from_secs(5);
 /// Sessions with no event for this long are dropped; so is one whose agent process is gone.
@@ -234,7 +237,7 @@ pub fn cli(args: &[String]) -> i32 {
     let mut raw = String::new();
     let _ = std::io::stdin().read_to_string(&mut raw);
     let Ok(input) = serde_json::from_str::<Value>(&raw) else { eprintln!("Ripple: hook input is not JSON"); return 0 };
-    let Some(dir) = crate::paths::app_dir().map(|d| d.join("agents")) else { return 0 };
+    let Some(dir) = crate::paths::app_dir().map(|d| folder(&d)) else { return 0 };
     let request = match record(&dir, &agent, &input) {
         Ok(r) => r,
         Err(e) => { eprintln!("Ripple: could not record the session: {e}"); return 0 }

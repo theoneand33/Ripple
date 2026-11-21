@@ -70,8 +70,7 @@ impl Island {
         // Another account's folder says nothing of this one's: nothing counts as removed.
         let base: Vec<String> = if nc.synced_with == account { nc.shelf_synced.iter().filter_map(|e| in_folder(e, &folder)).map(str::to_string).collect() } else { Vec::new() };
         let files = self.cfg.shelf.clone();
-        let at = folder.clone();
-        me.spawn(move || sync_shelf(&nc, &at, &files, &base, &dir.join("Shelf")), move |s, out| s.nextcloud_shelf_synced(&account, &folder, out));
+        me.spawn(move || sync_shelf(&nc, &files, &base, &dir.join("Shelf")), move |s, out| s.nextcloud_shelf_synced(&account, &folder, out));
     }
 
     /// Files just put on the Shelf (dropped, renamed, compressed, extracted), then a sync. A name

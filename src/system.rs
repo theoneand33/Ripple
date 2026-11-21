@@ -1450,11 +1450,11 @@ mod tests {
         assert_eq!(parse_pmset(battery), Some((87, false)));
         assert_eq!(parse_pmset("Now drawing from 'AC Power'"), None);
     }
-}
+
     #[test]
     fn launch_agent_paths_are_escaped_for_xml() {
         let plist = launch_agent("/Applications/R&D <1>.app/Contents/MacOS/Ripple");
         assert!(plist.contains("<string>/Applications/R&amp;D &lt;1&gt;.app/Contents/MacOS/Ripple</string>"));
         assert!(plist.contains("<key>RunAtLoad</key><true/>"));
     }
-
+}

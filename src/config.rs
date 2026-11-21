@@ -437,7 +437,7 @@ pub struct Config {
     pub leetcode_user: String,
     /// Each note's first line is its title.
     pub notes: Vec<Item>,
-    /// Calendar events; each one's text is `YYYY-MM-DD title` (`nextcloud::event_day`).
+    /// Calendar events; each one's text is `YYYY-MM-DD title` (`ics::event_day`).
     pub events: Vec<Item>,
     /// Calendar: minutes before a timed event that its alert shows; 0 turns alerts off.
     pub event_alert_minutes: u32,

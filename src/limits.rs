@@ -337,9 +337,7 @@ fn grok_windows(v: &Value) -> Vec<Window> {
 /// Unix seconds from "2026-08-13", "2026-08-13T16:27:38.287Z" or "...+02:00".
 fn iso(s: &str) -> Option<i64> {
     let n = |r: std::ops::Range<usize>| s.get(r)?.parse::<i64>().ok();
-    let (y, m, d) = (n(0..4)?, n(5..7)?, n(8..10)?);
-    let (y, m, d) = (i32::try_from(y).ok()?, u32::try_from(m).ok()?, u32::try_from(d).ok()?);
-    if !(1..=12).contains(&m) || !(1..=crate::date::days_in(y, m)).contains(&d) { return None }
+    let (y, m, d) = crate::date::parse_ymd(s.get(..10)?)?;
     let secs = if s.len() > 10 { n(11..13)? * 3600 + n(14..16)? * 60 + n(17..19)? } else { 0 };
     let tz = s[10..].rfind(['+', '-']).filter(|_| s.len() > 19).map(|i| i + 10);
     let offset = tz.and_then(|i| {
