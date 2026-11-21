@@ -14,8 +14,8 @@ use crate::task::Task;
 use crate::system::MediaCommand;
 
 const GAP: f32 = 10.0;
-/// The Overview's content width: the Island's, less its two `LARGE_EDGE`s.
-const WIDTH: f32 = super::size(Tab::Overview).0 - 24.0;
+/// The Overview's content width: the Island's, less its edges.
+const WIDTH: f32 = super::size(Tab::Overview).0 - 2.0 * crate::island::LARGE_EDGE;
 /// One grid cell: a quarter of the width, and a row.
 const CELL: (f32, f32) = ((WIDTH - 3.0 * GAP) / Tile::COLS as f32, 52.0);
 const HEADER: f32 = 28.0;

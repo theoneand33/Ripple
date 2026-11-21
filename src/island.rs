@@ -27,7 +27,7 @@ const PAD: f32 = 30.0;
 // 28pt buttons 3pt apart leave room past all 21 tabs in the canvas.
 const DOCK: (f32, f32, f32, f32) = (44.0, 12.0, 28.0, 3.0);
 /// Room between the Large Island's edge and its tab's content.
-const LARGE_EDGE: f32 = 12.0;
+pub const LARGE_EDGE: f32 = 12.0;
 /// Framer's spring (stiffness 400, damping 40, mass 2.5) as duration and bounce.
 pub const SPRING: Spring = Spring::new(0.5, 0.3);
 /// Resting is the system's answer to the pointer leaving: it settles faster, with little overshoot.
