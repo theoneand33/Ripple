@@ -18,7 +18,8 @@ fn rewrite(ics: &str, comp: &str, drop: &[&str], add: &[String]) -> String {
             (inside, done) = (false, true);
         }
         else if inside && upper.starts_with("BEGIN:") { nested += 1 }
-        else if inside && upper.starts_with("END:") { nested -= 1 }
+        // A stray END closes nothing, as in `props`.
+        else if inside && upper.starts_with("END:") { nested = (nested - 1).max(0) }
         else if inside && nested == 0 && drop.iter().any(|d| upper.split([':', ';']).next() == Some(d)) { continue }
         out += line;
         out += "\r\n";
@@ -363,6 +364,10 @@ mod tests {
 
     #[test]
     fn edits_rewrite_only_what_changed() {
+        let stray = "BEGIN:VEVENT\r\nDTSTART;VALUE=DATE:20261119\r\nEND:X-STRAY\r\nSUMMARY:Old\r\nEND:VEVENT\r\n";
+        assert_eq!(event(stray).as_deref(), Some("2026-11-19 Old"), "a stray END hides nothing after it");
+        let renamed = edited_event(stray, "2026-11-19 New").unwrap();
+        assert!(renamed.contains("SUMMARY:New") && !renamed.contains("SUMMARY:Old"), "{renamed}");
         let ics = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:1\r\nDTSTART;TZID=Europe/Berlin:20261119T150000\r\nDTEND;TZID=Europe/Berlin:20261119T163000\r\nSUMMARY:Dentist\r\nDESCRIPTION:Bring the card\r\nBEGIN:VALARM\r\nSUMMARY:Alarm\r\nTRIGGER:-PT15M\r\nEND:VALARM\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
         let renamed = edited_event(ics, "2026-11-19 15:00 Dentist, upstairs").unwrap();
         assert!(renamed.contains("SUMMARY:Dentist\\, upstairs\r\nEND:VEVENT") && renamed.contains("SUMMARY:Alarm") && renamed.contains("DESCRIPTION:Bring the card"));
