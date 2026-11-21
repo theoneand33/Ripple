@@ -75,9 +75,10 @@ fn grid_height(edit: bool, rects: &[[f32; 4]]) -> f32 {
     if edit || rects.is_empty() { h.max(span(2, CELL.1)) } else { h }
 }
 
-/// The tallest the content gets: `MAX_H`, less on a short display (12 is `Island::size`'s `LARGE_EDGE`).
+/// The tallest the content gets: `MAX_H`, less on a short display, as `Island::size` fits it.
 fn limit(s: &Island) -> f32 {
-    MAX_H.min(s.placement.max_h().max(super::size(Tab::Overview).1) - (s.notch_inset() - 12.0).max(0.0) - 24.0)
+    use crate::island::LARGE_EDGE;
+    MAX_H.min(s.placement.max_h().max(super::size(Tab::Overview).1) - (s.notch_inset() - LARGE_EDGE).max(0.0) - 2.0 * LARGE_EDGE)
 }
 
 /// The grid's columns: the fewest from `Tile::COLS` whose layout fits `MAX_H`, so a dashboard

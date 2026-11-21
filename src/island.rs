@@ -238,7 +238,7 @@ impl Placement {
     }
 
     /// The tallest the Island gets with its dock and shadow still on the display.
-    fn max_h(&self) -> f32 {
+    pub fn max_h(&self) -> f32 {
         (if self.top { self.visible_h - self.y } else { self.y }) - DOCK.0 - DOCK.1 - 8.0
     }
 
@@ -656,7 +656,7 @@ impl Island {
     /// True when the Island must clear a physical notch (Notch Mode, not Mini).
     fn clears_notch(&self) -> bool { self.cfg.notch_mode && !self.cfg.notch_mini }
 
-    fn notch_inset(&self) -> f32 { if self.clears_notch() { 34.0 } else { 0.0 } }
+    pub fn notch_inset(&self) -> f32 { if self.clears_notch() { 34.0 } else { 0.0 } }
 
     /// Notch Mode's compact width: the notch, plus the wider half of the glance and its padding on
     /// each side, so neither half sits under the notch. Mirrors `glance`.
