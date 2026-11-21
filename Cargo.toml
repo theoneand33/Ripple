@@ -8,8 +8,8 @@ license = "MIT"
 [dependencies]
 # Rune is pre-release: pin one `dev` rev here and in every [patch] below.
 # native-file-dialog: Settings export and import.
-rune = { git = "https://github.com/theoneand33/rune", rev = "f5bd58755377b1e3e70c5485f3699f0e8c527afb", features = ["native-file-dialog"] }
-rune-kit = { git = "https://github.com/theoneand33/rune", rev = "f5bd58755377b1e3e70c5485f3699f0e8c527afb", features = ["markdown"] }
+rune = { git = "https://github.com/theoneand33/rune", rev = "4572283169bf132823ec10a07bf5d209e64427ae", features = ["native-file-dialog"] }
+rune-kit = { git = "https://github.com/theoneand33/rune", rev = "4572283169bf132823ec10a07bf5d209e64427ae", features = ["markdown"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # Every HTTP call (see net::config); T3's /ws RPC.
@@ -42,11 +42,11 @@ wayland-client = "0.31"
 
 # Cargo doesn't inherit a dependency's patches; these mirror Rune's own [patch.crates-io].
 [patch.crates-io]
-winit = { git = "https://github.com/theoneand33/rune", rev = "f5bd58755377b1e3e70c5485f3699f0e8c527afb" }
-parley_engine = { git = "https://github.com/theoneand33/rune", rev = "f5bd58755377b1e3e70c5485f3699f0e8c527afb" }
-wgpu-hal = { git = "https://github.com/theoneand33/rune", rev = "f5bd58755377b1e3e70c5485f3699f0e8c527afb" }
-accesskit_windows = { git = "https://github.com/theoneand33/rune", rev = "f5bd58755377b1e3e70c5485f3699f0e8c527afb" }
-accesskit_macos = { git = "https://github.com/theoneand33/rune", rev = "f5bd58755377b1e3e70c5485f3699f0e8c527afb" }
+winit = { git = "https://github.com/theoneand33/rune", rev = "4572283169bf132823ec10a07bf5d209e64427ae" }
+parley_engine = { git = "https://github.com/theoneand33/rune", rev = "4572283169bf132823ec10a07bf5d209e64427ae" }
+wgpu-hal = { git = "https://github.com/theoneand33/rune", rev = "4572283169bf132823ec10a07bf5d209e64427ae" }
+accesskit_windows = { git = "https://github.com/theoneand33/rune", rev = "4572283169bf132823ec10a07bf5d209e64427ae" }
+accesskit_macos = { git = "https://github.com/theoneand33/rune", rev = "4572283169bf132823ec10a07bf5d209e64427ae" }
 
 # Rune's debug info alone can take many GB of RAM to link; line tables keep panics readable.
 [profile.dev]
