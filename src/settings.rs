@@ -401,6 +401,14 @@ fn drag_tab(s: &mut Settings, from: usize, d: &mut Drag, tx: &mut Tx) {
     }
 }
 
+/// The pages for the whole app, above the tabs' in the sidebar.
+const APP_PAGES: [Page; 4] = [Page::General, Page::Tabs, Page::Appearance, Page::Features];
+
+/// The tabs' own pages, in the dock's order.
+fn tab_pages(cfg: &Config) -> impl Iterator<Item = Page> + '_ {
+    cfg.tab_order.iter().filter(|&&t| has_panel(t)).map(|&t| Page::Tab(t))
+}
+
 /// Whether a tab has its own settings page: one `panel` has sections for.
 fn has_panel(tab: Tab) -> bool {
     match tab {
@@ -605,7 +613,8 @@ fn panel(s: &Settings, k: &Kit, layer: &mut Vec<El>, tab: Tab) -> Vec<El> {
                 text("Accounts in other currencies convert at Frankfurter's reference rates before the totals.").font(cfg.font(12.0, 400.0)).color(fg.alpha(0.6)).wrap(),
             ]));
         }
-        Tab::Clipboard | Tab::Stremflix | Tab::System | Tab::Plugins | Tab::Pomodoro | Tab::Calculator | Tab::Habits | Tab::Clocks | Tab::Agents => {}
+        // `has_panel` lists the tabs without settings.
+        _ => {}
     }
     sections
 }
@@ -787,8 +796,7 @@ fn nav_item(s: &Settings, item: Page) -> El {
 
 /// The rows of every page whose labels match the search, under their page's title.
 fn results(s: &Settings, k: &Kit, layer: &mut Vec<El>) -> Vec<El> {
-    let pages = [Page::General, Page::Tabs, Page::Appearance, Page::Features].into_iter()
-        .chain(s.cfg.tab_order.iter().filter(|&&t| has_panel(t)).map(|&t| Page::Tab(t)));
+    let pages = APP_PAGES.into_iter().chain(tab_pages(&s.cfg));
     let mut seen = Vec::new();
     let mut sections = Vec::new();
     for p in pages {
@@ -812,9 +820,9 @@ fn sidebar(s: &Settings) -> El {
     let search = TextInput::new(&s.query).width(None).label("Search settings").placeholder("Search")
         .on_edit(|s: &mut Settings| &mut s.query).on_change(|s: &mut Settings, _| s.open = None).build(&s.cfg.kit());
     let mut items = vec![text("Settings").font(s.cfg.font(17.0, 700.0)).color(fg).px(10.0).pb(10.0), el().key("settings-search").w_full().pb(8.0).child(search)];
-    items.extend([Page::General, Page::Tabs, Page::Appearance, Page::Features].map(|p| nav_item(s, p)));
+    items.extend(APP_PAGES.map(|p| nav_item(s, p)));
     items.push(group("Tab settings"));
-    items.extend(s.cfg.tab_order.iter().filter(|&&t| has_panel(t)).map(|&t| nav_item(s, Page::Tab(t))));
+    items.extend(tab_pages(&s.cfg).map(|p| nav_item(s, p)));
     let list = items.into_iter().fold(col().key("sidebar-list").w_full().gap(2.0).px(10.0).pt(20.0).pb(16.0), El::child);
     col().key("sidebar").w(SIDEBAR).h_full().min_h(0.0).fill(fg.alpha(0.03)).border_sides([0.0, 1.0, 0.0, 0.0], fg.alpha(0.08))
         .child(col().key("sidebar-scroll").w_full().grow(1.0).min_h(0.0).scroll(ScrollSpec { stick_bottom: false }).child(list))
