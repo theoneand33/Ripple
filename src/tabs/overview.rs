@@ -209,10 +209,11 @@ fn resize(s: &mut Island, i: usize, dw: i32, dh: i32) {
 fn drag(s: &mut Island, i: usize, corner: bool, d: &mut Drag, tx: &mut Tx) {
     match d.phase {
         Phase::Down => { tx.instant(); s.dashboard.drag = None }
-        // The pointer moves in window points; the tiles in the grid's, before its scale.
-        Phase::Move => { tx.instant(); let k = drawn_scale(s); s.dashboard.drag = Some((i, d.dx / k, d.dy / k, corner)) }
+        // The pointer moves in window points; the tiles in the grid's, before its scale. The
+        // saved scale, not the drawn one: a dragged corner changes that, and would feed back into itself.
+        Phase::Move => { tx.instant(); let k = fit(s).1; s.dashboard.drag = Some((i, d.dx / k, d.dy / k, corner)) }
         Phase::Up => {
-            let (n, k) = (cols(s), drawn_scale(s));
+            let (n, k) = fit(s);
             s.dashboard.drag = None;
             if d.cancelled() || i >= s.cfg.dashboard.len() { return }
             let (dx, dy) = (d.dx / k, d.dy / k);
