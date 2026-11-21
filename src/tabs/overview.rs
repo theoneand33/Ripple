@@ -102,11 +102,15 @@ fn fit(s: &Island) -> (u8, f32) {
 
 fn cols(s: &Island) -> u8 { fit(s).0 }
 
-/// The scale the grid is drawn at: `fit`'s, less while a drag in progress adds a row, so the
-/// Island holds still and every tile still shows.
+/// The scale the grid is drawn at: `fit`'s, less while a widget dragged in from the drawer adds
+/// a row, so the Island holds still and every tile still shows. A dragged corner keeps `fit`'s,
+/// so it stays under the pointer.
 fn drawn_scale(s: &Island) -> f32 {
     let (n, k) = fit(s);
-    k.min((limit(s) - HEADER - 10.0) / grid_height(s.dashboard.edit, &layout(&shown(s).0, n)))
+    let Some((widget, Some(at))) = s.dashboard.add.filter(|_| s.dashboard.edit) else { return k };
+    let mut tiles = s.cfg.dashboard.clone();
+    tiles.insert(at.min(tiles.len()), Tile::new(widget));
+    k.min((limit(s) - HEADER - 10.0) / grid_height(true, &layout(&tiles, n)))
 }
 
 /// The grid's width at `cols` columns.
@@ -209,8 +213,7 @@ fn resize(s: &mut Island, i: usize, dw: i32, dh: i32) {
 fn drag(s: &mut Island, i: usize, corner: bool, d: &mut Drag, tx: &mut Tx) {
     match d.phase {
         Phase::Down => { tx.instant(); s.dashboard.drag = None }
-        // The pointer moves in window points; the tiles in the grid's, before its scale. The
-        // saved scale, not the drawn one: a dragged corner changes that, and would feed back into itself.
+        // The pointer moves in window points; the tiles in the grid's, before its scale.
         Phase::Move => { tx.instant(); let k = fit(s).1; s.dashboard.drag = Some((i, d.dx / k, d.dy / k, corner)) }
         Phase::Up => {
             let (n, k) = fit(s);
@@ -786,6 +789,9 @@ mod tests {
             assert!(HEADER + 10.0 + drawn_scale(&s) * grid_height(true, &layout(&tiles, n)) <= limit(&s) + 0.01);
             assert_eq!(height(&s), h);
             if drawn_scale(&s) < fit(&s).1 { shrank += 1 }
+            // A dragged corner keeps the scale, so it follows the pointer.
+            (s.dashboard.add, s.dashboard.drag) = (None, Some((0, 0.0, 1000.0, true)));
+            assert_eq!(drawn_scale(&s), fit(&s).1);
         }}
         assert!(shrank > 0, "some drag added a row");
     }
