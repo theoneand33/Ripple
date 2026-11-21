@@ -50,7 +50,7 @@ pub fn view(s: &Island) -> El {
         for back in (0..7).rev() {
             let day = today - back;
             let on = h.done.contains(&day);
-            let letter = ["S", "M", "T", "W", "T", "F", "S"][(wd - back).rem_euclid(7) as usize];
+            let letter = crate::date::WEEKDAY_LETTERS[(wd - back).rem_euclid(7) as usize];
             week = week.child(
                 el().key(format!("day-{back}")).role("checkbox").checked(on).focusable(true)
                     .label(format!("{}: {}", h.name, if back == 0 { "today".into() } else { format!("{back} days ago") }))

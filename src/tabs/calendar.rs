@@ -200,7 +200,7 @@ pub fn view(s: &Island) -> El {
         .child(tool(s, "calendar-next", &icons::CHEVRON_RIGHT, "Next month").on_press(|s: &mut Island| s.calendar.offset += 1));
 
     let mut names = row().key("calendar-weekdays").w_full();
-    for (i, d) in ["S", "M", "T", "W", "T", "F", "S"].into_iter().enumerate() {
+    for (i, d) in crate::date::WEEKDAY_LETTERS.into_iter().enumerate() {
         names = names.child(el().key(format!("weekday-{i}")).w(0.0).grow(1.0).h(16.0).center().a11y_hidden()
             .child(text(d).font(s.cfg.font(11.0, 600.0)).color(fg.alpha(0.45 * fg.a))));
     }
@@ -272,11 +272,9 @@ pub fn view(s: &Island) -> El {
         .child(row().key("calendar-day-title").w_full().h(28.0).center_y().justify_between()
             .child({
                 // "THU Jan 1": the weekday in dimmed capitals, as Droppy heads its day.
-                let date = format_date(py_, pm_, pd_);
-                let (wd, rest) = date.split_once(", ").unwrap_or(("", &date));
                 row().gap(6.0).center_y()
-                    .child(text(wd.to_uppercase()).font(s.cfg.font(15.0, 700.0)).color(fg.alpha(0.5 * fg.a)))
-                    .child(text(rest.to_string()).font(s.cfg.font(15.0, 700.0)).color(fg))
+                    .child(text(crate::date::weekday_name(py_, pm_, pd_).to_uppercase()).font(s.cfg.font(15.0, 700.0)).color(fg.alpha(0.5 * fg.a)))
+                    .child(text(crate::date::month_day(pm_, pd_)).font(s.cfg.font(15.0, 700.0)).color(fg))
             })
             .children(undo_button(s))
             .children(editing.then(|| pill(s, "cancel-edit", "Cancel edit").on_press(cancel_edit))))

@@ -28,12 +28,22 @@ pub fn local_secs(t: &str) -> Option<i64> {
     Some(days_from_civil(y, m, d) * 86_400 + i64::from(h.parse::<u32>().ok()? * 3600 + min.get(..2)?.parse::<u32>().ok()? * 60))
 }
 
-/// "Thu, Jan 1".
-pub fn format_date(year: i32, month: u32, day: u32) -> String {
-    const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-    const DAYS: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-    format!("{}, {} {}", DAYS[weekday(year, month, day) as usize], MONTHS[(month as usize - 1) % 12], day)
+/// Each weekday's initial, from Sunday.
+pub const WEEKDAY_LETTERS: [&str; 7] = ["S", "M", "T", "W", "T", "F", "S"];
+
+/// "Thu".
+pub fn weekday_name(year: i32, month: u32, day: u32) -> &'static str {
+    ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][weekday(year, month, day) as usize]
 }
+
+/// "Jan 1".
+pub fn month_day(month: u32, day: u32) -> String {
+    const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    format!("{} {day}", MONTHS[(month as usize - 1) % 12])
+}
+
+/// "Thu, Jan 1".
+pub fn format_date(year: i32, month: u32, day: u32) -> String { format!("{}, {}", weekday_name(year, month, day), month_day(month, day)) }
 
 /// 0 for Sunday, by Sakamoto's method.
 pub fn weekday(year: i32, month: u32, day: u32) -> u32 {
