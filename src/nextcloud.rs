@@ -177,6 +177,12 @@ impl Client {
 
 fn ok(status: u16) -> bool { (200..300).contains(&status) }
 
+/// Ok for a success or a 404: what was to be removed or changed is gone already.
+fn done_or_gone(status: u16) -> Result<(), String> { if ok(status) || status == 404 { Ok(()) } else { Err(failed(status)) } }
+
+/// Err when Nextcloud refused the sign-in: every other request would fail the same way.
+fn signed_in(status: u16) -> Result<(), String> { if matches!(status, 401 | 403) { Err(failed(status)) } else { Ok(()) } }
+
 fn failed(status: u16) -> String {
     match status {
         401 | 403 => "Nextcloud refused the user or app password".into(),
@@ -211,7 +217,7 @@ fn sync_notes(c: &Client, items: &[Item], pending: &[String], out: &mut Outcome)
     let json_body = [("content-type", "application/json"), ("accept", "application/json")];
     for id in pending {
         let (status, ..) = c.call("DELETE", &format!("{url}/{id}"), &json_body, "")?;
-        if !ok(status) && status != 404 { return Err(failed(status)) }
+        done_or_gone(status)?;
         out.cleared.push(id.clone());
     }
     // A new note whose text Nextcloud already has, unclaimed, is that note: an upload whose
@@ -285,7 +291,7 @@ fn sync_tasks(c: &Client, list: &str, items: &[Item], pending: &[String], out: &
             let mut headers = vec![ICS];
             if !etag.is_empty() { headers.push(("if-match", &etag)) }
             let (status, ..) = c.call("PUT", &url, &headers, &completed(&ics, &stamp))?;
-            if !ok(status) && status != 404 { return Err(failed(status)) }
+            done_or_gone(status)?;
         } else if status != 404 {
             return Err(failed(status));
         }
@@ -512,7 +518,7 @@ fn shelf(c: &Client, folder: &str, files: &[PathBuf], base: &[String], cache: &P
         let mine = std::fs::metadata(path).ok().filter(|m| m.is_file()).map(|m| m.len());
         let same = theirs.is_some() && *theirs == mine && {
             let mut res = c.transfer("GET", &format!("{url}{}", percent_encode(name)), ())?;
-            if matches!(res.status().as_u16(), 401 | 403) { return Err(failed(res.status().as_u16())) }
+            signed_in(res.status().as_u16())?;
             ok(res.status().as_u16()) && std::fs::File::open(path).is_ok_and(|f| same_bytes(res.body_mut().as_reader(), f))
         };
         if !same { clashes.push(name.clone()) }
@@ -524,7 +530,7 @@ fn shelf(c: &Client, folder: &str, files: &[PathBuf], base: &[String], cache: &P
     let both = out.both.insert(listed.iter().filter(|n| here(n) && !clash(n)).chain(removed_here.iter().copied()).cloned().collect());
     for name in removed_here {
         let (status, ..) = c.call("DELETE", &format!("{url}{}", percent_encode(name)), &[], "")?;
-        if matches!(status, 401 | 403) { return Err(failed(status)) }
+        signed_in(status)?;
         // Still there, so still in `both`: the next sync tries again.
         if !ok(status) && status != 404 { skipped.get_or_insert(format!("Couldn't remove {name}: {}", failed(status))); continue }
         both.retain(|n| n != name);
@@ -539,14 +545,14 @@ fn shelf(c: &Client, folder: &str, files: &[PathBuf], base: &[String], cache: &P
         if !path.is_file() { continue }
         let Ok(file) = std::fs::File::open(path) else { continue };
         let status = c.transfer("PUT", &format!("{url}{}", percent_encode(name)), file)?.status().as_u16();
-        if matches!(status, 401 | 403) { return Err(failed(status)) }
+        signed_in(status)?;
         if !ok(status) { skipped.get_or_insert(format!("Couldn't upload {name}: {}", failed(status))); continue }
         both.push(name.clone());
     }
     for name in listed.iter().filter(|n| !here(n) && !base.contains(n) && savable(n)) {
         let mut res = c.transfer("GET", &format!("{url}{}", percent_encode(name)), ())?;
         let status = res.status().as_u16();
-        if matches!(status, 401 | 403) { return Err(failed(status)) }
+        signed_in(status)?;
         if !ok(status) { skipped.get_or_insert(format!("Couldn't download {name}: {}", failed(status))); continue }
         // Written beside, then renamed, so a broken download never sits on the Shelf.
         // shortcut: a downloaded file stays in the cache after it leaves the Shelf; prune it if the folder grows.
@@ -603,7 +609,7 @@ fn sync_events(c: &Client, want: &str, items: &[Item], pending: &[String], out: 
     for href in pending {
         if let Some(path) = server_path(href.clone()) {
             let (status, ..) = c.call("DELETE", &c.at(&path), &[], "")?;
-            if !ok(status) && status != 404 { return Err(failed(status)) }
+            done_or_gone(status)?;
         }
         out.cleared.push(href.clone());
     }
