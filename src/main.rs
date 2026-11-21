@@ -418,6 +418,10 @@ fn island_spec() -> AppSpec<Island> {
                 // Too tall at any width: every tile shrinks to show at a glance.
                 s.cfg.dashboard = config::Widget::OWN.into_iter().map(|w| config::Tile::new(w).sized(4, 3)).collect();
             }),
+            ("overview-small", |s| { sized_widgets(s, 2, 1) }),
+            ("overview-tiny", |s| { sized_widgets(s, 1, 1) }),
+            ("overview-roomy", |s| { sized_widgets(s, 4, 3); s.cfg.dashboard.truncate(4) }),
+            ("overview-narrow", |s| { sized_widgets(s, 1, 2) }),
             ("overview-edit", |s| { s.mode = Mode::Large; s.tab = Tab::Overview; s.dashboard.edit = true }),
             ("overview-drag-in", |s| { s.mode = Mode::Large; s.tab = Tab::Overview; s.dashboard.edit = true; s.dashboard.add = Some((config::Widget::Quote, Some(2))) }),
             ("overview-resize", |s| { s.mode = Mode::Large; s.tab = Tab::Overview; s.dashboard.edit = true; s.dashboard.drag = Some((0, -130.0, -60.0, true)) }),
@@ -438,6 +442,22 @@ fn island_spec() -> AppSpec<Island> {
         ],
         ..AppSpec::new("Ripple", CANVAS, || unreachable!("state comes from App::init"), island::view)
     }
+}
+
+/// A scene: every Overview widget at `w`×`h` cells, with something in each to show.
+fn sized_widgets(s: &mut Island, w: i32, h: i32) {
+    s.mode = Mode::Large;
+    s.tab = Tab::Overview;
+    s.cfg.dashboard = config::Widget::OWN.into_iter().map(|x| config::Tile::new(x).sized(w, h)).collect();
+    (s.cfg.location, s.weather.temp, s.percent) = ("Lisbon".into(), Some(21), Some(64));
+    s.cfg.events = ["2026-01-01 09:30 Standup", "2026-01-01 13:00 Lunch with Sam", "2026-01-01 16:00 Review", "2026-01-01 18:00 Gym"].map(config::Item::new).into();
+    s.cfg.tasks = ["Ship v0.5 due:2026-01-01T17:00", "Water the plants"].map(config::Item::new).into();
+    (s.cfg.water_day, s.cfg.water_count) = (date::days_from_civil(s.today.0, s.today.1, s.today.2), 3);
+    s.cfg.github_user = "octocat".into();
+    let today = date::days_from_civil(s.today.0, s.today.1, s.today.2);
+    s.contributions.github = Some(("octocat".into(), Ok((0..365).filter(|d| d % 3 == 0).map(|d| (today - d, (d % 4 + 1) as u8)).collect())));
+    let mut tx = rune::Tx::default();
+    s.set_track(Some(system::Track { name: "A Song With a Long Title".into(), artist: "Artist".into(), playing: true, progress: Some((89, 200)), ..Default::default() }), &mut tx);
 }
 
 fn settings_spec() -> AppSpec<Settings> {
