@@ -405,6 +405,11 @@ fn island_spec() -> AppSpec<Island> {
                 s.cfg.events = ["2026-01-01 09:30 Standup", "2026-01-01 13:00 Lunch with Sam"].map(config::Item::new).into();
                 s.cfg.tasks = ["Ship v0.5 due:2026-01-01T17:00"].map(config::Item::new).into();
             }),
+            ("overview-wide", |s| {
+                s.mode = Mode::Large; s.set_tab(Tab::Overview);
+                // Too tall for four columns: side by side in five.
+                s.cfg.dashboard = [(config::Widget::Media, 3), (config::Widget::Clock, 2), (config::Widget::Quote, 3), (config::Widget::Battery, 2)].map(|(w, n)| config::Tile::new(w).sized(n, 3)).into();
+            }),
             ("overview-edit", |s| { s.mode = Mode::Large; s.set_tab(Tab::Overview); s.dashboard_edit = true }),
             ("overview-drag-in", |s| { s.mode = Mode::Large; s.set_tab(Tab::Overview); s.dashboard_edit = true; s.dashboard_add = Some((config::Widget::Quote, Some(2))) }),
             ("overview-resize", |s| { s.mode = Mode::Large; s.set_tab(Tab::Overview); s.dashboard_edit = true; s.dashboard_drag = Some((0, -130.0, -60.0, true)) }),

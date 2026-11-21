@@ -19,7 +19,8 @@ use crate::tabs::{self, accent};
 use crate::icons;
 
 /// The Island's window, in points: the largest Island at its hover scale, its tab dock, plus their shadows.
-pub const CANVAS: (f32, f32) = (740.0, 600.0);
+/// Wide enough for a widened Overview; no wider than 180% zoom fits on a 1920 display.
+pub const CANVAS: (f32, f32) = (1060.0, 600.0);
 /// Room kept around the Island inside the window for its shadow and hover scale.
 const PAD: f32 = 30.0;
 /// The tab dock under the Large Island: its height, the gap above it, one button and the space between.
@@ -204,6 +205,8 @@ pub struct Placement {
     pub zoom: f32,
     /// How far down the window stays on the display: less than `CANVAS.1` on a short display.
     pub visible_h: f32,
+    /// How far right the window stays on the display: less than `CANVAS.0` on a narrow display.
+    pub visible_w: f32,
 }
 
 impl Placement {
@@ -229,12 +232,17 @@ impl Placement {
         // Round before the clamp, and floor the limit, so a fractional zoom never pushes the window past the edge.
         let wx = match align { -1 => x - PAD, 0 => x - CANVAS.0 / 2.0, _ => x + PAD - CANVAS.0 }.round().min((dw - CANVAS.0).floor()).max(0.0);
         let wy = if top { y - PAD } else { y + PAD - CANVAS.1 }.round().min((dh - CANVAS.1).floor()).max(0.0);
-        Placement { window: (wx, wy), align, x: x - wx, top, y: y - wy, zoom, visible_h: (dh - wy).min(CANVAS.1) }
+        Placement { window: (wx, wy), align, x: x - wx, top, y: y - wy, zoom, visible_h: (dh - wy).min(CANVAS.1), visible_w: (dw - wx).min(CANVAS.0) }
     }
 
     /// The tallest the Island gets with its dock and shadow still on the display.
     pub fn max_h(&self) -> f32 {
         (if self.top { self.visible_h - self.y } else { self.y }) - DOCK.0 - DOCK.1 - 8.0
+    }
+
+    /// The widest the Island gets around its anchor and still stays on the display and in the window.
+    pub fn max_w(&self) -> f32 {
+        (match self.align { -1 => self.visible_w - self.x, 0 => 2.0 * self.x.min(self.visible_w - self.x), _ => self.x }) - 8.0
     }
 
     /// The window's rect on the display, in the display's points.
@@ -2194,6 +2202,12 @@ mod tests {
         assert_eq!((x + w, y, window.0), (1905.0, 15.0, 1920.0 - CANVAS.0));
         let (x, y, _, h, window) = at("bottom-left");
         assert_eq!((x, y + h, window.1), (15.0, 1035.0, 1035.0 + 30.0 - CANVAS.1));
+        // An Island `max_w` wide stays in its window and on the display, whatever its anchor.
+        for mode in ["top-left", "top-right", "top-center", "free"] {
+            let p = Placement::of(&Config { position_mode: mode.into(), ..Config::default() }, display);
+            let [x, _, w, _] = p.rect((p.max_w(), 40.0));
+            assert!(x >= 0.0 && x + w <= p.visible_w, "{mode}: {x}..{}", x + w);
+        }
         let (x, _, w, _, _) = at("free");
         assert_eq!(x + w / 2.0, 960.0);
         let notch = Placement::of(&Config { notch_mode: true, ..Config::default() }, display);
