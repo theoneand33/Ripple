@@ -27,7 +27,7 @@ const CHIP_COL: f32 = DRAWER_W - 16.0;
 const CHIP_ROW: f32 = 28.0 + 6.0;
 /// The drawer's padding, its hint and the gap under it.
 const DRAWER_CHROME: f32 = 16.0 + 16.0 + 6.0;
-/// The tallest the Overview's content grows before its tiles scroll: room left for the dock in `CANVAS`.
+/// The tallest the Overview's content grows before its tiles shrink: room left for the dock in `CANVAS`.
 const MAX_H: f32 = 496.0;
 
 /// `n` cells and the gaps between them.
@@ -81,32 +81,45 @@ fn limit(s: &Island) -> f32 {
     MAX_H.min(s.placement.max_h().max(super::size(Tab::Overview).1) - (s.notch_inset() - LARGE_EDGE).max(0.0) - 2.0 * LARGE_EDGE)
 }
 
-/// The grid's columns: the fewest from `Tile::COLS` whose layout fits `MAX_H`, so a dashboard
-/// that won't fit grows wider before it scrolls; else the ones that leave it shortest. As many
-/// as the display holds beside the drawer, so editing doesn't reflow the grid. From the saved
-/// tiles, so the Island holds still under a drag.
-fn cols(s: &Island) -> u8 {
-    let room = s.placement.max_w() - super::size(Tab::Overview).0 - GAP - DRAWER_W;
-    let max = Tile::COLS + (room.max(0.0) / (CELL.0 + GAP)) as u8;
-    let h = |n| grid_height(s.dashboard.edit, &layout(&s.cfg.dashboard, n));
-    (Tile::COLS..=max).find(|&n| HEADER + 10.0 + h(n) <= limit(s))
-        .unwrap_or_else(|| (Tile::COLS..=max).min_by(|a, b| h(*a).total_cmp(&h(*b))).unwrap_or(Tile::COLS))
+/// The grid's columns and the scale it's drawn at: the fewest columns from `Tile::COLS` whose
+/// layout fits `limit` at full size, so a dashboard that won't fit grows wider first; else the
+/// columns that shrink it least, so every tile shows at a glance. As wide as the display holds
+/// beside the drawer, so editing doesn't reflow the grid. From the saved tiles, so the Island
+/// holds still under a drag.
+fn fit(s: &Island) -> (u8, f32) {
+    let room = (s.placement.max_w() - (super::size(Tab::Overview).0 - WIDTH) - GAP - DRAWER_W).max(WIDTH);
+    let tall = limit(s) - HEADER - 10.0;
+    let scale = |n| 1f32.min(room / grid_w(n)).min(tall / grid_height(s.dashboard.edit, &layout(&s.cfg.dashboard, n)));
+    let mut best = (Tile::COLS, scale(Tile::COLS));
+    // A tile is at most `Tile::COLS` wide, so past `COLS²` columns more only shrink it.
+    for n in Tile::COLS..=Tile::COLS * Tile::COLS {
+        let k = scale(n);
+        if k >= 1.0 { return (n, 1.0) }
+        if k > best.1 + 1e-3 { best = (n, k) }
+    }
+    best
 }
+
+fn cols(s: &Island) -> u8 { fit(s).0 }
 
 /// The grid's width at `cols` columns.
 fn grid_w(cols: u8) -> f32 { span(cols, CELL.0) }
 
+/// The grid's width as drawn: at its columns and scale.
+fn shown_w(s: &Island) -> f32 { let (n, k) = fit(s); k * grid_w(n) }
+
 /// The Overview's content height: the header and the saved tiles, and while editing the
 /// drawer at its widest, so the Island grows taller only once the drawer can't grow wider.
 pub fn height(s: &Island) -> f32 {
-    let grid = HEADER + 10.0 + grid_height(s.dashboard.edit, &layout(&s.cfg.dashboard, cols(s)));
+    let (n, k) = fit(s);
+    let grid = HEADER + 10.0 + k * grid_height(s.dashboard.edit, &layout(&s.cfg.dashboard, n));
     let drawer = if s.dashboard.edit { drawer_h(addable(s).len(), max_drawer_cols(s)) } else { 0.0 };
     grid.max(drawer).min(limit(s))
 }
 
 /// The Large Island's width on the Overview: wider for extra columns, and while editing for the drawer.
 pub fn width(s: &Island) -> f32 {
-    super::size(Tab::Overview).0 + grid_w(cols(s)) - WIDTH + if s.dashboard.edit { GAP + drawer_w(drawer_cols(s)) } else { 0.0 }
+    super::size(Tab::Overview).0 + shown_w(s) - WIDTH + if s.dashboard.edit { GAP + drawer_w(drawer_cols(s)) } else { 0.0 }
 }
 
 /// The drawer's width at `cols` columns of chips.
@@ -117,7 +130,7 @@ fn drawer_h(n: usize, cols: usize) -> f32 { DRAWER_CHROME + n.div_ceil(cols.max(
 
 /// The most chip columns the display holds beside the grid.
 fn max_drawer_cols(s: &Island) -> usize {
-    let room = s.placement.max_w() - (super::size(Tab::Overview).0 + grid_w(cols(s)) - WIDTH + GAP + DRAWER_W);
+    let room = s.placement.max_w() - (super::size(Tab::Overview).0 + shown_w(s) - WIDTH + GAP + DRAWER_W);
     1 + (room.max(0.0) / (CHIP_COL + 6.0)) as usize
 }
 
@@ -189,15 +202,18 @@ fn resize(s: &mut Island, i: usize, dw: i32, dh: i32) {
 fn drag(s: &mut Island, i: usize, corner: bool, d: &mut Drag, tx: &mut Tx) {
     match d.phase {
         Phase::Down => { tx.instant(); s.dashboard.drag = None }
-        Phase::Move => { tx.instant(); s.dashboard.drag = Some((i, d.dx, d.dy, corner)) }
+        // The pointer moves in window points; the tiles in the grid's, before its scale.
+        Phase::Move => { tx.instant(); let k = fit(s).1; s.dashboard.drag = Some((i, d.dx / k, d.dy / k, corner)) }
         Phase::Up => {
             s.dashboard.drag = None;
             if d.cancelled() || i >= s.cfg.dashboard.len() { return }
+            let (n, k) = fit(s);
+            let (dx, dy) = (d.dx / k, d.dy / k);
             if corner {
-                let t = resized(s.cfg.dashboard[i], d.dx, d.dy);
+                let t = resized(s.cfg.dashboard[i], dx, dy);
                 s.save(|c| c.dashboard[i] = t);
             } else {
-                let to = drop_at(&layout(&s.cfg.dashboard, cols(s)), i, d.dx, d.dy);
+                let to = drop_at(&layout(&s.cfg.dashboard, n), i, dx, dy);
                 if to != i { move_tile(s, i, to) }
             }
         }
@@ -240,11 +256,12 @@ pub fn view(s: &Island, layer: &mut Vec<El>) -> El {
     // A corner being dragged reflows the grid around the size it would land on.
     let (tiles, new) = shown(s);
     let drag = s.dashboard.drag.filter(|d| d.0 < s.cfg.dashboard.len());
-    let n = cols(s);
+    let (n, k) = fit(s);
     let rects = layout(&tiles, n);
     let target = drag.filter(|d| !d.3).map(|(i, dx, dy, _)| drop_at(&rects, i, dx, dy));
 
-    let mut grid = el().key("dashboard").w_full().h(grid_height(s.dashboard.edit, &rects)).drawn_rect_into(&s.dashboard.grid);
+    let gh = grid_height(s.dashboard.edit, &rects);
+    let mut grid = el().key("dashboard").absolute(0.0, 0.0).size(grid_w(n), gh).scale(k).origin(0.0, 0.0);
     for (j, (t, r)) in tiles.iter().zip(&rects).enumerate() {
         if new == Some(j) { grid = grid.child(placeholder(s, *t, *r)); continue }
         // The dashboard's own index, past the widget being dragged in.
@@ -257,9 +274,11 @@ pub fn view(s: &Island, layer: &mut Vec<El>) -> El {
         }
         grid = grid.child(tile);
     }
+    // Layout keeps the grid's unscaled size: this holds the room it's drawn in, and `slot` reads its rect.
+    let grid = el().key("dashboard-fit").size(k * grid_w(n), k * gh).drawn_rect_into(&s.dashboard.grid).child(grid);
     let content = if tiles.is_empty() && !s.dashboard.edit { empty(s, "No widgets yet: press the pencil to add some") } else { grid };
 
-    let overview = col().key("overview").w(grid_w(n)).h_full().gap(10.0)
+    let overview = col().key("overview").w(k * grid_w(n)).h_full().gap(10.0)
         .child(header)
         .child(col().key("dashboard-scroll").w_full().grow(1.0).min_h(0.0).scrolls().child(content));
     if !s.dashboard.edit { return overview }
@@ -736,7 +755,22 @@ mod tests {
         assert!(width(&s) <= s.placement.max_w());
         // A narrow display keeps it to what fits.
         s.placement = crate::island::Placement::of(&s.cfg, (960.0, 540.0));
-        assert!(cols(&s) < 6 && width(&s) <= s.placement.max_w());
+        assert!(width(&s) <= s.placement.max_w() && height(&s) <= limit(&s));
+    }
+
+    #[test]
+    fn a_dashboard_too_big_for_any_columns_shrinks_to_show_every_tile() {
+        use crate::config::{Config, Store};
+        for notch in [false, true] {
+            let mut s = Island::new(Store::memory(Config { notch_mode: notch, ..Config::default() }), Vec::new());
+            s.cfg.dashboard = vec![tile(4, 3); 10];
+            let (n, k) = fit(&s);
+            assert!(k < 1.0 && n > Tile::COLS, "{n} columns at {k}");
+            assert!(HEADER + 10.0 + k * grid_height(false, &layout(&s.cfg.dashboard, n)) <= limit(&s) + 0.01);
+            assert!(width(&s) <= s.placement.max_w() && height(&s) <= limit(&s));
+            s.dashboard.edit = true;
+            assert!(width(&s) <= s.placement.max_w(), "the drawer still fits beside it");
+        }
     }
 
     #[test]

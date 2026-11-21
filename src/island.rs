@@ -2044,12 +2044,13 @@ mod tests {
             let (top, bottom) = (iy.min(dy), (iy + ih).max(dy + dh));
             assert!(top >= 0.0 && bottom <= s.placement.visible_h, "{mode}: {top}..{bottom}");
         }
-        // No room at all below the Island: it keeps the Overview's usual size.
+        // No room at all below the Island: it keeps to the Overview's usual size, its tiles shrunk to fit.
         let mut s = island(Config { position_mode: "free".into(), island_y: 500.0, ..Config::default() });
         s.placement = Placement::of(&s.cfg, (960.0, 540.0));
         s.mode = Mode::Large;
         s.set_tab(Tab::Overview);
-        assert_eq!(s.size().1, tabs::size(Tab::Overview).1);
+        let h = s.size().1;
+        assert!(h > 200.0 && h <= tabs::size(Tab::Overview).1, "{h}");
     }
 
     #[test]
