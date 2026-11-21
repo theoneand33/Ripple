@@ -423,7 +423,7 @@ fn battery(s: &Island, w: f32, h: f32) -> El {
     let tint = if s.low_battery() { accent::low() } else { accent::green() };
     let glyph = if s.charging { &icons::ZAP } else { &icons::BATTERY };
     let size = grown(w, h, 0.45, 32.0, 96.0);
-    c.child(ring(size, p as f32, tint, icon(glyph, size * 0.35).color(tint)))
+    c.child(ring(size, p as f32, tint, icon(glyph, (size * 0.35).max(18.0)).color(tint)))
         .child(text(format!("{p}%{}", if s.charging { " · Charging" } else { "" })).font(s.cfg.font(13.0, 600.0).features("'tnum' 1")).color(fg))
 }
 
@@ -437,7 +437,7 @@ fn today(s: &Island, w: f32, h: f32) -> El {
     let event = |i: usize, e: &str| text(e).key(format!("event-{i}")).font(s.cfg.font(13.0, 500.0)).color(fg).truncate();
     let title = text("Today").font(s.cfg.font(13.0, 700.0)).color(accent::red());
     if short(h) {
-        let mut c = row().key("today").w_full().h_full().px(12.0).gap(8.0).center_y().child(title);
+        let mut c = row().key("today").role("group").label(format!("Today: {} events", events.len())).w_full().h_full().px(12.0).gap(8.0).center_y().child(title);
         c = match events.first() { Some(e) => c.child(event(0, e).grow(1.0).min_w(0.0)), None => c.child(text("No events").font(s.cfg.font(13.0, 500.0)).color(muted)) };
         if events.len() > 1 && !narrow(w) { c = c.child(text(format!("+{}", events.len() - 1)).font(s.cfg.font(12.0, 500.0)).color(muted)) }
         return c;
@@ -467,7 +467,7 @@ fn water(s: &Island, w: f32, h: f32) -> El {
     let n = s.cfg.water(crate::date::days_from_civil(s.today.0, s.today.1, s.today.2));
     let goal = s.cfg.water_goal.max(1);
     let size = grown(w, h, 0.4, 32.0, 80.0);
-    let gauge = ring(size, n as f32 * 100.0 / goal as f32, tint, icon(&icons::DROPLET, size * 0.3).color(tint));
+    let gauge = ring(size, n as f32 * 100.0 / goal as f32, tint, icon(&icons::DROPLET, (size * 0.3).max(16.0)).color(tint));
     let label = format!("{n} of {goal} glasses");
     let c = stack("water", h).role("group").label(&label)
         .child(row().gap(8.0).center_y()
