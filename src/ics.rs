@@ -36,7 +36,8 @@ fn props(ics: &str, comp: &str) -> Vec<(String, String, String)> {
         if !inside { inside = upper == begin; continue }
         if upper == end { break }
         if upper.starts_with("BEGIN:") { nested += 1; continue }
-        if upper.starts_with("END:") { nested -= 1; continue }
+        // A stray END closes nothing, so it doesn't hide the properties after it.
+        if upper.starts_with("END:") { nested = (nested - 1).max(0); continue }
         let Some((head, value)) = line.split_once(':').filter(|_| nested == 0) else { continue };
         let (name, params) = head.split_once(';').unwrap_or((head, ""));
         out.push((name.to_ascii_uppercase(), params.to_string(), value.to_string()));

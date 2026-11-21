@@ -1159,7 +1159,9 @@ impl Island {
         // Resting in Large (Large standby) isn't open: `remind` shows the alert compact.
         if self.large_open() || self.quiet() { return }
         // An alert of ours showing counts as the alerts it merged; another reminder isn't replaced, so they wait.
-        let shown = match self.notified { _ if !self.reminding() => 0, Some(n) => n, None => return };
+        // One that ends this tick no longer shows: the poll after this second sweeps it.
+        let showing = self.shown_until(Alert::Reminder).is_some_and(|until| now < until);
+        let shown = match self.notified { _ if !showing => 0, Some(n) => n, None => return };
         if let Some((text, n)) = crate::notify::merge(shown, crate::notify::take(&dir)) {
             self.remind(text, now);
             self.notified = Some(n);
@@ -2241,6 +2243,22 @@ mod tests {
         s.expect_playing = Some((false, -1.0));
         assert!(s.poll_track(song(true), &mut tx));
         assert!(s.playing());
+    }
+
+    #[test]
+    fn timed_alerts_rank_and_end_in_turn() {
+        let mut s = island(Config::default());
+        let mut tx = Tx::default();
+        s.set_capture(Some(true), Some(true), &mut tx);
+        assert_eq!(s.alert(), Some(Alert::Camera), "camera and microphone take turns");
+        s.remind_event("Standup".into(), Some("https://meet.example/x".into()), 0.0);
+        s.show_alert(Alert::Charging, 1.0, &[]);
+        assert_eq!(s.alert(), Some(Alert::Charging), "charging goes over the reminder, the reminder over the camera");
+        s.poll(3.5, &mut tx);
+        assert_eq!(s.alert(), Some(Alert::Reminder), "the charging alert ended; the event's 30 s go on");
+        assert!(s.capturing(), "the camera's turn ended and the microphone's began");
+        s.poll(31.0, &mut tx);
+        assert_eq!((s.alert(), s.reminder_link.as_deref()), (None, None), "an ended reminder takes its link with it");
     }
 
     #[test]

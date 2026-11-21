@@ -25,3 +25,20 @@ pub fn write_atomic(path: &Path, text: &str) -> std::io::Result<()> {
     std::fs::write(&tmp, text)?;
     std::fs::rename(tmp, path)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn typed_paths_expand_home_and_writes_replace_whole_files() {
+        let home = Path::new("/home/me");
+        assert_eq!((expand_home(home, "~/a"), expand_home(home, "~"), expand_home(home, "/x/~")), (home.join("a"), home.into(), "/x/~".into()));
+        let file = std::env::temp_dir().join(format!("ripple-paths-{}", std::process::id())).join("sub/f.txt");
+        write_atomic(&file, "one").unwrap();
+        write_atomic(&file, "two").unwrap();
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "two");
+        assert_eq!(std::fs::read_dir(file.parent().unwrap()).unwrap().count(), 1, "no temporary file is left");
+        std::fs::remove_dir_all(file.parent().unwrap().parent().unwrap()).unwrap();
+    }
+}
