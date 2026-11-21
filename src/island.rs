@@ -1521,23 +1521,24 @@ impl Island {
             }
         });
 
-        // Once a day, through `ripple notify`'s queue: it waits for quiet hours and a closed Large like any alert.
-        let store = self.store.clone();
+        // Once a day, through `ripple notify`'s queue: it waits for a closed Large like any alert.
+        let (h, store) = (me.clone(), self.store.clone());
         std::thread::spawn(move || loop {
-            let cfg = store.get();
-            let t = LocalTime::at(crate::date::now_ms());
+            let (cfg, t) = (store.get(), LocalTime::at(crate::date::now_ms()));
             let today = crate::date::days_from_civil(t.year, t.month, t.day);
-            // Not while quiet (`Island::quiet`): the queue drops an alert that waits over 5 minutes.
-            if cfg.update_check && cfg.update_day != today && !cfg.quiet_at(t.hour) && !(cfg.quiet_fullscreen && platform::fullscreen()) {
-                // A failed request tries again next hour.
-                let latest = crate::net::latest_release();
-                if latest.is_some() { store.update(|c| c.update_day = today); }
-                if let Some(tag) = latest.filter(|tag| crate::net::newer(tag, env!("CARGO_PKG_VERSION")))
-                    && let Some(dir) = store.dir()
-                    && let Err(e) = crate::notify::queue(&dir, &format!("Ripple {tag} is out"))
-                {
-                    eprintln!("Ripple: {e}");
-                }
+            // A failed request tries again next hour.
+            if cfg.update_check && cfg.update_day != today && let Some(tag) = crate::net::latest_release() {
+                h.update(move |s, _| {
+                    // Not while quiet, as the queue drops an alert that waits over 5 minutes: next hour.
+                    if s.quiet() { return }
+                    s.save(|c| c.update_day = today);
+                    if crate::net::newer(&tag, env!("CARGO_PKG_VERSION"))
+                        && let Some(dir) = s.store.dir()
+                        && let Err(e) = crate::notify::queue(&dir, &format!("Ripple {tag} is out"))
+                    {
+                        eprintln!("Ripple: {e}");
+                    }
+                });
             }
             std::thread::sleep(std::time::Duration::from_secs(3600));
         });
