@@ -569,6 +569,11 @@ impl Island {
             .into_iter().filter_map(|(on, kind)| on.then_some(kind)).collect()
     }
 
+    /// The label of the live activity the glance shows beside the time; Caps Lock shows as an alert instead.
+    fn live(&self) -> Option<String> {
+        if self.pomodoro.active() { Some(self.pomodoro.live_label()) } else { self.download.map(|d| d.label()) }
+    }
+
     pub fn alert(&self) -> Option<Alert> {
         // Caps Lock is an alert when it is the only live activity; otherwise it takes a bubble.
         let caps = !self.shows_track() && self.activities() == [Bubble::CapsLock];
@@ -665,8 +670,7 @@ impl Island {
         let percent = || label(&self.percent_label());
         let (left, right) = match self.alert() {
             Some(alert) => (20.0, label(&self.alert_label(alert))),
-            None if self.pomodoro.active() => (label(&self.time), 20.0 + label(&self.pomodoro.live_label())),
-            None if let Some(d) = &self.download => (label(&self.time), 20.0 + label(&d.label())),
+            None if let Some(live) = self.live() => (label(&self.time), 20.0 + label(&live)),
             None => (label(&self.time), match self.weather.temp {
                 Some(temp) if !(self.cfg.standby && self.percent.is_some()) => 16.0 + label(&format!("{temp}º")),
                 _ if self.charging && self.percent.is_some() => 16.0 + percent(),
@@ -687,9 +691,8 @@ impl Island {
             _ if matches!(self.alert(), Some(Alert::Volume | Alert::Brightness)) && !notch => 100.0, // just the ring
             _ if alerting => if notch { self.notch_glance_width() + if self.joinable() { 70.0 } else { 0.0 } } else if self.joinable() { 246.0 } else { 176.0 }, // fits icon + "Disconnected"
             _ if track => self.now_playing_width(),
-            _ if notch => if self.mode == Mode::Quick || self.cfg.show_info_idle || self.pomodoro.active() || self.download.is_some() { self.notch_glance_width() } else { 210.0 },
-            _ if self.pomodoro.active() => (110.0 + estimate_width(&self.pomodoro.live_label(), 15.0)).ceil().max(168.0), // "23:59" + ring + "24:59"
-            _ if let Some(d) = &self.download => (110.0 + estimate_width(&d.label(), 15.0)).ceil().max(168.0),
+            _ if notch => if self.mode == Mode::Quick || self.cfg.show_info_idle || self.live().is_some() { self.notch_glance_width() } else { 210.0 },
+            _ if let Some(live) = self.live() => (110.0 + estimate_width(&live, 15.0)).ceil().max(168.0), // "23:59" + ring + "24:59"
             Mode::Quick | Mode::Still => 140.0, // fits "23:59" + weather/"100%"
         };
         if notch && track && !alerting && self.mode != Mode::Large { w = (w + 40.0).max(300.0) }
@@ -771,11 +774,7 @@ impl Island {
             self.close_at = None;
             // Each show makes a new layer surface, so this is asked again on every entry.
             if let Some(me) = &self.me { me.allow_keys() }
-            if !self.focused && matches!(self.me, Some(Host::Window(_))) { self.prior = platform::focused_window() }
-            #[cfg(target_os = "linux")]
-            if !self.focused && self.prior.is_none() && let Some(me @ Host::Window(_)) = self.me.clone() {
-                me.spawn(platform::gnome_focused_window, |s, w| if w.is_some() { s.prior = w });
-            }
+            self.remember_prior(|_| {});
             // Not from a bubble: Large has none, so the hover would vanish and close it again.
             if self.mode == Mode::Still && self.cfg.show_info_idle && !self.playing() && part != 2 { self.set_mode(Mode::Large) }
             else if self.mode != Mode::Large { self.set_mode(Mode::Quick) }
@@ -847,18 +846,20 @@ impl Island {
             self.set_mode(if self.hovered { Mode::Quick } else { Mode::Still });
             return self.give_focus_back();
         }
-        if !self.focused && matches!(self.me, Some(Host::Window(_))) { self.prior = platform::focused_window() }
         self.close_at = None;
         self.set_mode(Mode::Large);
-        // GNOME Wayland: ask Window Calls for the focused window first, or it would name the Island.
+        self.remember_prior(move |s| if s.mode == Mode::Large && let Some(me) = &s.me { me.take_focus(token) });
+    }
+
+    /// Remembers the window that has focus, to hand it back on close; `then` runs once it is
+    /// known. GNOME Wayland asks Window Calls off the UI thread, as focus would name the Island.
+    fn remember_prior(&mut self, then: impl FnOnce(&mut Island) + Send + 'static) {
+        if !self.focused && matches!(self.me, Some(Host::Window(_))) { self.prior = platform::focused_window() }
         #[cfg(target_os = "linux")]
         if !self.focused && self.prior.is_none() && let Some(me @ Host::Window(_)) = self.me.clone() {
-            return me.spawn(platform::gnome_focused_window, move |s, w| {
-                if w.is_some() { s.prior = w }
-                if s.mode == Mode::Large && let Some(me) = &s.me { me.take_focus(token) }
-            });
+            return me.spawn(platform::gnome_focused_window, move |s, w| { if w.is_some() { s.prior = w } then(s) });
         }
-        if let Some(me) = &self.me { me.take_focus(token) }
+        then(self)
     }
 
     /// Hands keyboard focus back to the window that had it before the Island took it.
@@ -913,19 +914,19 @@ impl Island {
 
     // --- Shelf ---
 
-    /// Opens the Shelf in Large without the pointer; a pending close no longer applies.
-    fn open_shelf(&mut self) {
+    /// Opens Large straight on `tab`, the starred tab aside; a pending close no longer applies.
+    fn open_by_hand(&mut self, tab: Tab) {
         self.close_at = None;
         self.mode = Mode::Large;
         self.large_by_hand = true;
-        self.set_tab(Tab::Shelf);
+        self.open_tab(tab);
     }
 
     /// A file drag over the Island opens the Shelf; one that leaves without dropping lets it rest.
     pub fn drop_hover(&mut self, over: bool, _: &mut Tx) {
         self.shelf.dropping = over;
         if over {
-            self.open_shelf();
+            self.open_by_hand(Tab::Shelf);
         } else if !self.hovered && !self.shelf.desktop_drag {
             self.set_mode(Mode::Still);
         }
@@ -938,7 +939,7 @@ impl Island {
         if active {
             if !self.visible_tabs().contains(&Tab::Shelf) { return }
             self.shelf.desktop_drag = true;
-            self.open_shelf();
+            self.open_by_hand(Tab::Shelf);
         } else if std::mem::take(&mut self.shelf.desktop_drag) && !self.shelf.dropping {
             self.set_mode(Mode::Still);
         }
@@ -953,7 +954,7 @@ impl Island {
         self.shelf_new_files(files);
         self.shelf.dropping = false;
         self.shelf.desktop_drag = false;
-        self.open_shelf();
+        self.open_by_hand(Tab::Shelf);
     }
 
     pub fn key(&mut self, ev: &KeyEvent, tx: &mut Tx) -> bool {
@@ -965,10 +966,7 @@ impl Island {
                 // 9 is the last tab, however many there are, as in browsers.
                 let tab = if c == '9' { visible.last() } else { visible.get(c as usize - '1' as usize) };
                 let Some(&tab) = tab else { return false };
-                // Straight on that tab; the starred tab doesn't apply.
-                self.mode = Mode::Large;
-                self.large_by_hand = true;
-                self.open_tab(tab);
+                self.open_by_hand(tab);
             }
             _ => return false,
         }
@@ -1099,6 +1097,10 @@ impl Island {
         (self.cfg.quiet_fullscreen && self.fullscreen) || (self.cfg.quiet_hours && self.cfg.quiet_at(LocalTime::at(crate::date::now_ms()).hour))
     }
 
+    /// A reminder may show now: Large isn't open and none shows, which it would replace; one
+    /// held back stays due until then. Headless runs show none, so every machine renders the same.
+    pub fn can_remind(&self) -> bool { !rune::is_headless() && !self.large_open() && !self.reminding() }
+
     /// Large is open by hand or under the pointer, not merely resting there (large_standby).
     pub(crate) fn large_open(&self) -> bool {
         self.mode == Mode::Large && (self.large_by_hand || self.hovered)
@@ -1108,10 +1110,8 @@ impl Island {
     /// screen. One due while Large is open waits until it closes.
     pub fn break_reminders(&mut self, now: f64) {
         let elapsed = now - std::mem::replace(&mut self.break_tick, now);
-        if rune::is_headless() { return }
         let on = [self.cfg.eye_breaks, self.cfg.hourly_breaks];
-        // While another reminder shows, the break waits rather than replace it.
-        let paused = self.fullscreen || self.large_open() || self.reminding() || self.quiet();
+        let paused = self.fullscreen || !self.can_remind() || self.quiet();
         if let Some(i) = count_breaks(&mut self.break_left, on, elapsed, paused) {
             self.remind(["Look away 20s", "Take a break"][i].into(), now);
         }
@@ -1120,8 +1120,7 @@ impl Island {
     /// On the hour within the set hours, while the Water widget is on the Overview and today's
     /// glasses are short of the goal.
     pub fn water_reminders(&mut self, now: f64) {
-        // An alert doesn't show over an open Large or replace another: the hour stays due until then.
-        if rune::is_headless() || self.large_open() || self.reminding() || self.quiet() { return }
+        if !self.can_remind() || self.quiet() { return }
         let t = LocalTime::at(crate::date::now_ms());
         let mark = (crate::date::days_from_civil(t.year, t.month, t.day), t.hour);
         // Track the hour even while reminders are off, so turning them on or adding the widget mid-hour stays quiet.
@@ -1140,7 +1139,7 @@ impl Island {
     pub fn rain_alert(&mut self, now: f64) {
         // `rain_alerted` stays through a pause in the rain: `rain_due` lets only rain 3 hours away from it alert again.
         let Some((at, _)) = self.weather.precip else { return };
-        if rune::is_headless() || !self.cfg.rain_alerts || self.large_open() || self.reminding() || self.quiet() { return }
+        if !self.cfg.rain_alerts || !self.can_remind() || self.quiet() { return }
         if !rain_due(at, crate::date::now_secs(), self.rain_alerted) { return }
         self.rain_alerted = Some(at);
         self.remind(self.precip_label(), now);
@@ -1362,6 +1361,12 @@ impl Island {
             self.next_second = now + 1.0;
             tx.wake_at(self.next_second);
             changed |= tabs::each_second(self, now);
+            self.notifications(now);
+            self.water_reminders(now);
+            self.rain_alert(now);
+            self.break_reminders(now);
+            let theme = self.cfg.sun_theme(self.weather.sun, crate::date::now_secs()).filter(|t| *t != self.cfg.theme).map(str::to_string);
+            if let Some(theme) = theme { self.save(|c| c.set_theme(&theme)) }
         }
         changed |= tabs::poll(self, now, tx);
 
@@ -1677,7 +1682,7 @@ pub fn view(s: &Island, cx: &mut Cx<Island>) -> El {
         if s.open_select.is_some() && let Some(menu) = layer.pop() {
             layer.push(menu.on_hover_change(|s: &mut Island, hovered, _| s.menu_hovered = hovered));
         }
-    } else if s.mode == Mode::Quick || s.alert().is_some() || s.shows_track() || cfg.show_info_idle || s.pomodoro.active() {
+    } else if s.mode == Mode::Quick || s.alert().is_some() || s.shows_track() || cfg.show_info_idle || s.live().is_some() {
         island = island.child(if s.shows_track() && s.alert().is_none() { now_playing(s, fg) } else { glance(s, fg) });
     }
 
@@ -1830,7 +1835,7 @@ fn glance(s: &Island, fg: Color) -> El {
     let row = row().key(alert.map_or("glance", Alert::key)).w_full().h_full().px(pad).center_y()
         .transition(Transition::blur_replace());
     // Mini notch centers the time when there is nothing to show beside it.
-    if cfg.notch_mode && cfg.notch_mini && alert.is_none() && s.weather.temp.is_none() && s.percent.is_none() && !s.pomodoro.active() && s.download.is_none() {
+    if cfg.notch_mode && cfg.notch_mini && alert.is_none() && s.weather.temp.is_none() && s.percent.is_none() && s.live().is_none() {
         return row.justify_center().child(left);
     }
     row.justify_between().child(left).child(right)
