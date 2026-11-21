@@ -102,6 +102,13 @@ fn fit(s: &Island) -> (u8, f32) {
 
 fn cols(s: &Island) -> u8 { fit(s).0 }
 
+/// The scale the grid is drawn at: `fit`'s, less while a drag in progress adds a row, so the
+/// Island holds still and every tile still shows.
+fn drawn_scale(s: &Island) -> f32 {
+    let (n, k) = fit(s);
+    k.min((limit(s) - HEADER - 10.0) / grid_height(s.dashboard.edit, &layout(&shown(s).0, n)))
+}
+
 /// The grid's width at `cols` columns.
 fn grid_w(cols: u8) -> f32 { span(cols, CELL.0) }
 
@@ -203,11 +210,11 @@ fn drag(s: &mut Island, i: usize, corner: bool, d: &mut Drag, tx: &mut Tx) {
     match d.phase {
         Phase::Down => { tx.instant(); s.dashboard.drag = None }
         // The pointer moves in window points; the tiles in the grid's, before its scale.
-        Phase::Move => { tx.instant(); let k = fit(s).1; s.dashboard.drag = Some((i, d.dx / k, d.dy / k, corner)) }
+        Phase::Move => { tx.instant(); let k = drawn_scale(s); s.dashboard.drag = Some((i, d.dx / k, d.dy / k, corner)) }
         Phase::Up => {
+            let (n, k) = (cols(s), drawn_scale(s));
             s.dashboard.drag = None;
             if d.cancelled() || i >= s.cfg.dashboard.len() { return }
-            let (n, k) = fit(s);
             let (dx, dy) = (d.dx / k, d.dy / k);
             if corner {
                 let t = resized(s.cfg.dashboard[i], dx, dy);
@@ -256,7 +263,7 @@ pub fn view(s: &Island, layer: &mut Vec<El>) -> El {
     // A corner being dragged reflows the grid around the size it would land on.
     let (tiles, new) = shown(s);
     let drag = s.dashboard.drag.filter(|d| d.0 < s.cfg.dashboard.len());
-    let (n, k) = fit(s);
+    let (n, k) = (cols(s), drawn_scale(s));
     let rects = layout(&tiles, n);
     let target = drag.filter(|d| !d.3).map(|(i, dx, dy, _)| drop_at(&rects, i, dx, dy));
 
@@ -278,7 +285,7 @@ pub fn view(s: &Island, layer: &mut Vec<El>) -> El {
     let grid = el().key("dashboard-fit").size(k * grid_w(n), k * gh).drawn_rect_into(&s.dashboard.grid).child(grid);
     let content = if tiles.is_empty() && !s.dashboard.edit { empty(s, "No widgets yet: press the pencil to add some") } else { grid };
 
-    let overview = col().key("overview").w(k * grid_w(n)).h_full().gap(10.0)
+    let overview = col().key("overview").w(shown_w(s)).h_full().gap(10.0)
         .child(header)
         .child(col().key("dashboard-scroll").w_full().grow(1.0).min_h(0.0).scrolls().child(content));
     if !s.dashboard.edit { return overview }
@@ -761,16 +768,25 @@ mod tests {
     #[test]
     fn a_dashboard_too_big_for_any_columns_shrinks_to_show_every_tile() {
         use crate::config::{Config, Store};
-        for notch in [false, true] {
+        let mut shrank = 0;
+        for notch in [false, true] { for count in 6..=12 {
             let mut s = Island::new(Store::memory(Config { notch_mode: notch, ..Config::default() }), Vec::new());
-            s.cfg.dashboard = vec![tile(4, 3); 10];
+            s.cfg.dashboard = vec![tile(4, 3); count];
             let (n, k) = fit(&s);
             assert!(k < 1.0 && n > Tile::COLS, "{n} columns at {k}");
             assert!(HEADER + 10.0 + k * grid_height(false, &layout(&s.cfg.dashboard, n)) <= limit(&s) + 0.01);
             assert!(width(&s) <= s.placement.max_w() && height(&s) <= limit(&s));
             s.dashboard.edit = true;
             assert!(width(&s) <= s.placement.max_w(), "the drawer still fits beside it");
-        }
+            // A widget dragged in may add a row: the grid shrinks for it, and the Island holds still.
+            let h = height(&s);
+            s.dashboard.add = Some((Widget::Panel(Tab::Tasks), Some(0)));
+            let (tiles, _) = shown(&s);
+            assert!(HEADER + 10.0 + drawn_scale(&s) * grid_height(true, &layout(&tiles, n)) <= limit(&s) + 0.01);
+            assert_eq!(height(&s), h);
+            if drawn_scale(&s) < fit(&s).1 { shrank += 1 }
+        }}
+        assert!(shrank > 0, "some drag added a row");
     }
 
     #[test]
