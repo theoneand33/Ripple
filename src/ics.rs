@@ -7,7 +7,7 @@ use crate::task::{Every, Task};
 
 /// The calendar object with its first `comp`'s properties named in `drop` taken out and `add`
 /// put in. Alarms and everything else stay as they were.
-pub(crate) fn rewrite(ics: &str, comp: &str, drop: &[&str], add: &[String]) -> String {
+fn rewrite(ics: &str, comp: &str, drop: &[&str], add: &[String]) -> String {
     let (begin, end) = (format!("BEGIN:{comp}"), format!("END:{comp}"));
     let (mut out, mut inside, mut nested, mut done) = (String::new(), false, 0, false);
     for line in unfold(ics).lines() {
@@ -45,30 +45,30 @@ fn props(ics: &str, comp: &str) -> Vec<(String, String, String)> {
 }
 
 /// A property of the first `comp`, outside its alarms: (parameters, value).
-pub(crate) fn property(ics: &str, comp: &str, name: &str) -> Option<(String, String)> {
+fn property(ics: &str, comp: &str, name: &str) -> Option<(String, String)> {
     props(ics, comp).into_iter().find(|p| p.0.eq_ignore_ascii_case(name)).map(|(_, params, value)| (params, value))
 }
 
 /// Minutes since 1970 on this clock, as `ics_time` reads a value.
-pub(crate) fn minutes(((y, m, d), time): ((i32, u32, u32), Option<(u32, u32)>)) -> i64 {
+fn minutes(((y, m, d), time): ((i32, u32, u32), Option<(u32, u32)>)) -> i64 {
     let (h, min) = time.unwrap_or((0, 0));
     days_from_civil(y, m, d) * 1440 + i64::from(h * 60 + min)
 }
 
 /// Minutes since 1970 on this clock as UTC minutes, at that moment's offset.
-pub(crate) fn to_utc(local: i64) -> i64 {
+fn to_utc(local: i64) -> i64 {
     let offset = |m: i64| i64::from(rune::time::LocalTime::at(m * 60_000).offset) / 60;
     local - offset(local - offset(local))
 }
 
 /// Today on this clock, for the `today` and `tomorrow` a hand-edited task may hold.
-pub(crate) fn today() -> (i32, u32, u32) {
+fn today() -> (i32, u32, u32) {
     let t = rune::time::LocalTime::at(crate::date::now_ms());
     (t.year, t.month, t.day)
 }
 
 /// A DATE (`all_day`) or local DATE-TIME value at `at` minutes since 1970.
-pub(crate) fn ics_value(at: i64, all_day: bool) -> String {
+fn ics_value(at: i64, all_day: bool) -> String {
     let t = rune::time::LocalTime::at_offset(at * 60_000, 0);
     if all_day { format!("{:04}{:02}{:02}", t.year, t.month, t.day) } else { format!("{:04}{:02}{:02}T{:02}{:02}00", t.year, t.month, t.day, t.hour, t.minute) }
 }
@@ -117,7 +117,7 @@ pub(crate) fn edited_event(ics: &str, text: &str) -> Option<String> {
 }
 
 /// A DURATION's length in minutes: weeks, days, hours and minutes (`P1DT2H`, `PT45M`).
-pub(crate) fn duration(v: &str) -> Option<i64> {
+fn duration(v: &str) -> Option<i64> {
     let v = v.trim().strip_prefix('P')?;
     let (mut total, mut n) = (0i64, 0i64);
     for c in v.chars() {
@@ -149,7 +149,7 @@ pub(crate) fn edited_task(ics: &str, text: &str) -> Option<String> {
 }
 
 /// iCalendar lines with their folds joined.
-pub(crate) fn unfold(ics: &str) -> String { ics.replace("\r\n", "\n").replace("\n ", "").replace("\n\t", "") }
+fn unfold(ics: &str) -> String { ics.replace("\r\n", "\n").replace("\n ", "").replace("\n\t", "") }
 
 /// The calendar object's to-do as a task.s text (`task::Task`), unless it is done.
 pub(crate) fn open_task(ics: &str) -> Option<String> {
@@ -174,7 +174,7 @@ pub(crate) fn open_task(ics: &str) -> Option<String> {
 
 /// A repeat rule as Ripple's daily, weekly or monthly, when it is only that (plus a week start or
 /// an interval of 1); anything more is `Every::Custom`, which Ripple leaves to Nextcloud.
-pub(crate) fn simple_rule(rule: &str) -> Option<Every> {
+fn simple_rule(rule: &str) -> Option<Every> {
     let mut every = None;
     for part in rule.split(';').map(|p| p.trim().to_ascii_uppercase()) {
         match part.as_str() {
@@ -191,7 +191,7 @@ pub(crate) fn simple_rule(rule: &str) -> Option<Every> {
 
 /// A DATE or DATE-TIME value: its day, and its time on this clock. UTC moves to this clock; a
 /// TZID time is taken as written, as it is usually this zone.
-pub(crate) fn ics_time(value: &str) -> Option<((i32, u32, u32), Option<(u32, u32)>)> {
+fn ics_time(value: &str) -> Option<((i32, u32, u32), Option<(u32, u32)>)> {
     let value = value.trim();
     let num = |from: usize, to: usize| value.get(from..to)?.parse::<u32>().ok();
     let (y, m, d) = (num(0, 4)? as i32, num(4, 6)?, num(6, 8)?);
@@ -208,7 +208,7 @@ pub(crate) fn ics_time(value: &str) -> Option<((i32, u32, u32), Option<(u32, u32
 }
 
 /// An iCalendar TEXT value; a line break becomes a space, as tasks are one line here.
-pub(crate) fn unescape_text(value: &str) -> String {
+fn unescape_text(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     let mut chars = value.chars();
     while let Some(c) = chars.next() {
@@ -221,7 +221,7 @@ pub(crate) fn unescape_text(value: &str) -> String {
 }
 
 /// A TEXT value for iCalendar.
-pub(crate) fn escape_text(value: &str) -> String { value.replace('\\', "\\\\").replace(';', "\\;").replace(',', "\\,").replace('\n', "\\n").replace('\r', "") }
+fn escape_text(value: &str) -> String { value.replace('\\', "\\\\").replace(';', "\\;").replace(',', "\\,").replace('\n', "\\n").replace('\r', "") }
 
 /// A to-do from a task's text; `open_task` reads it back as the same text.
 pub(crate) fn new_task(uid: &str, text: &str, stamp: &str) -> String {
@@ -316,9 +316,81 @@ pub fn leading_time(title: &str) -> (Option<(u32, u32)>, &str) {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     #[test]
     fn a_feed_lists_its_events_from_a_day_on() {
         let ics = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nDTSTART;VALUE=DATE:20260105\r\nSUMMARY:Dentist\r\nEND:VEVENT\r\nBEGIN:VEVENT\r\nDTSTART:20260102T093000\r\nSUMMARY:Stand\r\n up\r\nEND:VEVENT\r\nBEGIN:VEVENT\r\nDTSTART:20250101T100000\r\nSUMMARY:Old\r\nEND:VEVENT\r\nBEGIN:VEVENT\r\nDTSTART:20260103T100000\r\nSUMMARY:Off\r\nSTATUS:CANCELLED\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
-        assert_eq!(super::feed_events(ics, "2026-01-01"), ["2026-01-02 09:30 Standup", "2026-01-05 Dentist"]);
+        assert_eq!(feed_events(ics, "2026-01-01"), ["2026-01-02 09:30 Standup", "2026-01-05 Dentist"]);
+    }
+
+    #[test]
+    fn todos_read_and_complete() {
+        let ics = "BEGIN:VCALENDAR\r\nBEGIN:VTODO\r\nUID:1\r\nSUMMARY;LANGUAGE=en:Buy milk\\, eggs and a very long\r\n  line\r\nSTATUS:NEEDS-ACTION\r\nDUE:20260101\r\nEND:VTODO\r\nEND:VCALENDAR\r\n";
+        assert_eq!(open_task(ics).as_deref(), Some("Buy milk, eggs and a very long line due:2026-01-01"));
+        let done = completed(ics, "20261118T000000Z");
+        assert_eq!(open_task(&done), None);
+        assert!(done.contains("DUE:20260101\r\nSTATUS:COMPLETED\r\nCOMPLETED:20261118T000000Z\r\nPERCENT-COMPLETE:100\r\nEND:VTODO") && !done.contains("NEEDS-ACTION"));
+        assert_eq!(open_task(&new_task("u", "a, b; c \\n", "20260101T000000Z")).as_deref(), Some("a, b; c \\n"));
+        let rich = "!!! Pay rent due:2026-12-01T09:30 every:month";
+        let written = new_task("u", rich, "20260101T000000Z");
+        assert!(written.contains("PRIORITY:1\r\nDUE:20261201T093000\r\nRRULE:FREQ=MONTHLY\r\n") && written.contains("SUMMARY:Pay rent\r\n"));
+        assert_eq!(open_task(&written).as_deref(), Some(rich));
+        assert_eq!(open_task("BEGIN:VTODO\r\nSUMMARY:Low\r\nPRIORITY:7\r\nRRULE:FREQ=WEEKLY;WKST=MO;INTERVAL=1\r\nEND:VTODO").as_deref(), Some("! Low every:week"));
+        let fortnightly = "BEGIN:VCALENDAR\r\nBEGIN:VTODO\r\nSUMMARY:Bins\r\nRRULE:FREQ=WEEKLY;INTERVAL=2\r\nEND:VTODO\r\nEND:VCALENDAR\r\n";
+        assert_eq!(open_task(fortnightly).as_deref(), Some("Bins every:custom"), "a rule Ripple can't follow is left to Nextcloud");
+        assert!(edited_task(fortnightly, "Take the bins out every:custom").unwrap().contains("RRULE:FREQ=WEEKLY;INTERVAL=2"));
+        assert!(!new_task("u", "Bins every:custom", "").contains("RRULE"));
+        assert_eq!(open_task("BEGIN:VTODO\r\nSUMMARY:Task\r\nBEGIN:VALARM\r\nSUMMARY:Alarm\r\nEND:VALARM\r\nEND:VTODO").as_deref(), Some("Task"));
+    }
+
+    #[test]
+    fn events_read_and_write() {
+        let ics = "BEGIN:VCALENDAR\r\nBEGIN:VTIMEZONE\r\nBEGIN:STANDARD\r\nDTSTART:19701025T030000\r\nEND:STANDARD\r\nEND:VTIMEZONE\r\nBEGIN:VEVENT\r\nDTSTART;TZID=Europe/Berlin:20261119T150000\r\nSUMMARY:Dentist\\, upstairs\r\nBEGIN:VALARM\r\nSUMMARY:Alarm\r\nEND:VALARM\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+        assert_eq!(event(ics).as_deref(), Some("2026-11-19 15:00 Dentist, upstairs"));
+        assert_eq!(event("BEGIN:VEVENT\r\nDTSTART;VALUE=DATE:20261231\r\nEND:VEVENT").as_deref(), Some("2026-12-31 Untitled"));
+        assert_eq!(event("BEGIN:VEVENT\r\nDTSTART:20261231\r\nSTATUS:CANCELLED\r\nEND:VEVENT"), None);
+        let new = new_event("u", (2026, 12, 31), "Party; late", "20261118T000000Z");
+        assert!(new.contains("DTSTART;VALUE=DATE:20261231\r\nDTEND;VALUE=DATE:20270101\r\n"));
+        assert_eq!(event(&new).as_deref(), Some("2026-12-31 Party; late"), "an event round-trips to the same text");
+        let timed = new_event("u", (2026, 11, 19), "15:00 Dentist", "20261118T000000Z");
+        assert!(timed.contains("DTSTART:20261119T150000\r\nSUMMARY:Dentist\r\n"), "a leading time is the event's time, not its title");
+        assert_eq!(event(&timed).as_deref(), Some("2026-11-19 15:00 Dentist"));
+        assert_eq!(event(&new_event("u", (2026, 11, 19), "25:00 Odd", "s")).as_deref(), Some("2026-11-19 25:00 Odd"));
+        assert_eq!(event_day("2026-02-03 9:00 Standup"), Some(((2026, 2, 3), "9:00 Standup")));
+        assert_eq!((event_day("2026-13-01 x"), event_day("Standup")), (None, None));
+    }
+
+    #[test]
+    fn edits_rewrite_only_what_changed() {
+        let ics = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:1\r\nDTSTART;TZID=Europe/Berlin:20261119T150000\r\nDTEND;TZID=Europe/Berlin:20261119T163000\r\nSUMMARY:Dentist\r\nDESCRIPTION:Bring the card\r\nBEGIN:VALARM\r\nSUMMARY:Alarm\r\nTRIGGER:-PT15M\r\nEND:VALARM\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+        let renamed = edited_event(ics, "2026-11-19 15:00 Dentist, upstairs").unwrap();
+        assert!(renamed.contains("SUMMARY:Dentist\\, upstairs\r\nEND:VEVENT") && renamed.contains("SUMMARY:Alarm") && renamed.contains("DESCRIPTION:Bring the card"));
+        assert!(renamed.contains("DTSTART;TZID=Europe/Berlin:20261119T150000"), "an untouched time stays as written");
+        let moved = edited_event(ics, "2026-11-20 09:00 Dentist").unwrap();
+        assert!(moved.contains("DTSTART;TZID=Europe/Berlin:20261120T090000\r\nDTEND;TZID=Europe/Berlin:20261120T103000\r\n"), "{moved}");
+        assert_eq!(event(&moved).as_deref(), Some("2026-11-20 09:00 Dentist"));
+        let all_day = edited_event(ics, "2026-11-21 Dentist").unwrap();
+        assert!(all_day.contains("DTSTART;VALUE=DATE:20261121\r\nDTEND;VALUE=DATE:20261122\r\n") && !all_day.contains("T150000"));
+        let utc = "BEGIN:VEVENT\r\nDTSTART:20261119T150000Z\r\nDTEND:20261119T160000Z\r\nSUMMARY:Call\r\nEND:VEVENT\r\n";
+        let moved_utc = edited_event(utc, "2026-11-20 09:00 Call").unwrap();
+        assert_eq!(event(&moved_utc).as_deref(), Some("2026-11-20 09:00 Call"), "{moved_utc}");
+        assert!(moved_utc.lines().filter(|l| l.starts_with("DTSTART:") || l.starts_with("DTEND:")).all(|l| l.ends_with('Z')), "a UTC event stays UTC: {moved_utc}");
+        let meeting = "BEGIN:VEVENT\r\nDTSTART;VALUE=DATE:20261119\r\nDTEND;VALUE=DATE:20261120\r\nSUMMARY:10:00 Meeting\r\nEND:VEVENT\r\n";
+        let moved_meeting = edited_event(meeting, "2026-11-20 10:00 Meeting").unwrap();
+        assert!(moved_meeting.contains("DTSTART;VALUE=DATE:20261120\r\nDTEND;VALUE=DATE:20261121\r\n") && moved_meeting.contains("SUMMARY:10:00 Meeting"), "{moved_meeting}");
+        let series = "BEGIN:VEVENT\r\nDTSTART;VALUE=DATE:20261119\r\nRRULE:FREQ=WEEKLY;BYDAY=TH\r\nSUMMARY:Gym\r\nEND:VEVENT\r\n";
+        assert_eq!(edited_event(series, "2026-11-20 Gym"), None, "a series isn't moved");
+        assert!(edited_event(series, "2026-11-19 Gym class").unwrap().contains("SUMMARY:Gym class"), "but it can be renamed");
+        let trip = "BEGIN:VEVENT\r\nDTSTART;VALUE=DATE:20261101\r\nDURATION:P3D\r\nSUMMARY:Trip\r\nEND:VEVENT\r\n";
+        assert!(edited_event(trip, "2026-11-10 Trip").unwrap().contains("DTSTART;VALUE=DATE:20261110\r\nDTEND;VALUE=DATE:20261113\r\n"), "a moved event keeps its length");
+        let todo = "BEGIN:VCALENDAR\r\nBEGIN:VTODO\r\nSUMMARY:Rent\r\nRRULE:FREQ=MONTHLY;BYMONTHDAY=1\r\nDESCRIPTION:Landlord\r\nEND:VTODO\r\nEND:VCALENDAR\r\n";
+        let task = edited_task(todo, "!! Pay rent every:custom").unwrap();
+        assert!(task.contains("RRULE:FREQ=MONTHLY;BYMONTHDAY=1") && task.contains("DESCRIPTION:Landlord"), "an unchanged repeat keeps its rule");
+        assert!(task.contains("SUMMARY:Pay rent\r\nPRIORITY:5\r\nEND:VTODO"));
+        assert_eq!(open_task(&task).as_deref(), Some("!! Pay rent every:custom"));
+        assert_eq!((duration("P1DT2H30M"), duration("PT30M"), duration("P2W"), duration("1H")), (Some(1590), Some(30), Some(20_160), None));
+        assert_eq!(ics_time("20261119T1500"), Some(((2026, 11, 19), Some((15, 0)))));
+        assert_eq!((ics_time("2026111"), ics_time("20261119X")), (None, None));
     }
 }

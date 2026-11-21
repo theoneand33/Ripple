@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 
 use crate::config::{Config, Item, Nextcloud, Remote};
 use crate::net::{percent_decode, percent_encode};
-use crate::ics::*;
+use crate::ics::{completed, edited_event, edited_task, event, event_day, new_event, new_task, open_task};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Kind {
@@ -730,76 +730,6 @@ mod tests {
         assert_eq!(unescape(&"&".repeat(200_000)).len(), 200_000);
         // Linear takes milliseconds; the old quadratic scan took minutes on these inputs.
         assert!(start.elapsed() < std::time::Duration::from_secs(10), "linear parse took {:?}", start.elapsed());
-    }
-
-    #[test]
-    fn todos_read_and_complete() {
-        let ics = "BEGIN:VCALENDAR\r\nBEGIN:VTODO\r\nUID:1\r\nSUMMARY;LANGUAGE=en:Buy milk\\, eggs and a very long\r\n  line\r\nSTATUS:NEEDS-ACTION\r\nDUE:20260101\r\nEND:VTODO\r\nEND:VCALENDAR\r\n";
-        assert_eq!(open_task(ics).as_deref(), Some("Buy milk, eggs and a very long line due:2026-01-01"));
-        let done = completed(ics, "20261118T000000Z");
-        assert_eq!(open_task(&done), None);
-        assert!(done.contains("DUE:20260101\r\nSTATUS:COMPLETED\r\nCOMPLETED:20261118T000000Z\r\nPERCENT-COMPLETE:100\r\nEND:VTODO") && !done.contains("NEEDS-ACTION"));
-        assert_eq!(open_task(&new_task("u", "a, b; c \\n", "20260101T000000Z")).as_deref(), Some("a, b; c \\n"));
-        let rich = "!!! Pay rent due:2026-12-01T09:30 every:month";
-        let written = new_task("u", rich, "20260101T000000Z");
-        assert!(written.contains("PRIORITY:1\r\nDUE:20261201T093000\r\nRRULE:FREQ=MONTHLY\r\n") && written.contains("SUMMARY:Pay rent\r\n"));
-        assert_eq!(open_task(&written).as_deref(), Some(rich));
-        assert_eq!(open_task("BEGIN:VTODO\r\nSUMMARY:Low\r\nPRIORITY:7\r\nRRULE:FREQ=WEEKLY;WKST=MO;INTERVAL=1\r\nEND:VTODO").as_deref(), Some("! Low every:week"));
-        let fortnightly = "BEGIN:VCALENDAR\r\nBEGIN:VTODO\r\nSUMMARY:Bins\r\nRRULE:FREQ=WEEKLY;INTERVAL=2\r\nEND:VTODO\r\nEND:VCALENDAR\r\n";
-        assert_eq!(open_task(fortnightly).as_deref(), Some("Bins every:custom"), "a rule Ripple can't follow is left to Nextcloud");
-        assert!(edited_task(fortnightly, "Take the bins out every:custom").unwrap().contains("RRULE:FREQ=WEEKLY;INTERVAL=2"));
-        assert!(!new_task("u", "Bins every:custom", "").contains("RRULE"));
-        assert_eq!(open_task("BEGIN:VTODO\r\nSUMMARY:Task\r\nBEGIN:VALARM\r\nSUMMARY:Alarm\r\nEND:VALARM\r\nEND:VTODO").as_deref(), Some("Task"));
-    }
-
-    #[test]
-    fn events_read_and_write() {
-        let ics = "BEGIN:VCALENDAR\r\nBEGIN:VTIMEZONE\r\nBEGIN:STANDARD\r\nDTSTART:19701025T030000\r\nEND:STANDARD\r\nEND:VTIMEZONE\r\nBEGIN:VEVENT\r\nDTSTART;TZID=Europe/Berlin:20261119T150000\r\nSUMMARY:Dentist\\, upstairs\r\nBEGIN:VALARM\r\nSUMMARY:Alarm\r\nEND:VALARM\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
-        assert_eq!(event(ics).as_deref(), Some("2026-11-19 15:00 Dentist, upstairs"));
-        assert_eq!(event("BEGIN:VEVENT\r\nDTSTART;VALUE=DATE:20261231\r\nEND:VEVENT").as_deref(), Some("2026-12-31 Untitled"));
-        assert_eq!(event("BEGIN:VEVENT\r\nDTSTART:20261231\r\nSTATUS:CANCELLED\r\nEND:VEVENT"), None);
-        let new = new_event("u", (2026, 12, 31), "Party; late", "20261118T000000Z");
-        assert!(new.contains("DTSTART;VALUE=DATE:20261231\r\nDTEND;VALUE=DATE:20270101\r\n"));
-        assert_eq!(event(&new).as_deref(), Some("2026-12-31 Party; late"), "an event round-trips to the same text");
-        let timed = new_event("u", (2026, 11, 19), "15:00 Dentist", "20261118T000000Z");
-        assert!(timed.contains("DTSTART:20261119T150000\r\nSUMMARY:Dentist\r\n"), "a leading time is the event's time, not its title");
-        assert_eq!(event(&timed).as_deref(), Some("2026-11-19 15:00 Dentist"));
-        assert_eq!(event(&new_event("u", (2026, 11, 19), "25:00 Odd", "s")).as_deref(), Some("2026-11-19 25:00 Odd"));
-        assert_eq!(event_day("2026-02-03 9:00 Standup"), Some(((2026, 2, 3), "9:00 Standup")));
-        assert_eq!((event_day("2026-13-01 x"), event_day("Standup")), (None, None));
-    }
-
-    #[test]
-    fn edits_rewrite_only_what_changed() {
-        let ics = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:1\r\nDTSTART;TZID=Europe/Berlin:20261119T150000\r\nDTEND;TZID=Europe/Berlin:20261119T163000\r\nSUMMARY:Dentist\r\nDESCRIPTION:Bring the card\r\nBEGIN:VALARM\r\nSUMMARY:Alarm\r\nTRIGGER:-PT15M\r\nEND:VALARM\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
-        let renamed = edited_event(ics, "2026-11-19 15:00 Dentist, upstairs").unwrap();
-        assert!(renamed.contains("SUMMARY:Dentist\\, upstairs\r\nEND:VEVENT") && renamed.contains("SUMMARY:Alarm") && renamed.contains("DESCRIPTION:Bring the card"));
-        assert!(renamed.contains("DTSTART;TZID=Europe/Berlin:20261119T150000"), "an untouched time stays as written");
-        let moved = edited_event(ics, "2026-11-20 09:00 Dentist").unwrap();
-        assert!(moved.contains("DTSTART;TZID=Europe/Berlin:20261120T090000\r\nDTEND;TZID=Europe/Berlin:20261120T103000\r\n"), "{moved}");
-        assert_eq!(event(&moved).as_deref(), Some("2026-11-20 09:00 Dentist"));
-        let all_day = edited_event(ics, "2026-11-21 Dentist").unwrap();
-        assert!(all_day.contains("DTSTART;VALUE=DATE:20261121\r\nDTEND;VALUE=DATE:20261122\r\n") && !all_day.contains("T150000"));
-        let utc = "BEGIN:VEVENT\r\nDTSTART:20261119T150000Z\r\nDTEND:20261119T160000Z\r\nSUMMARY:Call\r\nEND:VEVENT\r\n";
-        let moved_utc = edited_event(utc, "2026-11-20 09:00 Call").unwrap();
-        assert_eq!(event(&moved_utc).as_deref(), Some("2026-11-20 09:00 Call"), "{moved_utc}");
-        assert!(moved_utc.lines().filter(|l| l.starts_with("DTSTART:") || l.starts_with("DTEND:")).all(|l| l.ends_with('Z')), "a UTC event stays UTC: {moved_utc}");
-        let meeting = "BEGIN:VEVENT\r\nDTSTART;VALUE=DATE:20261119\r\nDTEND;VALUE=DATE:20261120\r\nSUMMARY:10:00 Meeting\r\nEND:VEVENT\r\n";
-        let moved_meeting = edited_event(meeting, "2026-11-20 10:00 Meeting").unwrap();
-        assert!(moved_meeting.contains("DTSTART;VALUE=DATE:20261120\r\nDTEND;VALUE=DATE:20261121\r\n") && moved_meeting.contains("SUMMARY:10:00 Meeting"), "{moved_meeting}");
-        let series = "BEGIN:VEVENT\r\nDTSTART;VALUE=DATE:20261119\r\nRRULE:FREQ=WEEKLY;BYDAY=TH\r\nSUMMARY:Gym\r\nEND:VEVENT\r\n";
-        assert_eq!(edited_event(series, "2026-11-20 Gym"), None, "a series isn't moved");
-        assert!(edited_event(series, "2026-11-19 Gym class").unwrap().contains("SUMMARY:Gym class"), "but it can be renamed");
-        let trip = "BEGIN:VEVENT\r\nDTSTART;VALUE=DATE:20261101\r\nDURATION:P3D\r\nSUMMARY:Trip\r\nEND:VEVENT\r\n";
-        assert!(edited_event(trip, "2026-11-10 Trip").unwrap().contains("DTSTART;VALUE=DATE:20261110\r\nDTEND;VALUE=DATE:20261113\r\n"), "a moved event keeps its length");
-        let todo = "BEGIN:VCALENDAR\r\nBEGIN:VTODO\r\nSUMMARY:Rent\r\nRRULE:FREQ=MONTHLY;BYMONTHDAY=1\r\nDESCRIPTION:Landlord\r\nEND:VTODO\r\nEND:VCALENDAR\r\n";
-        let task = edited_task(todo, "!! Pay rent every:custom").unwrap();
-        assert!(task.contains("RRULE:FREQ=MONTHLY;BYMONTHDAY=1") && task.contains("DESCRIPTION:Landlord"), "an unchanged repeat keeps its rule");
-        assert!(task.contains("SUMMARY:Pay rent\r\nPRIORITY:5\r\nEND:VTODO"));
-        assert_eq!(open_task(&task).as_deref(), Some("!! Pay rent every:custom"));
-        assert_eq!((duration("P1DT2H30M"), duration("PT30M"), duration("P2W"), duration("1H")), (Some(1590), Some(30), Some(20_160), None));
-        assert_eq!(ics_time("20261119T1500"), Some(((2026, 11, 19), Some((15, 0)))));
-        assert_eq!((ics_time("2026111"), ics_time("20261119X")), (None, None));
     }
 
     #[test]
