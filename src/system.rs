@@ -28,14 +28,15 @@ pub unsafe fn note_wayland(xwayland: bool) {
 #[cfg(target_os = "linux")]
 pub fn wayland_session() -> bool { WAYLAND_DISPLAY.get().is_some() }
 
+/// No console flashes up for a child process.
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
 fn command(program: &str) -> Command {
     let mut cmd = Command::new(program);
     if let Some(display) = WAYLAND_DISPLAY.get() { cmd.env("WAYLAND_DISPLAY", display); }
     #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW: no console flashes up
-    }
+    std::os::windows::process::CommandExt::creation_flags(&mut cmd, CREATE_NO_WINDOW);
     cmd
 }
 
@@ -69,7 +70,7 @@ fn spawn(mut cmd: Command) {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x0800_0000 | 0x0000_0200); // CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP
+        cmd.creation_flags(CREATE_NO_WINDOW | 0x0000_0200); // | CREATE_NEW_PROCESS_GROUP
     }
     match cmd.spawn() {
         // Reaps the child when it exits; otherwise it stays a zombie until Ripple quits.
@@ -867,22 +868,46 @@ impl Monitor {
 
 // --- Launch at login ---
 
+/// The file Ripple runs from. An AppImage runs from a mount that changes each launch; $APPIMAGE is the file itself.
+fn own_exe() -> Option<std::path::PathBuf> {
+    std::env::var_os("APPIMAGE").map(std::path::PathBuf::from).or_else(|| std::env::current_exe().ok())
+}
+
+/// Writes `text` to `file`, its folder made first, or removes the file for None.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn set_file(file: &std::path::Path, text: Option<String>) -> std::io::Result<()> {
+    match text {
+        Some(text) => file.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|()| std::fs::write(file, text)),
+        None if file.exists() => std::fs::remove_file(file),
+        None => Ok(()),
+    }
+}
+
+/// A `.desktop` file that runs `exe`.
+#[cfg(target_os = "linux")]
+fn desktop_entry(exe: &std::path::Path, comment: &str, extra: &str) -> String {
+    format!("[Desktop Entry]\nType=Application\nVersion=1.0\nName=Ripple\nComment={comment}\nExec={}\nIcon=ripple\nTerminal=false\n{extra}", desktop_exec(&exe.to_string_lossy()))
+}
+
+/// `$XDG_DATA_HOME`, or its default under `home`.
+#[cfg(target_os = "linux")]
+fn xdg_data_home(home: &std::path::Path) -> std::path::PathBuf {
+    std::env::var("XDG_DATA_HOME").ok().filter(|d| !d.is_empty()).map(std::path::PathBuf::from).unwrap_or_else(|| home.join(".local/share"))
+}
+
+/// `$XDG_DATA_DIRS`, or its default.
+#[cfg(target_os = "linux")]
+fn xdg_data_dirs() -> Vec<std::path::PathBuf> {
+    std::env::var("XDG_DATA_DIRS").ok().filter(|d| !d.is_empty()).unwrap_or_else(|| "/usr/local/share:/usr/share".into()).split(':').map(Into::into).collect()
+}
+
 pub fn set_auto_launch(enable: bool) {
-    // An AppImage runs from a mount that changes each launch; $APPIMAGE is the file itself.
-    let Some(exe) = std::env::var_os("APPIMAGE").map(std::path::PathBuf::from).or_else(|| std::env::current_exe().ok()) else { return };
+    let Some(exe) = own_exe() else { return };
     #[cfg(target_os = "linux")]
     {
-        let Some(dir) = rune::dirs::home().map(|h| h.join(".config/autostart")) else { return };
-        let file = dir.join("ripple.desktop");
-        let result = if enable {
-            let entry = format!("[Desktop Entry]\nType=Application\nVersion=1.0\nName=Ripple\nComment=Ripple Desktop Assistant\nExec={}\nIcon=ripple\nTerminal=false\n", desktop_exec(&exe.to_string_lossy()));
-            std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&file, entry))
-        } else if file.exists() {
-            std::fs::remove_file(&file)
-        } else {
-            Ok(())
-        };
-        if let Err(e) = result { eprintln!("Ripple: failed to set launch at login: {e}") }
+        let Some(file) = rune::dirs::home().map(|h| h.join(".config/autostart/ripple.desktop")) else { return };
+        let entry = enable.then(|| desktop_entry(&exe, "Ripple Desktop Assistant", ""));
+        if let Err(e) = set_file(&file, entry) { eprintln!("Ripple: failed to set launch at login: {e}") }
     }
     #[cfg(windows)]
     {
@@ -894,16 +919,8 @@ pub fn set_auto_launch(enable: bool) {
     // A per-user LaunchAgent that starts the binary once at login; launchd ignores it once removed.
     #[cfg(target_os = "macos")]
     {
-        let Some(dir) = rune::dirs::home().map(|h| h.join("Library/LaunchAgents")) else { return };
-        let file = dir.join("com.topmyster.ripple.plist");
-        let result = if enable {
-            std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&file, launch_agent(&exe.to_string_lossy())))
-        } else if file.exists() {
-            std::fs::remove_file(&file)
-        } else {
-            Ok(())
-        };
-        if let Err(e) = result { eprintln!("Ripple: failed to set launch at login: {e}") }
+        let Some(file) = rune::dirs::home().map(|h| h.join("Library/LaunchAgents/com.topmyster.ripple.plist")) else { return };
+        if let Err(e) = set_file(&file, enable.then(|| launch_agent(&exe.to_string_lossy()))) { eprintln!("Ripple: failed to set launch at login: {e}") }
     }
 }
 
@@ -939,31 +956,32 @@ fn desktop_exec(path: &str) -> String {
 /// not for anything that would execute.
 pub fn open_external(url: &str) {
     if !openable(url) { return }
+    let mut cmd = opener();
+    cmd.arg(url);
+    spawn(cmd);
+}
+
+/// The OS's "open in the default app" command, waiting for its argument.
+fn opener() -> Command {
     #[cfg(target_os = "linux")]
-    let mut cmd = command("xdg-open");
+    let cmd = command("xdg-open");
     #[cfg(target_os = "macos")]
-    let mut cmd = command("open");
+    let cmd = command("open");
     #[cfg(windows)]
-    let mut cmd = {
+    let cmd = {
         // No shell: `&` in a query string stays part of the URL.
         let mut cmd = command("rundll32");
         cmd.arg("url.dll,FileProtocolHandler");
         cmd
     };
-    cmd.arg(url);
-    spawn(cmd);
+    cmd
 }
 
 /// Opens a document in its default app; programs are refused, as `open_external` refuses them.
 pub fn open_file(path: &std::path::Path) {
     // The real name, not a URL's: a `?` or `#` in it must not hide the extension.
     if runs_as_program(&path.to_string_lossy()) { return }
-    #[cfg(target_os = "linux")]
-    let mut cmd = command("xdg-open");
-    #[cfg(target_os = "macos")]
-    let mut cmd = command("open");
-    #[cfg(windows)]
-    let mut cmd = { let mut cmd = command("rundll32"); cmd.arg("url.dll,FileProtocolHandler"); cmd };
+    let mut cmd = opener();
     cmd.arg(path);
     spawn(cmd);
 }
@@ -1111,15 +1129,12 @@ pub fn open_music_player(source: &str) {
 #[cfg(target_os = "linux")]
 pub fn install_desktop_entry(app_id: &str) {
     let name = format!("{app_id}.desktop");
-    let data_dirs = std::env::var("XDG_DATA_DIRS").ok().filter(|d| !d.is_empty()).unwrap_or_else(|| "/usr/local/share:/usr/share".into());
-    if data_dirs.split(':').any(|d| std::path::Path::new(d).join("applications").join(&name).exists()) { return }
-    let Some(exe) = std::env::var_os("APPIMAGE").map(std::path::PathBuf::from).or_else(|| std::env::current_exe().ok()) else { return };
-    let Some(home) = rune::dirs::home() else { return };
-    let dir = std::env::var("XDG_DATA_HOME").ok().filter(|d| !d.is_empty()).map(std::path::PathBuf::from).unwrap_or_else(|| home.join(".local/share")).join("applications");
-    let file = dir.join(name);
-    let entry = format!("[Desktop Entry]\nType=Application\nName=Ripple\nComment=A Dynamic Island for All\nExec={}\nIcon=ripple\nTerminal=false\nNoDisplay=true\n", desktop_exec(&exe.to_string_lossy()));
+    if xdg_data_dirs().iter().any(|d| d.join("applications").join(&name).exists()) { return }
+    let (Some(exe), Some(home)) = (own_exe(), rune::dirs::home()) else { return };
+    let file = xdg_data_home(&home).join("applications").join(name);
+    let entry = desktop_entry(&exe, "A Dynamic Island for All", "NoDisplay=true\n");
     if std::fs::read_to_string(&file).is_ok_and(|old| old == entry) { return }
-    if let Err(e) = std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&file, entry)) { eprintln!("Ripple: failed to write {}: {e}", file.display()) }
+    if let Err(e) = set_file(&file, Some(entry)) { eprintln!("Ripple: failed to write {}: {e}", file.display()) }
 }
 
 // --- Installed apps (Search results; on Windows also suggestions for the quick apps field) ---
@@ -1127,11 +1142,9 @@ pub fn install_desktop_entry(app_id: &str) {
 /// `.desktop` files in the XDG applications folders, as (Name, Exec without field codes).
 #[cfg(target_os = "linux")]
 pub fn discover_apps() -> Vec<QuickApp> {
-    let home = rune::dirs::home().unwrap_or_default();
-    let data_home = std::env::var("XDG_DATA_HOME").ok().filter(|d| !d.is_empty()).map(std::path::PathBuf::from).unwrap_or_else(|| home.join(".local/share"));
-    let data_dirs = std::env::var("XDG_DATA_DIRS").ok().filter(|d| !d.is_empty()).unwrap_or_else(|| "/usr/local/share:/usr/share".into());
+    let data_home = xdg_data_home(&rune::dirs::home().unwrap_or_default());
     let dirs = std::iter::once(data_home.clone())
-        .chain(data_dirs.split(':').map(std::path::PathBuf::from))
+        .chain(xdg_data_dirs())
         .chain([data_home.join("flatpak/exports/share"), "/var/lib/flatpak/exports/share".into()]);
     let mut seen = std::collections::HashSet::new();
     let mut apps = Vec::new();
