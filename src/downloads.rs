@@ -136,24 +136,13 @@ fn merge(reported: &[Option<f64>], partial: usize) -> Option<Progress> {
 /// Follows `busctl monitor` for LauncherEntry updates, restarting it if it exits.
 #[cfg(target_os = "linux")]
 fn launcher_entries(reports: &Reports) {
-    use std::io::BufRead;
-    use std::process::{Command, Stdio};
     // Apps whose bar is visible; unlike reports, this never goes stale, so a download that pauses past `STALE` comes back with its next progress.
     let mut shown = std::collections::HashSet::new();
-    loop {
-        let child = Command::new("busctl")
-            .args(["--user", "monitor", "--json=short", "--match", "type='signal',interface='com.canonical.Unity.LauncherEntry',member='Update'"])
-            .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn();
-        if let Ok(mut child) = child {
-            for line in child.stdout.take().into_iter().flat_map(|o| std::io::BufReader::new(o).lines().map_while(Result::ok)) {
-                if let Some(update) = parse_launcher(&line) { apply(&mut lock(reports), &mut shown, update, Instant::now()) }
-            }
-            let _ = child.kill();
-            let _ = child.wait();
-        }
-        // It died or is missing: try again later without spinning.
-        std::thread::sleep(Duration::from_secs(10));
-    }
+    let mut busctl = std::process::Command::new("busctl");
+    busctl.args(["--user", "monitor", "--json=short", "--match", "type='signal',interface='com.canonical.Unity.LauncherEntry',member='Update'"]);
+    crate::system::follow_lines(&mut busctl, false, |line| {
+        if let Some(update) = parse_launcher(line) { apply(&mut lock(reports), &mut shown, update, Instant::now()) }
+    })
 }
 
 /// Applies one LauncherEntry update: hidden drops the app; a progress without `progress-visible`

@@ -569,20 +569,23 @@ pub fn watch_levels(on: impl Fn(Option<u8>, Option<u8>)) {
     #[cfg(target_os = "macos")]
     let (mut cmd, from_stderr) = { let mut c = command("osascript"); for line in MAC_LEVELS { c.args(["-e", line]); } (c, true) };
     #[cfg(not(target_os = "linux"))]
+    follow_lines(&mut cmd, from_stderr, |line| { let (volume, brightness) = parse_levels(line); on(volume, brightness) });
+}
+
+/// Runs `cmd` and calls `on_line` with each line it writes (to stderr with `from_stderr`),
+/// starting it again whenever it exits. Blocks for good; run it on its own thread.
+pub(crate) fn follow_lines(cmd: &mut Command, from_stderr: bool, mut on_line: impl FnMut(&str)) -> ! {
+    use std::io::BufRead;
     loop {
-        use std::io::BufRead;
         cmd.stdin(Stdio::null());
         if from_stderr { cmd.stdout(Stdio::null()).stderr(Stdio::piped()) } else { cmd.stdout(Stdio::piped()).stderr(Stdio::null()) };
         if let Ok(mut child) = cmd.spawn() {
             let out: Option<Box<dyn std::io::Read>> = if from_stderr { child.stderr.take().map(|e| Box::new(e) as _) } else { child.stdout.take().map(|o| Box::new(o) as _) };
-            for line in out.into_iter().flat_map(|o| std::io::BufReader::new(o).lines().map_while(Result::ok)) {
-                let (volume, brightness) = parse_levels(&line);
-                on(volume, brightness);
-            }
+            for line in out.into_iter().flat_map(|o| std::io::BufReader::new(o).lines().map_while(Result::ok)) { on_line(&line) }
             let _ = child.kill();
             let _ = child.wait();
         }
-        // It died: start another, without spinning if the program is missing.
+        // It died or is missing: start another later, without spinning.
         std::thread::sleep(std::time::Duration::from_secs(10));
     }
 }
