@@ -110,7 +110,7 @@ pub fn view(s: &Island) -> El {
         .child(text("Notes").font(s.cfg.font(17.0, 700.0)).color(fg))
         .child(text(s.cfg.notes.len().to_string()).font(s.cfg.font(15.0, 500.0).features("'tnum' 1")).color(muted))
         .child(el().grow(1.0));
-    if let Some(e) = &s.nextcloud[Kind::Notes as usize].error {
+    if let Some(e) = &s.nextcloud[Kind::Notes].error {
         header = header.child(text(e).font(s.cfg.font(12.0, 400.0)).color(muted).shrink().min_w(0.0).truncate());
     }
     if let Some(undo) = undo_button(s) { header = header.child(undo) }

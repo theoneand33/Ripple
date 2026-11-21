@@ -16,12 +16,25 @@ pub struct SyncState {
     pub error: Option<String>,
 }
 
+/// Each kind's sync, by `Kind`.
+#[derive(Default)]
+pub struct Syncs([SyncState; Kind::ALL.len()]);
+
+impl std::ops::Index<Kind> for Syncs {
+    type Output = SyncState;
+    fn index(&self, kind: Kind) -> &SyncState { &self.0[kind as usize] }
+}
+
+impl std::ops::IndexMut<Kind> for Syncs {
+    fn index_mut(&mut self, kind: Kind) -> &mut SyncState { &mut self.0[kind as usize] }
+}
+
 impl Island {
     /// Syncs one kind with Nextcloud in the background; a request while one runs queues one more.
     pub fn nextcloud_sync(&mut self, kind: Kind) {
         if !self.cfg.nextcloud.enabled() { return }
         let Some(me) = self.me.clone() else { return };
-        let state = &mut self.nextcloud[kind as usize];
+        let state = &mut self.nextcloud[kind];
         if state.running { state.again = true; return }
         state.running = true;
         let account = self.cfg.nextcloud.account();
@@ -39,9 +52,9 @@ impl Island {
     }
 
     fn nextcloud_synced(&mut self, kind: Kind, account: &str, fresh: bool, out: Outcome) {
-        self.nextcloud[kind as usize].running = false;
+        self.nextcloud[kind].running = false;
         let current = self.cfg.nextcloud.account() == account;
-        self.nextcloud[kind as usize].error = out.error.clone();
+        self.nextcloud[kind].error = out.error.clone();
         // A new account that failed at once has nothing of ours: keep the old ids.
         let answered = !fresh || out.server.is_some() || !out.pushed.is_empty();
         // Otherwise the account changed while it ran, or a new one never answered.
@@ -55,7 +68,7 @@ impl Island {
             if kind == Kind::Notes { self.notes_synced(open) }
         }
         // A changed account waits for the next sync asked of it, so no resync chases a URL that is still being typed.
-        if std::mem::take(&mut self.nextcloud[kind as usize].again) && current { self.nextcloud_sync(kind) }
+        if std::mem::take(&mut self.nextcloud[kind].again) && current { self.nextcloud_sync(kind) }
     }
 
     /// Syncs the Shelf with its Nextcloud folder in the background, as `nextcloud_sync` does a kind.

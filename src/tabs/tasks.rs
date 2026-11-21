@@ -184,7 +184,7 @@ fn tick(s: &mut Island, key: u64) {
     // Done here, a rule only Nextcloud follows would end or come back wrong.
     let custom = s.cfg.tasks.iter().find(|t| t.key == key).is_some_and(|t| Task::parse(&t.text, s.today).every == Some(Every::Custom));
     if custom && s.cfg.nextcloud.enabled() {
-        s.nextcloud[Kind::Tasks as usize].error = Some("This task repeats by a rule only Nextcloud follows: tick it there".into());
+        s.nextcloud[Kind::Tasks].error = Some("This task repeats by a rule only Nextcloud follows: tick it there".into());
         return;
     }
     if s.tasks.draft.editing == Some(key) { reset_draft(s) }
@@ -237,7 +237,7 @@ pub fn view(s: &Island) -> El {
     let fg = s.cfg.text();
     let muted = fg.alpha(0.55 * fg.a);
     let mut list = col().key("task-list").w_full().gap(6.0);
-    if let Some(e) = &s.nextcloud[Kind::Tasks as usize].error {
+    if let Some(e) = &s.nextcloud[Kind::Tasks].error {
         list = list.child(text(e).font(s.cfg.font(12.0, 400.0)).color(muted).wrap_anywhere());
     }
     if s.cfg.tasks.is_empty() { list = list.child(empty(s, "No tasks yet")) }
@@ -417,7 +417,7 @@ mod tests {
         let key = s.cfg.tasks[0].key;
         super::tick(&mut s, key);
         assert_eq!(s.cfg.tasks.len(), 1);
-        assert!(s.nextcloud[crate::nextcloud::Kind::Tasks as usize].error.is_some());
+        assert!(s.nextcloud[crate::nextcloud::Kind::Tasks].error.is_some());
     }
 
     #[test]

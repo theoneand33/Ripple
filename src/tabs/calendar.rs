@@ -238,7 +238,7 @@ pub fn view(s: &Island) -> El {
     }
 
     let mut list = col().key("event-list").w_full().gap(6.0);
-    for e in [&s.nextcloud[Kind::Events as usize].error, &s.calendar.feed_error].into_iter().flatten() {
+    for e in [&s.nextcloud[Kind::Events].error, &s.calendar.feed_error].into_iter().flatten() {
         list = list.child(text(e).font(s.cfg.font(12.0, 400.0)).color(fg.alpha(0.55 * fg.a)).wrap_anywhere());
     }
     let events = day_events(s, picked);

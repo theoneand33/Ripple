@@ -39,7 +39,7 @@ pub use pomodoro::{Clock, Pomodoro, bubble as pomodoro_bubble, live as pomodoro_
 pub use search::Finder;
 pub use stocks::Stocks;
 pub use stremflix::Stremflix;
-pub use sync::SyncState;
+pub use sync::{SyncState, Syncs};
 pub use t3::T3;
 pub use tasks::{TaskDraft, Tasks};
 
@@ -234,7 +234,7 @@ impl Island {
     pub fn undo(&mut self) {
         match self.undo.take() {
             Some(Undo::Item(kind, i, item)) => {
-                let (key, syncing) = (item.key, self.nextcloud[kind as usize].running);
+                let (key, syncing) = (item.key, self.nextcloud[kind].running);
                 self.save(|c| nextcloud::restore(c, kind, i, item, syncing));
                 if kind == Kind::Notes { self.open_note(self.cfg.notes.iter().position(|n| n.key == key).unwrap_or(0)) }
                 self.nextcloud_sync(kind);

@@ -21,7 +21,7 @@ pub enum Kind {
 }
 
 impl Kind {
-    const ALL: [Kind; 3] = [Kind::Notes, Kind::Tasks, Kind::Events];
+    pub const ALL: [Kind; 3] = [Kind::Notes, Kind::Tasks, Kind::Events];
 
     /// The kind's items, and what Nextcloud is still to hear of: deletes (notes, events) or
     /// completions (tasks), by remote id.

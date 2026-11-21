@@ -163,7 +163,7 @@ fn island_spec() -> AppSpec<Island> {
                 s.mode = Mode::Large;
                 s.tab = Tab::Tasks;
                 s.cfg.tasks = vec![config::Item::new("Water the plants")];
-                s.nextcloud[nextcloud::Kind::Tasks as usize].error = Some("Nextcloud refused the user or app password".into());
+                s.nextcloud[nextcloud::Kind::Tasks].error = Some("Nextcloud refused the user or app password".into());
             }),
             ("calendar", |s| { s.mode = Mode::Large; s.tab = Tab::Calendar }),
             ("calendar-paged", |s| { s.mode = Mode::Large; s.tab = Tab::Calendar; s.calendar.offset = 1 }),
