@@ -140,8 +140,7 @@ fn request(method: &str, url: &str, headers: &[(&str, &str)], body: Option<&str>
         }
         .map_err(unreachable)?
     };
-    let text = res.body_mut().read_to_string().unwrap_or_default();
-    let data: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
+    let data = crate::net::read_json(&mut res);
     if !res.status().is_success() {
         let message = data["error_description"].as_str().or(data["message"].as_str());
         return Err(message.map_or_else(|| format!("T3 {} failed ({})", path_of(url), res.status().as_u16()), Into::into));
