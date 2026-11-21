@@ -45,7 +45,7 @@ impl Island {
         if key.is_some() && self.quiet() { self.agents.held = true; return changed }
         if let Some(r) = key.and_then(|k| self.agents.requests.iter().find(|r| r.key == k).cloned()) && !self.large_open() {
             let agent = self.agents.sessions.iter().find(|s| s.key == r.session).map_or("An agent", |s| agents::name(&s.agent)).to_string();
-            if self.visible_tabs().contains(&Tab::Agents) { self.set_tab(Tab::Agents) }
+            self.set_tab(Tab::Agents);
             self.remind(format!("{agent} needs you"), now);
             return true
         }

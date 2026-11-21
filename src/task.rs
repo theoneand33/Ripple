@@ -72,13 +72,12 @@ impl Task {
         let (from, time) = self.due.unwrap_or((today, None));
         // The nth repeat counts from the due day itself, so the 31st repeats on each month's last day without drifting.
         let nth = |n: i32| match every {
-            Every::Day => add_days(from, n.into()),
-            Every::Week => add_days(from, i64::from(n) * 7),
-            Every::Month => { let (y, m) = crate::date::shift_month(from.0, from.1, n); (y, m, from.2.min(days_in(y, m))) }
-            Every::Custom => from,
+            Every::Day => Some(add_days(from, n.into())),
+            Every::Week => Some(add_days(from, i64::from(n) * 7)),
+            Every::Month => { let (y, m) = crate::date::shift_month(from.0, from.1, n); Some((y, m, from.2.min(days_in(y, m)))) }
+            Every::Custom => None,
         };
-        if every == Every::Custom { return None }
-        let day = (1..).map(nth).find(|day| *day >= today)?;
+        let day = (1..).map_while(nth).find(|day| *day >= today)?;
         Some(Task { due: Some((day, time)), ..self.clone() })
     }
 }
