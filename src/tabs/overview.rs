@@ -311,14 +311,14 @@ fn tile(s: &Island, i: usize, t: Tile, [x, y, w, h]: [f32; 4], layer: &mut Vec<E
     let radius = s.cfg.radius(18.0);
     let body = match t.widget {
         Widget::Clock => clock(s, w, h),
-        Widget::Media => media(s, w),
-        Widget::Weather => weather(s, h),
-        Widget::Battery => battery(s, h),
-        Widget::Today => today(s),
-        Widget::Water => water(s, h),
-        Widget::Contributions => contributions(s, w),
-        Widget::Quote => quote(s),
-        Widget::Day => day(s, w),
+        Widget::Media => media(s, w, h),
+        Widget::Weather => weather(s, w, h),
+        Widget::Battery => battery(s, w, h),
+        Widget::Today => today(s, w, h),
+        Widget::Water => water(s, w, h),
+        Widget::Contributions => contributions(s, w, h),
+        Widget::Quote => quote(s, h),
+        Widget::Day => day(s, w, h),
         Widget::Panel(tab) => super::panel(s, tab, layer),
     };
     let name = t.widget.name();
@@ -377,17 +377,26 @@ fn clock(s: &Island, w: f32, h: f32) -> El {
     let fg = s.cfg.text();
     let c = col().key("clock").w_full().h_full().center().gap(6.0)
         .child(text(&s.time).font(s.cfg.font((h * 0.4).min(w * 0.2).clamp(18.0, 64.0), 600.0).features("'tnum' 1")).color(fg).single_line());
-    if h < CELL.1 * 2.0 { return c }
+    if short(h) { return c }
     c.child(text(&s.date).font(s.cfg.font(13.0, 500.0)).color(fg.alpha(0.6 * fg.a)).single_line())
 }
 
+/// A one-row tile: too short for more than a line.
+fn short(h: f32) -> bool { h < span(2, CELL.1) }
+/// A one-column tile: too narrow for a label beside its content.
+fn narrow(w: f32) -> bool { w < span(2, CELL.0) }
+/// How many lines `step` tall fit in `room`.
+fn lines(room: f32, step: f32) -> usize { (room / step).floor().max(0.0) as usize }
+/// A gauge or glyph `share` of a tile's shorter side, from `min` (and on one row) up to `max`.
+fn grown(w: f32, h: f32, share: f32, min: f32, max: f32) -> f32 { if short(h) { min } else { (w.min(h) * share).clamp(min, max) } }
+
 /// A one-row tile lays its widget out in a line.
 fn stack(key: &str, h: f32) -> El {
-    let c = if h < CELL.1 * 2.0 { row() } else { col() };
+    let c = if short(h) { row() } else { col() };
     c.key(key).w_full().h_full().center().gap(6.0)
 }
 
-fn weather(s: &Island, h: f32) -> El {
+fn weather(s: &Island, w: f32, h: f32) -> El {
     let fg = s.cfg.text();
     let place = s.cfg.location.trim();
     let mut c = stack("weather", h);
@@ -395,13 +404,16 @@ fn weather(s: &Island, h: f32) -> El {
         return c.child(icon(&icons::CLOUD_SUN, 28.0).color(fg.alpha(0.5 * fg.a)))
             .child(text("Set a location in Settings").font(s.cfg.font(12.0, 500.0)).color(fg.alpha(0.6 * fg.a)));
     }
+    let size = grown(w, h, 0.25, 28.0, 56.0);
     c = c.child(row().gap(8.0).center_y()
-        .child(icon(icons::weather(s.weather.code), 28.0).color(fg))
-        .child(text(s.weather.temp.map_or("??º".to_string(), |t| format!("{t}º"))).font(s.cfg.font(30.0, 600.0)).color(fg)));
+        .child(icon(icons::weather(s.weather.code), size).color(fg))
+        .child(text(s.weather.temp.map_or("??º".to_string(), |t| format!("{t}º"))).font(s.cfg.font(size + 2.0, 600.0)).color(fg)));
+    // One cell holds the reading, not the place beside it.
+    if short(h) && narrow(w) { return c.role("group").label(format!("{place} weather")) }
     c.child(text(place).font(s.cfg.font(12.0, 500.0)).color(fg.alpha(0.6 * fg.a)).truncate().max_w(220.0))
 }
 
-fn battery(s: &Island, h: f32) -> El {
+fn battery(s: &Island, w: f32, h: f32) -> El {
     let fg = s.cfg.text();
     let c = stack("battery", h);
     let Some(p) = s.percent else {
@@ -410,21 +422,33 @@ fn battery(s: &Island, h: f32) -> El {
     };
     let tint = if s.low_battery() { accent::low() } else { accent::green() };
     let glyph = if s.charging { &icons::ZAP } else { &icons::BATTERY };
-    c.child(ring(if h < CELL.1 * 2.0 { 32.0 } else { 52.0 }, p as f32, tint, icon(glyph, 18.0).color(tint)))
+    let size = grown(w, h, 0.45, 32.0, 96.0);
+    c.child(ring(size, p as f32, tint, icon(glyph, size * 0.35).color(tint)))
         .child(text(format!("{p}%{}", if s.charging { " · Charging" } else { "" })).font(s.cfg.font(13.0, 600.0).features("'tnum' 1")).color(fg))
 }
 
-fn today(s: &Island) -> El {
+/// One line of text in a tile and the gap under it.
+const LINE: f32 = 21.0;
+
+fn today(s: &Island, w: f32, h: f32) -> El {
     let fg = s.cfg.text();
     let muted = fg.alpha(0.6 * fg.a);
     let events: Vec<&str> = s.cfg.events.iter().filter_map(|e| event_day(&e.text).filter(|(d, _)| *d == s.today).map(|(_, t)| t)).collect();
-    let mut c = col().key("today").w_full().h_full().padding(12.0).gap(4.0)
-        .child(text("Today").font(s.cfg.font(13.0, 700.0)).color(accent::red()));
-    if events.is_empty() { c = c.child(text("No events").font(s.cfg.font(13.0, 500.0)).color(muted)) }
-    for (i, e) in events.iter().take(2).enumerate() {
-        c = c.child(text(*e).key(format!("event-{i}")).font(s.cfg.font(13.0, 500.0)).color(fg).truncate());
+    let event = |i: usize, e: &str| text(e).key(format!("event-{i}")).font(s.cfg.font(13.0, 500.0)).color(fg).truncate();
+    let title = text("Today").font(s.cfg.font(13.0, 700.0)).color(accent::red());
+    if short(h) {
+        let mut c = row().key("today").w_full().h_full().px(12.0).gap(8.0).center_y().child(title);
+        c = match events.first() { Some(e) => c.child(event(0, e).grow(1.0).min_w(0.0)), None => c.child(text("No events").font(s.cfg.font(13.0, 500.0)).color(muted)) };
+        if events.len() > 1 && !narrow(w) { c = c.child(text(format!("+{}", events.len() - 1)).font(s.cfg.font(12.0, 500.0)).color(muted)) }
+        return c;
     }
-    if events.len() > 2 { c = c.child(text(format!("+{} more", events.len() - 2)).font(s.cfg.font(12.0, 500.0)).color(muted)) }
+    let mut c = col().key("today").w_full().h_full().padding(12.0).gap(4.0).child(title);
+    if events.is_empty() { c = c.child(text("No events").font(s.cfg.font(13.0, 500.0)).color(muted)) }
+    // Lines left between the title and the tasks line; the last says how many more there are.
+    let room = lines(h - 24.0 - 2.0 * LINE, LINE).max(1);
+    let shown = if events.len() > room { room.saturating_sub(1).max(1) } else { events.len() };
+    for (i, e) in events.iter().take(shown).enumerate() { c = c.child(event(i, e)) }
+    if events.len() > shown { c = c.child(text(format!("+{} more", events.len() - shown)).font(s.cfg.font(12.0, 500.0)).color(muted)) }
     let tasks = s.cfg.tasks.len();
     c.child(el().grow(1.0))
         .child(text(match tasks { 0 => "No tasks left".to_string(), 1 => "1 task left".to_string(), n => format!("{n} tasks left") })
@@ -437,18 +461,22 @@ fn drink(s: &mut Island, by: i32) {
     s.save(|c| { c.water_count = c.water(today).saturating_add_signed(by); c.water_day = today });
 }
 
-fn water(s: &Island, h: f32) -> El {
+fn water(s: &Island, w: f32, h: f32) -> El {
     let fg = s.cfg.text();
     let tint = accent::blue();
     let n = s.cfg.water(crate::date::days_from_civil(s.today.0, s.today.1, s.today.2));
     let goal = s.cfg.water_goal.max(1);
-    let gauge = ring(if h < CELL.1 * 2.0 { 32.0 } else { 52.0 }, n as f32 * 100.0 / goal as f32, tint, icon(&icons::DROPLET, 16.0).color(tint));
-    stack("water", h)
+    let size = grown(w, h, 0.4, 32.0, 80.0);
+    let gauge = ring(size, n as f32 * 100.0 / goal as f32, tint, icon(&icons::DROPLET, size * 0.3).color(tint));
+    let label = format!("{n} of {goal} glasses");
+    let c = stack("water", h).role("group").label(&label)
         .child(row().gap(8.0).center_y()
             .child(tool(s, "water-less", &icons::MINUS, "One glass less").on_press(|s: &mut Island| drink(s, -1)))
             .child(gauge)
-            .child(tool(s, "water-more", &icons::PLUS, "One more glass").on_press(|s: &mut Island| drink(s, 1))))
-        .child(text(format!("{n} of {goal} glasses")).font(s.cfg.font(13.0, 600.0).features("'tnum' 1")).color(fg))
+            .child(tool(s, "water-more", &icons::PLUS, "One more glass").on_press(|s: &mut Island| drink(s, 1))));
+    // One cell holds the buttons and the gauge, not the count beside them.
+    if short(h) && narrow(w) { return c }
+    c.child(text(label).font(s.cfg.font(13.0, 600.0).features("'tnum' 1")).color(fg).a11y_hidden())
 }
 
 /// The Overview's layout editing.
@@ -510,6 +538,8 @@ fn graph(s: &Island, key: &str, name: &str, user: &str, data: Option<&Result<Gra
     let head = head.child(row().key("streak").role("img").label(format!("{streak} day streak")).gap(3.0).center_y()
         .child(icon(&icons::FLAME, 13.0).color(flame).a11y_hidden())
         .child(text(format!("{streak}")).font(s.cfg.font(12.0, 700.0).features("'tnum' 1")).color(flame).a11y_hidden()));
+    let group = col().key(key.to_string()).role("group").label(format!("{name} contributions of {user}: {} active days, {streak} day streak", active.len())).w_full().gap(6.0).child(head);
+    if weeks == 0 { return group }
     // 1970-01-01 was a Thursday: day 0 sits in row 4.
     let sunday = today - (today + 4).rem_euclid(7);
     let mut grid = row().key("cells").gap(2.0).a11y_hidden();
@@ -523,21 +553,28 @@ fn graph(s: &Island, key: &str, name: &str, user: &str, data: Option<&Result<Gra
         }
         grid = grid.child(column);
     }
-    col().key(key.to_string()).role("group").label(format!("{name} contributions of {user}: {} active days, {streak} day streak", active.len())).w_full().gap(6.0).child(head).child(grid)
+    group.child(grid)
 }
 
-fn contributions(s: &Island, w: f32) -> El {
+/// A graph's height: its name, and seven 8pt cells 2pt apart.
+const GRAPH_H: f32 = 16.0 + 6.0 + 68.0;
+
+fn contributions(s: &Island, w: f32, h: f32) -> El {
     let fg = s.cfg.text();
     let c = &s.contributions;
     // 8pt cells 2pt apart, inside the tile's padding.
     let weeks = (((w - 24.0 + 2.0) / 10.0).floor() as i64).clamp(1, 53);
     let mut body = col().key("contributions").w_full().h_full().padding(12.0).gap(12.0);
+    // The graphs that fit draw their cells; the rest only their name and streak.
+    let mut room = lines(h - 24.0 + 12.0, GRAPH_H + 12.0);
+    let mut weeks_if_room = || if room > 0 { room -= 1; weeks } else { 0 };
+    if short(h) { body = body.py(0.0).gap(4.0).justify_center() }
     let (gh, lc) = (s.cfg.github_user.trim(), s.cfg.leetcode_user.trim());
     if gh.is_empty() && lc.is_empty() {
         return body.center().child(text("Set a GitHub or LeetCode user in Settings → Overview").font(s.cfg.font(12.0, 500.0)).color(fg.alpha(0.6 * fg.a)));
     }
-    if !gh.is_empty() { body = body.child(graph(s, "github", "GitHub", gh, c.github.as_ref().filter(|g| g.0 == gh).map(|g| &g.1), weeks)) }
-    if !lc.is_empty() { body = body.child(graph(s, "leetcode", "LeetCode", lc, c.leetcode.as_ref().filter(|g| g.0 == lc).map(|g| &g.1), weeks)) }
+    if !gh.is_empty() { body = body.child(graph(s, "github", "GitHub", gh, c.github.as_ref().filter(|g| g.0 == gh).map(|g| &g.1), weeks_if_room())) }
+    if !lc.is_empty() { body = body.child(graph(s, "leetcode", "LeetCode", lc, c.leetcode.as_ref().filter(|g| g.0 == lc).map(|g| &g.1), weeks_if_room())) }
     body
 }
 
@@ -578,11 +615,13 @@ const QUOTES: [(&str, &str); 30] = [
 /// The day's quote: the same all day, the next one tomorrow.
 fn quote_of(day: i64) -> (&'static str, &'static str) { QUOTES[day.rem_euclid(QUOTES.len() as i64) as usize] }
 
-fn quote(s: &Island) -> El {
+fn quote(s: &Island, h: f32) -> El {
     let fg = s.cfg.text();
     let (words, author) = quote_of(crate::date::days_from_civil(s.today.0, s.today.1, s.today.2));
-    col().key("quote").role("group").label(format!("Quote of the day: {words} {author}")).w_full().h_full().padding(14.0).gap(6.0).justify_center()
-        .child(text(format!("“{words}”")).font(s.cfg.font(15.0, 600.0).lh(20.0)).color(fg).wrap().max_lines(3).a11y_hidden())
+    let c = col().key("quote").role("group").label(format!("Quote of the day: {words} {author}")).w_full().h_full().px(14.0).py(if short(h) { 0.0 } else { 14.0 }).gap(6.0).justify_center();
+    // One row holds a line of the quote, not its author; taller tiles a 20pt line each, less the author's.
+    if short(h) { return c.child(text(format!("“{words}”")).font(s.cfg.font(15.0, 600.0)).color(fg).truncate().a11y_hidden()) }
+    c.child(text(format!("“{words}”")).font(s.cfg.font(15.0, 600.0).lh(20.0)).color(fg).wrap().max_lines(lines(h - 28.0 - 22.0, 20.0).max(1)).a11y_hidden())
         .child(text(format!("— {author}")).font(s.cfg.font(12.0, 500.0)).color(fg.alpha(0.6 * fg.a)).truncate().a11y_hidden())
 }
 
@@ -605,7 +644,7 @@ fn timeline(s: &Island) -> Vec<(u32, String, bool)> {
 }
 
 /// One line for the whole day: the share gone, a mark for each event and task, and what is next.
-fn day(s: &Island, w: f32) -> El {
+fn day(s: &Island, w: f32, h: f32) -> El {
     let fg = s.cfg.text();
     let muted = fg.alpha(0.6 * fg.a);
     let items = timeline(s);
@@ -620,12 +659,14 @@ fn day(s: &Island, w: f32) -> El {
     }
     let hours = row().key("day-hours").w(bar_w).justify_between().a11y_hidden()
         .children([0, 6, 12, 18, 24].map(|h| text(format!("{h}")).font(s.cfg.font(10.0, 500.0).features("'tnum' 1")).color(muted)));
-    let next: Vec<_> = items.iter().filter(|i| i.0 >= s.minutes).take(2).collect();
-    let mut c = col().key("day").w_full().h_full().padding(12.0).gap(6.0)
-        .child(row().w_full().justify_between()
-            .child(text("Day Progress").font(s.cfg.font(13.0, 700.0)).color(accent::orange()))
-            .child(text(format!("{:.0}%", gone * 100.0)).font(s.cfg.font(13.0, 700.0).features("'tnum' 1")).color(fg)))
-        .child(bar).child(hours);
+    let head = row().w_full().justify_between()
+        .child(text(if narrow(w) { "Day" } else { "Day Progress" }).font(s.cfg.font(13.0, 700.0)).color(accent::orange()))
+        .child(text(format!("{:.0}%", gone * 100.0)).font(s.cfg.font(13.0, 700.0).features("'tnum' 1")).color(fg));
+    // One row holds the title and the bar, without the hours or what's next.
+    if short(h) { return col().key("day").w_full().h_full().px(12.0).gap(6.0).justify_center().child(head).child(bar) }
+    // What's next fills the room under the hours: the title, bar and hours take 70pt with the top padding.
+    let next: Vec<_> = items.iter().filter(|i| i.0 >= s.minutes).take(lines(h - 70.0, 22.0).max(1)).collect();
+    let mut c = col().key("day").w_full().h_full().padding(12.0).gap(6.0).child(head).child(bar).child(hours);
     if next.is_empty() { c = c.child(text("Nothing left today").font(s.cfg.font(12.0, 500.0)).color(muted)) }
     for (i, (at, title, task)) in next.into_iter().enumerate() {
         c = c.child(row().key(format!("next-{i}")).w_full().gap(6.0).center_y()
@@ -637,11 +678,13 @@ fn day(s: &Island, w: f32) -> El {
 }
 
 /// Droppy's player: cover and title on top, the progress bar with both times, then the controls.
-fn media(s: &Island, w: f32) -> El {
+/// Smaller tiles drop what doesn't fit: the progress under three rows, the details on one
+/// column, and on one row everything but the cover, the title and play.
+fn media(s: &Island, w: f32, h: f32) -> El {
     let fg = s.cfg.text();
     let muted = fg.alpha(0.6 * fg.a);
     let Some(track) = &s.track else {
-        return col().key("media").w_full().h_full().center().gap(6.0)
+        return stack("media", h)
             .child(icon(&icons::MUSIC, 28.0).color(fg.alpha(0.5 * fg.a)))
             .child(text("Nothing playing").font(s.cfg.font(12.0, 500.0)).color(muted));
     };
@@ -653,20 +696,36 @@ fn media(s: &Island, w: f32) -> El {
             .child(icon(glyph, size).color(fg))
             .on_press(move |s: &mut Island| control(s, command))
     };
+    let play = button("play-pause", if track.playing { &icons::PAUSE } else { &icons::PLAY }, 28.0, MediaCommand::PlayPause, if track.playing { "Pause" } else { "Play" });
+    let key = format!("track-{}-{}", track.name, track.artist);
+    if short(h) {
+        let mut c = row().key(key).w_full().h_full().px(8.0).gap(8.0).center_y().opacity(if track.playing { 1.0 } else { 0.5 })
+            .transition(Transition::blur_replace()).child(cover(s, 36.0, 8.0, 16.0, 1.06));
+        c = if narrow(w) { c.role("group").label(format!("{name} by {artist}")).child(el().grow(1.0)) } else {
+            c.child(col().key("details").grow(1.0).min_w(0.0)
+                .child(text(name).font(s.cfg.font(14.0, 700.0)).color(fg).truncate())
+                .child(text(artist).font(s.cfg.font(12.0, 500.0)).color(muted).truncate()))
+        };
+        return c.child(play);
+    }
+    // Two rows hold the head and the controls with a smaller cover, but not the progress.
+    let roomy = h >= span(3, CELL.1);
+    let art = if roomy { 56.0 } else { 44.0 };
     // The tile less its padding, the cover, the visualizer and the gaps between them.
-    let title_w = (w - 24.0 - 56.0 - 25.0 - 24.0).max(0.0);
+    let title_w = (w - 24.0 - art - 25.0 - 24.0).max(0.0);
     let line = |key: &str, text: El, text_width: f32, height: f32| marquee(s, key, text, text_width, title_w, 10.0).w(title_w).h(height);
-    let head = row().key("track-head").w_full().gap(12.0).center_y()
-        .child(cover(s, 56.0, 12.0, 24.0, 1.06))
-        .child(col().key("details").grow(1.0).min_w(0.0)
+    let mut head = row().key("track-head").w_full().gap(12.0).center_y().child(cover(s, art, 12.0, 24.0, 1.06));
+    if narrow(w) { head = head.role("group").label(format!("{name} by {artist}")) } else {
+        head = head.child(col().key("details").grow(1.0).min_w(0.0)
             .child(line("track-name", text(name).font(s.cfg.font(17.0, 700.0)).color(fg).single_line(), estimate_width(name, 17.0), 22.0))
             .child(line("track-artist", text(artist).font(s.cfg.font(14.0, 500.0)).color(muted).single_line(), estimate_width(artist, 14.0), 18.0)))
-        .child(visualizer(track.playing, accent::pink()));
-    let mut body = col().key(format!("track-{}-{}", track.name, track.artist)).w_full().h_full().padding(12.0).gap(10.0)
+            .child(visualizer(track.playing, accent::pink()));
+    }
+    let mut body = col().key(key).w_full().h_full().padding(12.0).gap(10.0)
         .opacity(if track.playing { 1.0 } else { 0.5 })
         .transition(Transition::blur_replace())
         .child(head);
-    if let Some((position, length)) = track.progress {
+    if let Some((position, length)) = track.progress.filter(|_| roomy) {
         let clock = |t: u32| format!("{}:{:02}", t / 60, t % 60);
         let time = |t: String| text(t).font(s.cfg.font(12.0, 600.0).features("'tnum' 1")).color(muted);
         body = body.child(row().key("track-progress").role("progressbar").label(format!("{} of {}", clock(position), clock(length))).w_full().gap(10.0).center_y()
@@ -680,9 +739,9 @@ fn media(s: &Island, w: f32) -> El {
                 .transition(Transition::blur_replace()));
         }
     }
-    body.child(el().grow(1.0)).child(row().key("controls").w_full().gap(36.0).center()
+    body.child(el().grow(1.0)).child(row().key("controls").w_full().gap(if narrow(w) { 2.0 } else { 36.0 }).center()
         .child(button("previous", &icons::SKIP_BACK, 22.0, MediaCommand::Previous, "Previous"))
-        .child(button("play-pause", if track.playing { &icons::PAUSE } else { &icons::PLAY }, 28.0, MediaCommand::PlayPause, if track.playing { "Pause" } else { "Play" }))
+        .child(play)
         .child(button("next", &icons::SKIP_FORWARD, 22.0, MediaCommand::Next, "Next")))
 }
 
@@ -691,6 +750,15 @@ mod tests {
     use super::*;
 
     fn tile(w: u8, h: u8) -> Tile { Tile { widget: Widget::Clock, w, h } }
+
+    #[test]
+    fn widgets_size_to_their_tile() {
+        assert!(short(CELL.1) && !short(span(2, CELL.1)));
+        assert!(narrow(CELL.0) && !narrow(span(2, CELL.0)));
+        assert_eq!((lines(50.0, 21.0), lines(-5.0, 21.0)), (2, 0));
+        assert_eq!(grown(500.0, CELL.1, 0.4, 32.0, 80.0), 32.0, "one row keeps the small size");
+        assert_eq!(grown(500.0, 500.0, 0.4, 32.0, 80.0), 80.0);
+    }
 
     #[test]
     fn the_quote_changes_once_a_day_and_wraps_around() {
