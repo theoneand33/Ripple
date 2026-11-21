@@ -9,15 +9,10 @@ const LIMIT: usize = 500;
 /// Older alerts are dropped unseen: they were queued while Ripple was closed.
 const STALE_MS: i64 = 5 * 60 * 1000;
 
-/// Queues `text` for the running Island: written under a temporary name, then renamed, so the
-/// Island never reads half a file.
+/// Queues `text` for the running Island.
 pub fn queue(dir: &Path, text: &str) -> std::io::Result<()> {
-    let dir = dir.join("notify");
-    std::fs::create_dir_all(&dir)?;
-    let name = format!("{}-{}", crate::date::now_ms(), std::process::id());
-    let tmp = dir.join(format!("{name}.tmp"));
-    std::fs::write(&tmp, text.chars().take(LIMIT).collect::<String>())?;
-    std::fs::rename(tmp, dir.join(format!("{name}.txt")))
+    let name = format!("{}-{}.txt", crate::date::now_ms(), std::process::id());
+    crate::paths::write_atomic(&dir.join("notify").join(name), &text.chars().take(LIMIT).collect::<String>())
 }
 
 /// The queued texts, oldest first, each removed as it is read.
@@ -49,11 +44,10 @@ pub fn merge(shown: usize, texts: Vec<String>) -> Option<(String, usize)> {
     }
 }
 
-/// The command itself: queues its arguments as one text. Returns the exit code.
 pub fn cli(args: &[String]) -> i32 {
     let text = args.join(" ");
     if text.trim().is_empty() { eprintln!("Usage: ripple notify \"text\""); return 2 }
-    let Some(dir) = crate::config::Store::open().dir() else { eprintln!("Ripple: no settings folder"); return 1 };
+    let Some(dir) = crate::paths::app_dir() else { eprintln!("Ripple: no settings folder"); return 1 };
     match queue(&dir, &text) {
         Ok(()) => 0,
         Err(e) => { eprintln!("Ripple: could not queue the alert: {e}"); 1 }

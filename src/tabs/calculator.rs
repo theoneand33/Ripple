@@ -12,16 +12,16 @@ use crate::island::Island;
 #[derive(Default)]
 pub struct Calculator {
     pub input: TextEdit,
-    /// Units per US dollar, by code; None until loaded.
+    /// Units per US dollar, by code; None until loaded. Stocks converts with them too.
     pub rates: Option<HashMap<String, f64>>,
     rates_asked: bool,
 }
 
 impl Island {
-    /// Loads exchange rates once, as the tab opens.
+    /// Loads exchange rates once, as the tab opens, unless Stocks already did.
     /// shortcut: rates are fetched once per run; refetch daily if Ripple runs for days.
     pub fn calc_load(&mut self) {
-        if self.calc.rates_asked { return }
+        if self.calc.rates_asked || self.calc.rates.is_some() { return }
         let Some(me) = self.me.clone() else { return };
         self.calc.rates_asked = true;
         me.spawn(crate::net::rates, |s, rates| { s.calc.rates_asked = rates.is_some(); s.calc.rates = rates });
@@ -120,7 +120,6 @@ pub fn convert(text: &str, rates: Option<&HashMap<String, f64>>) -> Option<(f64,
 /// The answer as the tape shows it: a sum's, or a conversion's with its unit.
 fn answer(text: &str, rates: Option<&HashMap<String, f64>>) -> Option<String> {
     if let Some((v, unit)) = convert(text, rates) {
-        // Money to the cent; other units to 6 decimals.
         let shown = if unit.len() == 3 && unit.chars().all(|c| c.is_ascii_uppercase()) { format!("{v:.2}") } else { format((v * 1e6).round() / 1e6) };
         return Some(format!("{shown} {unit}"));
     }

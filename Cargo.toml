@@ -12,10 +12,10 @@ rune = { git = "https://github.com/theoneand33/rune", rev = "f5bd58755377b1e3e70
 rune-kit = { git = "https://github.com/theoneand33/rune", rev = "f5bd58755377b1e3e70c5485f3699f0e8c527afb", features = ["markdown"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-# Weather, the AI assistant's stream and T3's HTTP API; T3's /ws RPC.
+# Every HTTP call (see net::config); T3's /ws RPC.
 ureq = "3"
 tungstenite = { version = "0.30", features = ["rustls-tls-webpki-roots"] }
-# T3's MCP sign-in (PKCE) and the token cache key.
+# Hashes and encodings: T3's sign-in (PKCE), Nextcloud's auth, cache keys.
 sha2 = "0.10"
 base64 = "0.22"
 getrandom = "0.3"

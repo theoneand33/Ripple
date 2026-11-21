@@ -9,6 +9,7 @@ use crate::config::{Config, POSITIONS, PROVIDERS, QuickApp, SEARCH_ENGINES, Stor
 use crate::icons;
 use crate::island::Host;
 use crate::platform::Screen;
+use crate::tabs;
 
 /// A sidebar entry: the app-wide pages, then one per tab that has settings.
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -31,7 +32,7 @@ impl Page {
             Page::Tabs => &icons::LIST,
             Page::Appearance => &icons::MONITOR,
             Page::Features => &icons::ZAP,
-            Page::Tab(tab) => icons::tab(tab),
+            Page::Tab(tab) => tabs::icon_of(tab),
         }
     }
 }
@@ -137,7 +138,6 @@ impl Settings {
         }
     }
 
-    /// Saves a change and tells the Island.
     fn save(&mut self, f: impl FnOnce(&mut Config)) {
         self.cfg = self.store.update(f);
         // A theme rewrites both colours; the fields show what it set unless one is being typed in.
@@ -332,7 +332,6 @@ fn matches(query: &str, label: &str) -> bool {
     query.split_whitespace().all(|w| label.contains(&w.to_lowercase()))
 }
 
-/// A titled card of rows.
 fn section(s: &Settings, key: &str, title: &str, rows: Vec<El>) -> El {
     let fg = s.cfg.text().alpha(1.0);
     let card = rows.into_iter().fold(
@@ -400,6 +399,14 @@ fn drag_tab(s: &mut Settings, from: usize, d: &mut Drag, tx: &mut Tx) {
     }
 }
 
+/// The pages for the whole app, above the tabs' in the sidebar.
+const APP_PAGES: [Page; 4] = [Page::General, Page::Tabs, Page::Appearance, Page::Features];
+
+/// The tabs' own pages, in the dock's order.
+fn tab_pages(cfg: &Config) -> impl Iterator<Item = Page> + '_ {
+    cfg.tab_order.iter().filter(|&&t| has_panel(t)).map(|&t| Page::Tab(t))
+}
+
 /// Whether a tab has its own settings page: one `panel` has sections for.
 fn has_panel(tab: Tab) -> bool {
     match tab {
@@ -408,7 +415,6 @@ fn has_panel(tab: Tab) -> bool {
     }
 }
 
-/// The settings for one tab's panel, as sections.
 fn panel(s: &Settings, k: &Kit, layer: &mut Vec<El>, tab: Tab) -> Vec<El> {
     let cfg = &s.cfg;
     let fg = cfg.text().alpha(1.0);
@@ -604,12 +610,12 @@ fn panel(s: &Settings, k: &Kit, layer: &mut Vec<El>, tab: Tab) -> Vec<El> {
                 text("Accounts in other currencies convert at Frankfurter's reference rates before the totals.").font(cfg.font(12.0, 400.0)).color(fg.alpha(0.6)).wrap(),
             ]));
         }
-        Tab::Clipboard | Tab::Stremflix | Tab::System | Tab::Plugins | Tab::Pomodoro | Tab::Calculator | Tab::Habits | Tab::Clocks | Tab::Agents => {}
+        // `has_panel` lists the tabs without settings.
+        _ => {}
     }
     sections
 }
 
-/// The sections of an app-wide page.
 fn page(s: &Settings, k: &Kit, layer: &mut Vec<El>, page: Page) -> Vec<El> {
     let cfg = &s.cfg;
     let fg = cfg.text().alpha(1.0);
@@ -669,7 +675,7 @@ fn page(s: &Settings, k: &Kit, layer: &mut Vec<El>, page: Page) -> Vec<El> {
                         }
                     }
                         .child(icon(&icons::GRIP, 16.0).color(fg.alpha(0.3)))
-                        .child(icon(icons::tab(tab), 16.0).color(fg))
+                        .child(icon(tabs::icon_of(tab), 16.0).color(fg))
                         .child(text(name).font(cfg.font(14.0, 500.0)).color(fg).grow(1.0).min_w(0.0).truncate())
                         .child(if has_panel(tab) {
                             IconButton::new(&icons::SETTINGS).label(format!("{} settings", name))
@@ -786,8 +792,7 @@ fn nav_item(s: &Settings, item: Page) -> El {
 
 /// The rows of every page whose labels match the search, under their page's title.
 fn results(s: &Settings, k: &Kit, layer: &mut Vec<El>) -> Vec<El> {
-    let pages = [Page::General, Page::Tabs, Page::Appearance, Page::Features].into_iter()
-        .chain(s.cfg.tab_order.iter().filter(|&&t| has_panel(t)).map(|&t| Page::Tab(t)));
+    let pages = APP_PAGES.into_iter().chain(tab_pages(&s.cfg));
     let mut seen = Vec::new();
     let mut sections = Vec::new();
     for p in pages {
@@ -811,9 +816,9 @@ fn sidebar(s: &Settings) -> El {
     let search = TextInput::new(&s.query).width(None).label("Search settings").placeholder("Search")
         .on_edit(|s: &mut Settings| &mut s.query).on_change(|s: &mut Settings, _| s.open = None).build(&s.cfg.kit());
     let mut items = vec![text("Settings").font(s.cfg.font(17.0, 700.0)).color(fg).px(10.0).pb(10.0), el().key("settings-search").w_full().pb(8.0).child(search)];
-    items.extend([Page::General, Page::Tabs, Page::Appearance, Page::Features].map(|p| nav_item(s, p)));
+    items.extend(APP_PAGES.map(|p| nav_item(s, p)));
     items.push(group("Tab settings"));
-    items.extend(s.cfg.tab_order.iter().filter(|&&t| has_panel(t)).map(|&t| nav_item(s, Page::Tab(t))));
+    items.extend(tab_pages(&s.cfg).map(|p| nav_item(s, p)));
     let list = items.into_iter().fold(col().key("sidebar-list").w_full().gap(2.0).px(10.0).pt(20.0).pb(16.0), El::child);
     col().key("sidebar").w(SIDEBAR).h_full().min_h(0.0).fill(fg.alpha(0.03)).border_sides([0.0, 1.0, 0.0, 0.0], fg.alpha(0.08))
         .child(col().key("sidebar-scroll").w_full().grow(1.0).min_h(0.0).scroll(ScrollSpec { stick_bottom: false }).child(list))
@@ -917,8 +922,12 @@ mod tests {
         for step in 1..=10 { rt.pointer_move(x, y + step as f32 * 10.0); rt.frame(1.0 / 60.0); }
         rt.pointer_up(x, y + 100.0);
         rt.frame(1.0 / 60.0);
-        use Tab::*;
-        assert_eq!(store.get().tab_order, [Overview, Workflows, Assistant, Search, Clipboard, Tasks, T3, Agents, Notes, Stremflix, Shelf, System, Calendar, Limits, Pomodoro, Calculator, Habits, Stocks, Clocks, Plugins, Weather]);
+        // Two rows down: Search (tab-0) lands after the two tabs below it.
+        let mut want = Tab::ALL.to_vec();
+        let from = want.iter().position(|t| *t == Tab::Search).unwrap();
+        let moved = want.remove(from);
+        want.insert(from + 2, moved);
+        assert_eq!(store.get().tab_order, want);
     }
 
     #[test]

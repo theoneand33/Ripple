@@ -1,13 +1,19 @@
 //! Habits: things to do every day. Each one shows the last seven days to tick off and its
 //! streak of days in a row.
 
-use rune::{El, Tx, col, el, icon, row, text};
+use rune::{El, TextEdit, Tx, col, el, icon, row, text};
 
 use super::{Scrolls, accent, button, empty, field, tool};
 use crate::config::Habit;
 use crate::date::{days_from_civil, weekday};
 use crate::icons;
 use crate::island::Island;
+
+/// The Habits tab: the field a new habit is typed in.
+#[derive(Default)]
+pub struct Habits {
+    pub field: TextEdit,
+}
 
 /// Days in a row done, up to today; a day not yet done today doesn't break it.
 pub fn streak(done: &[i64], today: i64) -> u32 {
@@ -16,10 +22,10 @@ pub fn streak(done: &[i64], today: i64) -> u32 {
 }
 
 fn add(s: &mut Island, _: &mut Tx) {
-    let name = s.habit.text.trim().to_string();
+    let name = s.habits.field.text.trim().to_string();
     if name.is_empty() { return }
     s.save(|c| c.habits.push(Habit { name, done: Vec::new() }));
-    s.habit.clear();
+    s.habits.field.clear();
 }
 
 fn toggle(s: &mut Island, i: usize, day: i64) {
@@ -44,7 +50,7 @@ pub fn view(s: &Island) -> El {
         for back in (0..7).rev() {
             let day = today - back;
             let on = h.done.contains(&day);
-            let letter = ["S", "M", "T", "W", "T", "F", "S"][(wd - back).rem_euclid(7) as usize];
+            let letter = crate::date::WEEKDAY_LETTERS[(wd - back).rem_euclid(7) as usize];
             week = week.child(
                 el().key(format!("day-{back}")).role("checkbox").checked(on).focusable(true)
                     .label(format!("{}: {}", h.name, if back == 0 { "today".into() } else { format!("{back} days ago") }))
@@ -73,7 +79,7 @@ pub fn view(s: &Island) -> El {
         .child(col().key("habit-scroll").w_full().grow(1.0).min_h(0.0).scrolls().child(list))
         .child(
             row().key("habit-input").w_full().gap(8.0).center_y()
-                .child(field(s, "new-habit", &s.habit, "New habit…", |s: &mut Island| &mut s.habit, add))
+                .child(field(s, "new-habit", &s.habits.field, "New habit…", |s: &mut Island| &mut s.habits.field, add))
                 .child(button(s, "add-habit", "Add", true).on_press_tx(add)),
         )
 }

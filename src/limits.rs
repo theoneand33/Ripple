@@ -37,7 +37,7 @@ struct Account {
 /// config folders in `extra_dirs`, and CLIProxyAPI's auth files in `cliproxy_dir`.
 pub fn all(extra_dirs: &[String], cliproxy_dir: &str) -> Vec<Usage> {
     let Some(home) = rune::dirs::home() else { return Vec::new() };
-    let accounts = accounts(&home, extra_dirs, cliproxy_dir);
+    let accounts = accounts(&home, &|k| std::env::var_os(k), extra_dirs, cliproxy_dir);
     // Two files with one account: one may hold an older, already-used refresh token, and spending it can revoke the sign-in.
     let renew: Vec<bool> = accounts.iter().map(|a| a.renews.as_ref().is_some_and(|id| accounts.iter().filter(|b| b.renews.as_ref() == Some(id)).count() == 1)).collect();
     let handles: Vec<_> = accounts.into_iter().zip(renew)
@@ -45,10 +45,11 @@ pub fn all(extra_dirs: &[String], cliproxy_dir: &str) -> Vec<Usage> {
     handles.into_iter().map(|(name, h)| Usage { name, windows: h.join().unwrap_or_else(|_| Err("Couldn't read its limits".into())) }).collect()
 }
 
-fn accounts(home: &Path, extra_dirs: &[String], cliproxy_dir: &str) -> Vec<Account> {
+/// `var` reads the environment, where each CLI's own folder may be set.
+fn accounts(home: &Path, var: &dyn Fn(&str) -> Option<std::ffi::OsString>, extra_dirs: &[String], cliproxy_dir: &str) -> Vec<Account> {
     let mut out = Vec::new();
-    let extra: Vec<PathBuf> = extra_dirs.iter().map(|d| d.trim()).filter(|d| !d.is_empty()).map(|d| crate::system::expand_home(home, d)).collect();
-    let claude_dirs = std::iter::once(dir("CLAUDE_CONFIG_DIR", home.join(".claude"))).chain(extra.iter().cloned());
+    let extra: Vec<PathBuf> = extra_dirs.iter().map(|d| d.trim()).filter(|d| !d.is_empty()).map(|d| crate::paths::expand_home(home, d)).collect();
+    let claude_dirs = std::iter::once(dir(var, "CLAUDE_CONFIG_DIR", home.join(".claude"))).chain(extra.iter().cloned());
     for (i, d) in claude_dirs.enumerate() {
         let Some(creds) = read_json(d.join(".credentials.json")).or_else(|| if i == 0 { claude_keychain() } else { None }) else { continue };
         let Some(token) = creds["claudeAiOauth"]["accessToken"].as_str() else { continue };
@@ -61,7 +62,7 @@ fn accounts(home: &Path, extra_dirs: &[String], cliproxy_dir: &str) -> Vec<Accou
         let id = account["accountUuid"].as_str().or(email).filter(|_| saved.is_some()).map(|id| format!("claude:{id}"));
         out.push(Account { renews: id, ..claude(named("Claude Code", email), token, saved) });
     }
-    for d in std::iter::once(dir("CODEX_HOME", home.join(".codex"))).chain(extra.iter().cloned()) {
+    for d in std::iter::once(dir(var, "CODEX_HOME", home.join(".codex"))).chain(extra.iter().cloned()) {
         let Some(auth) = read_json(d.join("auth.json")) else { continue };
         let t = &auth["tokens"];
         let Some(token) = t["access_token"].as_str() else { continue };
@@ -70,7 +71,7 @@ fn accounts(home: &Path, extra_dirs: &[String], cliproxy_dir: &str) -> Vec<Accou
         let id = t["account_id"].as_str().filter(|a| !a.is_empty()).map(|a| format!("codex:{a}"));
         out.push(Account { renews: id, ..codex(named("Codex", email.as_deref()), token, t["account_id"].as_str().unwrap_or_default(), Some(saved)) });
     }
-    let proxy = crate::system::expand_home(home, if cliproxy_dir.trim().is_empty() { "~/.cli-proxy-api" } else { cliproxy_dir.trim() });
+    let proxy = crate::paths::expand_home(home, if cliproxy_dir.trim().is_empty() { "~/.cli-proxy-api" } else { cliproxy_dir.trim() });
     let mut files: Vec<PathBuf> = std::fs::read_dir(proxy).into_iter().flatten().flatten().map(|e| e.path())
         .filter(|p| p.extension().is_some_and(|e| e == "json")).collect();
     files.sort();
@@ -92,7 +93,7 @@ fn accounts(home: &Path, extra_dirs: &[String], cliproxy_dir: &str) -> Vec<Accou
     if let Some(key) = read_json(home.join(".local/share/opencode/auth.json")).and_then(|v| v["opencode-go"]["key"].as_str().map(str::to_string)) {
         out.push(opencode_go(key));
     }
-    if let Some(auth) = read_json(dir("GROK_HOME", home.join(".grok")).join("auth.json")) {
+    if let Some(auth) = read_json(dir(var, "GROK_HOME", home.join(".grok")).join("auth.json")) {
         let keys: Vec<&str> = auth.as_object().into_iter().flat_map(|o| o.values()).filter_map(|e| e["key"].as_str()).collect();
         for (i, key) in keys.iter().enumerate() {
             let name = if keys.len() > 1 { format!("Grok Build {}", i + 1) } else { "Grok Build".into() };
@@ -113,8 +114,8 @@ fn read_json(path: PathBuf) -> Option<Value> {
     serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()
 }
 
-fn dir(var: &str, fallback: PathBuf) -> PathBuf {
-    std::env::var_os(var).filter(|v| !v.is_empty()).map_or(fallback, PathBuf::from)
+fn dir(var: &dyn Fn(&str) -> Option<std::ffi::OsString>, name: &str, fallback: PathBuf) -> PathBuf {
+    var(name).filter(|v| !v.is_empty()).map_or(fallback, PathBuf::from)
 }
 
 fn named(agent: &str, who: Option<&str>) -> String {
@@ -180,12 +181,11 @@ fn renew(s: &Saved, expired: &str) -> Result<String, String> {
     saved
 }
 
-/// Posts the refresh token and puts the answer's tokens into `creds`; returns the access token.
 fn renew_into(s: &Saved, creds: &mut Value) -> Result<String, String> {
     let refresh = creds[s.refresh].as_str().ok_or(EXPIRED)?.to_string();
     let mut body = serde_json::json!({"grant_type": "refresh_token", "refresh_token": refresh, "client_id": s.oauth.client});
     if let Some(scope) = s.oauth.scope { body["scope"] = scope.into() }
-    let mut res = crate::net::agent().post(s.oauth.url).header("content-type", "application/json").header("user-agent", "Ripple")
+    let mut res = crate::net::agent().post(s.oauth.url).header("content-type", "application/json")
         .send(body.to_string()).map_err(|e| {
             use ureq::{Error as E, Timeout as T};
             match e {
@@ -196,7 +196,7 @@ fn renew_into(s: &Saved, creds: &mut Value) -> Result<String, String> {
         })?;
     if !res.status().is_success() { return Err(EXPIRED.into()) }
     // From here the old refresh token is spent.
-    let v: Value = res.body_mut().read_to_string().ok().and_then(|b| serde_json::from_str(&b).ok()).ok_or(LOST)?;
+    let v = crate::net::read_json(&mut res);
     let access = v["access_token"].as_str().ok_or(LOST)?.to_string();
     creds[s.access] = access.clone().into();
     if let Some(r) = v["refresh_token"].as_str() { creds[s.refresh] = r.into() }
@@ -209,7 +209,7 @@ fn renew_into(s: &Saved, creds: &mut Value) -> Result<String, String> {
 }
 
 fn get(url: &str, headers: &[(&str, &str)]) -> Result<Value, String> {
-    let mut req = crate::net::agent().get(url).header("accept", "application/json").header("user-agent", "Ripple");
+    let mut req = crate::net::agent().get(url).header("accept", "application/json");
     for (k, v) in headers { req = req.header(*k, *v) }
     let mut res = req.call().map_err(|_| "Can't reach the server".to_string())?;
     match res.status().as_u16() {
@@ -337,9 +337,7 @@ fn grok_windows(v: &Value) -> Vec<Window> {
 /// Unix seconds from "2026-08-13", "2026-08-13T16:27:38.287Z" or "...+02:00".
 fn iso(s: &str) -> Option<i64> {
     let n = |r: std::ops::Range<usize>| s.get(r)?.parse::<i64>().ok();
-    let (y, m, d) = (n(0..4)?, n(5..7)?, n(8..10)?);
-    let (y, m, d) = (i32::try_from(y).ok()?, u32::try_from(m).ok()?, u32::try_from(d).ok()?);
-    if !(1..=12).contains(&m) || !(1..=crate::date::days_in(y, m)).contains(&d) { return None }
+    let (y, m, d) = crate::date::parse_ymd(s.get(..10)?)?;
     let secs = if s.len() > 10 { n(11..13)? * 3600 + n(14..16)? * 60 + n(17..19)? } else { 0 };
     let tz = s[10..].rfind(['+', '-']).filter(|_| s.len() > 19).map(|i| i + 10);
     let offset = tz.and_then(|i| {
@@ -447,7 +445,7 @@ mod tests {
         put("proxy/codex-d.json", json!({"type": "codex", "email": "d@x.com", "access_token": "x2"}));
         put("proxy/gemini.json", json!({"type": "gemini", "access_token": "g"}));
         put(".config/github-copilot/apps.json", json!({"github.com:1": {"user": "octo", "oauth_token": "gh1"}, "github.com:2": {"user": "cat", "oauth_token": "gh2"}}));
-        let found = accounts(&home, &["~/work".into(), " ".into()], &home.join("proxy").to_string_lossy());
+        let found = accounts(&home, &|_| None, &["~/work".into(), " ".into()], &home.join("proxy").to_string_lossy());
         let _ = std::fs::remove_dir_all(&home);
         // Only a CLI's own file with a known account renews: not CLIProxyAPI or Copilot.
         let ids: Vec<Option<&str>> = found.iter().map(|a| a.renews.as_deref()).collect();

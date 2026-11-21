@@ -10,7 +10,6 @@ use crate::island::Island;
 use crate::nextcloud::{self, Kind};
 
 pub struct Notes {
-    /// The open note's editor.
     pub editor: TextEdit,
     /// Which note the editor edits.
     pub index: usize,
@@ -27,12 +26,23 @@ impl Notes {
 
 impl Island {
     /// Edits note `i`, or the last one when `i` is past the end.
+    /// After a sync: keeps the open note (`open`: its key and text before) open where it went,
+    /// and shows Nextcloud's text if it changed.
+    pub(super) fn notes_synced(&mut self, open: Option<(u64, String)>) {
+        let at = open.as_ref().and_then(|(key, _)| self.cfg.notes.iter().position(|n| n.key == *key));
+        match at {
+            Some(i) if open.as_ref().is_some_and(|(_, text)| self.cfg.notes[i].text == *text) => self.notes.index = i,
+            Some(i) => { let focused = self.notes.editor.focused; self.open_note(i); self.notes.editor.focused = focused }
+            None => self.open_note(self.notes.index),
+        }
+    }
+
     pub fn open_note(&mut self, i: usize) {
         self.notes.index = i.min(self.cfg.notes.len().saturating_sub(1));
         self.notes.editor = TextEdit::new(self.cfg.notes.get(self.notes.index).map_or("", |n| n.text.as_str()));
     }
 
-    pub fn add_note(&mut self) {
+    fn add_note(&mut self) {
         // An empty note on top is reused rather than stacking blanks.
         if self.cfg.notes.first().is_none_or(|n| !n.text.trim().is_empty()) { self.save(|c| c.notes.insert(0, Item::new(""))) }
         self.open_note(0);
@@ -45,14 +55,14 @@ impl Island {
     }
 
     /// The notes the list shows, by index: pinned first, each matching the search.
-    pub fn listed_notes(&self) -> Vec<usize> {
+    fn listed_notes(&self) -> Vec<usize> {
         let query = self.notes.search.text.trim().to_lowercase();
         let mut shown: Vec<usize> = (0..self.cfg.notes.len()).filter(|i| query.is_empty() || self.cfg.notes[*i].text.to_lowercase().contains(&query)).collect();
         shown.sort_by_key(|i| !self.cfg.pinned_notes.contains(&self.cfg.notes[*i].key));
         shown
     }
 
-    pub fn delete_note(&mut self) {
+    fn delete_note(&mut self) {
         let mut gone = None;
         if let Some(key) = self.cfg.notes.get(self.notes.index).map(|n| n.key) { self.save(|c| { gone = nextcloud::remove(c, Kind::Notes, key); c.pinned_notes.retain(|k| *k != key) }) }
         if let Some((i, item)) = gone { self.undo = Some(Undo::Item(Kind::Notes, i, item)) }
@@ -70,7 +80,7 @@ impl Island {
         }
     }
 
-    pub fn note_edited(&mut self) {
+    fn note_edited(&mut self) {
         let (i, text) = (self.notes.index, self.notes.editor.text.clone());
         if self.cfg.notes.get(i).is_some_and(|n| n.text != text) {
             // Saved to disk once a second by `notes_tick`, not on every key.
@@ -99,7 +109,7 @@ pub fn view(s: &Island) -> El {
         .child(text("Notes").font(s.cfg.font(17.0, 700.0)).color(fg))
         .child(text(s.cfg.notes.len().to_string()).font(s.cfg.font(15.0, 500.0).features("'tnum' 1")).color(muted))
         .child(el().grow(1.0));
-    if let Some(e) = &s.nextcloud[Kind::Notes as usize].error {
+    if let Some(e) = &s.nextcloud[Kind::Notes].error {
         header = header.child(text(e).font(s.cfg.font(12.0, 400.0)).color(muted).shrink().min_w(0.0).truncate());
     }
     if let Some(undo) = undo_button(s) { header = header.child(undo) }
@@ -140,7 +150,6 @@ pub fn view(s: &Island) -> El {
     let editor = text_input(&s.notes.editor, s.cfg.font(14.0, 400.0).lh(20.0)).key("note-editor").label("Note").w_full()
         .color(fg).placeholder("Title, then your note", fg.alpha(0.5 * fg.a))
         .on_edit(|s: &mut Island| &mut s.notes.editor)
-        // Return breaks the line.
         .on_submit(|s: &mut Island, _| { s.notes.editor.insert("\n"); s.note_edited() })
         .on_input_change(|s: &mut Island, _| s.note_edited());
     root.child(

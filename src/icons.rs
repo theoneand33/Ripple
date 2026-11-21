@@ -2,8 +2,6 @@
 
 use rune::Icon;
 
-use crate::config::Tab;
-
 macro_rules! stroke {
     ($name:ident, $id:literal, $body:literal) => {
         pub static $name: Icon = Icon {
@@ -126,30 +124,4 @@ pub fn ring(percent: u8) -> &'static Icon {
         Icon { name: "ring", view: 24.0, body: Box::leak(body.into_boxed_str()) }
     }).collect());
     &rings[usize::from(percent.min(100))]
-}
-
-pub fn tab(tab: Tab) -> &'static Icon {
-    match tab {
-        Tab::Search => &SEARCH,
-        Tab::Workflows => &ZAP,
-        Tab::Overview => &SUN,
-        Tab::Weather => &CLOUD_SUN,
-        Tab::Assistant => &MIC,
-        Tab::Clipboard => &LIST,
-        Tab::Tasks => &CHECK,
-        Tab::T3 => &TERMINAL,
-        Tab::Agents => &BOT,
-        Tab::Notes => &STICKY_NOTE,
-        Tab::Stremflix => &TV,
-        Tab::Shelf => &INBOX,
-        Tab::System => &ACTIVITY,
-        Tab::Limits => &GAUGE,
-        Tab::Calendar => &CALENDAR,
-        Tab::Plugins => &PUZZLE,
-        Tab::Pomodoro => &TIMER,
-        Tab::Calculator => &CALCULATOR,
-        Tab::Habits => &FLAME,
-        Tab::Stocks => &TRENDING_UP,
-        Tab::Clocks => &CLOCK,
-    }
 }

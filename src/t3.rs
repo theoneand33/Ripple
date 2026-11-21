@@ -140,8 +140,7 @@ fn request(method: &str, url: &str, headers: &[(&str, &str)], body: Option<&str>
         }
         .map_err(unreachable)?
     };
-    let text = res.body_mut().read_to_string().unwrap_or_default();
-    let data: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
+    let data = crate::net::read_json(&mut res);
     if !res.status().is_success() {
         let message = data["error_description"].as_str().or(data["message"].as_str());
         return Err(message.map_or_else(|| format!("T3 {} failed ({})", path_of(url), res.status().as_u16()), Into::into));
@@ -427,7 +426,7 @@ fn t3_home() -> Option<PathBuf> {
     let home = rune::dirs::home();
     match (raw, home) {
         ("", home) => home.map(|h| h.join(".t3")),
-        (raw, Some(h)) => Some(crate::system::expand_home(&h, raw)),
+        (raw, Some(h)) => Some(crate::paths::expand_home(&h, raw)),
         (raw, None) => Some(PathBuf::from(raw)),
     }
 }
@@ -485,9 +484,8 @@ pub fn detect_local() -> Option<T3Device> {
 /// initialize, initialized, tools/call. `Ok(None)` means the token was refused (401).
 fn mcp_call(device: &T3Device, token: &str, name: &str, args: &Value) -> Result<Option<Value>, String> {
     verify_peer(device)?;
-    let agent: ureq::Agent = ureq::Agent::config_builder()
+    let agent: ureq::Agent = crate::net::config()
         .timeout_global(Some(Duration::from_secs(30)))
-        .http_status_as_error(false)
         .build()
         .into();
     let url = format!("{}/mcp", base(device));

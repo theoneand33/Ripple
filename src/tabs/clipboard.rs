@@ -202,7 +202,7 @@ impl Island {
         }
     }
 
-    pub fn toggle_clip_pin(&mut self, i: usize) {
+    fn toggle_clip_pin(&mut self, i: usize) {
         self.clipboard.toggle_pin(i);
         let pins = self.clipboard.pins();
         if pins == self.cfg.clipboard_pins { return }
@@ -242,7 +242,7 @@ impl Clipboard {
 
     /// What the text tools run on: the newest copied text, the first below the pins; with none
     /// there, the first pinned text. The tools row shows it, so it is never a guess.
-    pub fn tool_source(&self) -> Option<&str> {
+    fn tool_source(&self) -> Option<&str> {
         self.items[self.pinned()..].iter().chain(&self.items).find_map(|c| match &c.content { Content::Text(t) => Some(t.as_str()), Content::Image(..) => None })
     }
 
@@ -284,7 +284,7 @@ impl Clipboard {
 
     /// The pinned items to save, writing each pinned image's file if it isn't there yet. An
     /// image that can't be written stays pinned only this run.
-    pub fn pins(&self) -> Vec<Pin> {
+    fn pins(&self) -> Vec<Pin> {
         self.items.iter().filter(|c| c.pinned).filter_map(|c| match &c.content {
             Content::Text(t) => Some(Pin::Text(t.clone())),
             Content::Image(image, _) => {

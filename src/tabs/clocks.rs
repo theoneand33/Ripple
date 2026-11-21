@@ -21,10 +21,10 @@ pub struct Clocks {
 }
 
 /// The moon's age as a share of its 29.53-day cycle, from the new moon of 2000-01-06 18:14 UTC.
-pub fn moon_phase(unix: i64) -> f64 { ((unix - 947_182_440) as f64 / 86_400.0 / 29.530_588_853).rem_euclid(1.0) }
+fn moon_phase(unix: i64) -> f64 { ((unix - 947_182_440) as f64 / 86_400.0 / 29.530_588_853).rem_euclid(1.0) }
 
 /// The phase's name and the share of the disc lit.
-pub fn moon_name(phase: f64) -> (&'static str, f64) {
+fn moon_name(phase: f64) -> (&'static str, f64) {
     const NAMES: [&str; 8] = ["New moon", "Waxing crescent", "First quarter", "Waxing gibbous", "Full moon", "Waning gibbous", "Last quarter", "Waning crescent"];
     (NAMES[((phase * 8.0).round() as usize) % 8], (1.0 - (phase * std::f64::consts::TAU).cos()) / 2.0)
 }
@@ -53,8 +53,7 @@ impl Island {
 
 /// "9:41" on the user's clock format.
 fn clock(s: &Island, t: &LocalTime) -> String {
-    let hour = if s.cfg.hour12 { (t.hour + 11) % 12 + 1 } else { t.hour };
-    format!("{hour}:{:02}", t.minute)
+    crate::date::clock(t.hour, t.minute, s.cfg.hour12)
 }
 
 pub fn view(s: &Island) -> El {

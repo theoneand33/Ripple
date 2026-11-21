@@ -91,7 +91,7 @@ impl Island {
         });
     }
 
-    pub fn t3_load_projects(&mut self) {
+    fn t3_load_projects(&mut self) {
         self.t3.generation += 1;
         self.t3.projects = None;
         let (Some(device), Some(me)) = (self.t3_device().map(|d| d.1.clone()), self.me.clone()) else { return };
@@ -109,11 +109,11 @@ impl Island {
         });
     }
 
-    pub fn t3_can_start(&self) -> bool {
+    fn t3_can_start(&self) -> bool {
         !self.t3.starting && self.t3_project().is_some() && self.t3_model().is_some() && !self.t3.message.text.trim().is_empty()
     }
 
-    pub fn t3_start(&mut self) {
+    fn t3_start(&mut self) {
         // One launch at a time: a second Ctrl+Return or click while starting does nothing.
         if !self.t3_can_start() { return }
         let (Some((_, device)), Some(project), Some(model), Some(me)) = (self.t3_device(), self.t3_project(), self.t3_model(), self.me.clone()) else { return };

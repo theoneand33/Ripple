@@ -29,7 +29,7 @@ impl Island {
     pub fn agents_poll(&mut self, now: f64) -> bool {
         // A hidden tab can't be answered: without `alive`, hooks leave agents to ask in their terminals.
         if rune::is_headless() || !self.visible_tabs().contains(&Tab::Agents) { return false }
-        let Some(dir) = self.store.dir().map(|d| d.join("agents")) else { return false };
+        let Some(dir) = self.store.dir().map(|d| agents::folder(&d)) else { return false };
         let processes = now - self.agents.processes_at >= 10.0;
         if processes { self.agents.processes_at = now }
         let (sessions, mut requests) = agents::scan(&dir, processes);
@@ -45,15 +45,15 @@ impl Island {
         if key.is_some() && self.quiet() { self.agents.held = true; return changed }
         if let Some(r) = key.and_then(|k| self.agents.requests.iter().find(|r| r.key == k).cloned()) && !self.large_open() {
             let agent = self.agents.sessions.iter().find(|s| s.key == r.session).map_or("An agent", |s| agents::name(&s.agent)).to_string();
-            if self.visible_tabs().contains(&Tab::Agents) { self.set_tab(Tab::Agents) }
+            self.set_tab(Tab::Agents);
             self.remind(format!("{agent} needs you"), now);
             return true
         }
         changed
     }
 
-    pub fn agents_answer(&mut self, key: &str, answer: Answer) {
-        let Some(dir) = self.store.dir().map(|d| d.join("agents")) else { return };
+    fn agents_answer(&mut self, key: &str, answer: Answer) {
+        let Some(dir) = self.store.dir().map(|d| agents::folder(&d)) else { return };
         // Left up on failure: the hook still waits, and the next scan shows it again.
         if let Err(e) = agents::answer(&dir, key, &answer) { return eprintln!("Ripple: could not answer the agent: {e}") }
         self.agents.requests.retain(|r| r.key != key);

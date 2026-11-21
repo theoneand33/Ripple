@@ -31,8 +31,7 @@ pub fn base() -> Option<String> {
 }
 
 fn error(res: &mut ureq::http::Response<ureq::Body>) -> String {
-    let body: serde_json::Value = res.body_mut().read_to_string().ok().and_then(|b| serde_json::from_str(&b).ok()).unwrap_or_default();
-    body["error"].as_str().map_or_else(|| format!("Stremflix-rs answered {}", res.status().as_u16()), str::to_string)
+    crate::net::read_json(res)["error"].as_str().map_or_else(|| format!("Stremflix-rs answered {}", res.status().as_u16()), str::to_string)
 }
 
 const OFFLINE: &str = "Open Stremflix-rs to see what you're watching";

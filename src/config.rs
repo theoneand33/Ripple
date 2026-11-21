@@ -9,7 +9,7 @@ use rune::tok::{Family, TextStyle};
 use rune_kit::{Kit, PaletteSeed};
 use serde::{Deserialize, Deserializer, Serialize};
 
-const APP_ID: &str = "Ripple";
+pub const APP_ID: &str = "Ripple";
 
 /// Declares `Tab` and `Tab::ALL` from one list, in the default order.
 macro_rules! tabs {
@@ -437,7 +437,7 @@ pub struct Config {
     pub leetcode_user: String,
     /// Each note's first line is its title.
     pub notes: Vec<Item>,
-    /// Calendar events; each one's text is `YYYY-MM-DD title` (`nextcloud::event_day`).
+    /// Calendar events; each one's text is `YYYY-MM-DD title` (`ics::event_day`).
     pub events: Vec<Item>,
     /// Calendar: minutes before a timed event that its alert shows; 0 turns alerts off.
     pub event_alert_minutes: u32,
@@ -641,6 +641,8 @@ impl Config {
         Some(if (rise..set).contains(&now) { &self.day_theme } else { &self.night_theme })
     }
     /// The Island's zoom: 1 at 100%.
+    pub fn on_dashboard(&self, widget: Widget) -> bool { self.dashboard.iter().any(|t| t.widget == widget) }
+
     pub fn zoom(&self) -> f32 { self.island_scale / 100.0 }
 
     pub fn win95(&self) -> bool { self.theme == "win95" }
@@ -671,13 +673,11 @@ impl Config {
         self.quiet_hours && if from <= to { (from..to).contains(&hour) } else { hour >= from || hour < to }
     }
 
-    /// The Stocks base currency's code; empty means USD.
     pub fn stocks_currency(&self) -> String {
         let c = self.stocks_currency.trim().to_uppercase();
         if c.is_empty() { "USD".into() } else { c }
     }
 
-    /// Glasses of water drunk on `day`.
     pub fn water(&self, day: i64) -> u32 { if self.water_day == day { self.water_count } else { 0 } }
 
     pub fn provider(&self) -> &'static Provider {
@@ -799,7 +799,6 @@ impl Store {
         inner.cfg.clone()
     }
 
-    /// Saves what `update_unsaved` changed.
     pub fn flush(&self) { self.update(|_| {}); }
 
     /// Where Rune keeps this app's files, for the T3 token cache and the app cache.
@@ -827,8 +826,9 @@ mod tests {
     #[test]
     fn saved_orders_drop_retired_tabs_and_gain_new_ones() {
         use Tab::*;
-        let cfg = serde_json::from_str::<Config>(r#"{"tab_order": [7, 2, 3, 0], "hidden_tabs": [3, 0], "default_tab": 7}"#).unwrap().normalized();
-        assert_eq!(cfg.tab_order, [Overview, Search, Workflows, Assistant, Clipboard, Tasks, T3, Agents, Notes, Stremflix, Shelf, System, Calendar, Limits, Pomodoro, Calculator, Habits, Stocks, Clocks, Plugins, Weather]);
+        let cfg = serde_json::from_str::<Config>(r#"{"tab_order": [7, 0, 3, 2], "hidden_tabs": [3, 0], "default_tab": 7}"#).unwrap().normalized();
+        let rest = Tab::ALL.into_iter().filter(|t| ![Search, Overview].contains(t));
+        assert_eq!(cfg.tab_order, [Search, Overview].into_iter().chain(rest).collect::<Vec<_>>(), "saved tabs keep their order; new ones follow in the default order");
         assert_eq!((cfg.hidden_tabs.as_slice(), cfg.default_tab), ([Search].as_slice(), Overview));
     }
 

@@ -48,7 +48,7 @@ impl Island {
     }
 
     /// Resumes an entry in Stremflix-rs's window.
-    pub fn stremflix_play(&mut self, entry: Entry) {
+    fn stremflix_play(&mut self, entry: Entry) {
         let (Some(base), Some(me)) = (api::base(), self.me.clone()) else { return };
         self.stremflix.status = format!("Opening {}…", entry.title);
         me.spawn(move || api::play(&base, &entry), move |s, result| s.stremflix.status = result.err().unwrap_or_default());

@@ -18,6 +18,7 @@ mod search;
 mod shelf;
 mod stocks;
 mod stremflix;
+mod sync;
 mod t3;
 mod tasks;
 mod weather;
@@ -28,8 +29,9 @@ pub use assistant::Assistant;
 pub use calculator::Calculator;
 pub use calendar::{link_host, Calendar};
 pub use clipboard::{Clipboard, Content};
-pub use overview::{Contributions, height as overview_height, width as overview_width};
+pub use overview::{Contributions, Dashboard, height as overview_height, width as overview_width};
 pub use clocks::Clocks;
+pub use habits::Habits;
 pub use limits::Limits;
 pub use notes::Notes;
 pub use shelf::Shelf;
@@ -37,8 +39,9 @@ pub use pomodoro::{Clock, Pomodoro, bubble as pomodoro_bubble, live as pomodoro_
 pub use search::Finder;
 pub use stocks::Stocks;
 pub use stremflix::Stremflix;
+pub use sync::{SyncState, Syncs};
 pub use t3::T3;
-pub use tasks::{Every, Task, TaskDraft};
+pub use tasks::{TaskDraft, Tasks};
 
 use rune::{Color, El, Key, KeyEvent, ScrollSpec, TextEdit, Tx, el, icon, row, text, text_input};
 
@@ -98,20 +101,76 @@ pub const fn size(tab: Tab) -> (f32, f32) {
     }
 }
 
+/// The tab's icon in the dock and in Settings.
+pub fn icon_of(tab: Tab) -> &'static rune::Icon {
+    match tab {
+        Tab::Search => &icons::SEARCH,
+        Tab::Workflows => &icons::ZAP,
+        Tab::Overview => &icons::SUN,
+        Tab::Weather => &icons::CLOUD_SUN,
+        Tab::Assistant => &icons::MIC,
+        Tab::Clipboard => &icons::LIST,
+        Tab::Tasks => &icons::CHECK,
+        Tab::T3 => &icons::TERMINAL,
+        Tab::Agents => &icons::BOT,
+        Tab::Notes => &icons::STICKY_NOTE,
+        Tab::Stremflix => &icons::TV,
+        Tab::Shelf => &icons::INBOX,
+        Tab::System => &icons::ACTIVITY,
+        Tab::Limits => &icons::GAUGE,
+        Tab::Calendar => &icons::CALENDAR,
+        Tab::Plugins => &icons::PUZZLE,
+        Tab::Pomodoro => &icons::TIMER,
+        Tab::Calculator => &icons::CALCULATOR,
+        Tab::Habits => &icons::FLAME,
+        Tab::Stocks => &icons::TRENDING_UP,
+        Tab::Clocks => &icons::CLOCK,
+    }
+}
+
+/// Whether a tab has anything to show: T3 Code needs a device, AI Limits a signed-in agent once looked for.
+pub fn has_content(s: &Island, tab: Tab) -> bool {
+    match tab {
+        Tab::T3 => !s.cfg.t3_devices.is_empty(),
+        Tab::Limits => !s.limits.usage.as_ref().is_some_and(Vec::is_empty),
+        _ => true,
+    }
+}
+
 /// Loads what a tab shows, as it opens: the Overview's panels with it.
 pub fn entered(s: &mut Island) {
-    s.dashboard_drag = None;
-    s.dashboard_add = None;
+    s.dashboard.drag = None;
+    s.dashboard.add = None;
     load(s, s.tab);
     if s.tab == Tab::Overview {
-        for tile in s.cfg.dashboard.clone() { if let Widget::Panel(tab) = tile.widget { load(s, tab) } }
-        if s.cfg.dashboard.iter().any(|t| t.widget == Widget::Contributions) { s.contributions_load() }
+        for tile in s.cfg.dashboard.clone() { load_widget(s, tile.widget) }
+    }
+}
+
+/// Loads what an Overview widget shows, as it appears.
+fn load_widget(s: &mut Island, widget: Widget) {
+    match widget {
+        Widget::Panel(tab) => load(s, tab),
+        Widget::Contributions => s.contributions_load(),
+        _ => {}
     }
 }
 
 /// Whether Large mode shows a tab: open, or as a panel on the Overview.
-pub fn shows(s: &Island, tab: Tab) -> bool {
-    s.mode == Mode::Large && (s.tab == tab || s.tab == Tab::Overview && s.cfg.dashboard.iter().any(|t| t.widget == Widget::Panel(tab)))
+pub fn shows(s: &Island, tab: Tab) -> bool { shows_widget(s, Widget::Panel(tab)) }
+
+/// Whether Large mode shows a widget: on the open Overview, or a panel's tab open itself.
+fn shows_widget(s: &Island, widget: Widget) -> bool {
+    s.mode == Mode::Large && (widget == Widget::Panel(s.tab) || s.tab == Tab::Overview && s.cfg.on_dashboard(widget))
+}
+
+/// Counts a reload's wait down a second; true once it is over.
+fn waited(countdown: &mut Option<u8>) -> bool {
+    match countdown.take() {
+        Some(n) if n > 1 => { *countdown = Some(n - 1); false }
+        Some(_) => true,
+        None => false,
+    }
 }
 
 fn load(s: &mut Island, tab: Tab) {
@@ -124,16 +183,8 @@ fn load(s: &mut Island, tab: Tab) {
         Tab::Stocks => s.stocks_load(),
         Tab::Clocks => s.clocks_load(),
         Tab::Notes => s.nextcloud_sync(Kind::Notes),
-        Tab::Tasks => {
-            if s.task_draft.editing.is_some() { tasks::reset_draft(s) }
-            s.nextcloud_sync(Kind::Tasks);
-        }
-        Tab::Calendar => {
-            (s.calendar.offset, s.calendar.day) = (0, None);
-            if s.calendar.editing.take().is_some() { s.calendar.event.clear() }
-            s.nextcloud_sync(Kind::Events);
-            s.calendar_feeds_load();
-        }
+        Tab::Tasks => tasks::entered(s),
+        Tab::Calendar => calendar::entered(s),
         Tab::Shelf => s.nextcloud_shelf_sync(),
         Tab::Plugins => s.plugins.scan(),
         // Seen: a rung timer leaves the compact Island.
@@ -148,24 +199,9 @@ pub fn each_second(s: &mut Island, now: f64) -> bool {
     s.notes_tick();
     s.task_reminders(now);
     s.event_alerts(now);
-    s.notifications(now);
     let agents = s.agents_poll(now);
-    let theme = s.cfg.sun_theme(s.weather.sun, crate::date::now_secs()).filter(|t| *t != s.cfg.theme).map(str::to_string);
-    if let Some(theme) = theme { s.save(|c| c.set_theme(&theme)) }
-    s.water_reminders(now);
-    s.rain_alert(now);
-    s.break_reminders(now);
-    crate::system::WANT_PROCESSES.store(s.mode == Mode::Large && s.tab == Tab::System, std::sync::atomic::Ordering::Relaxed);
-    match s.stocks.reload_in.take() {
-        Some(n) if n > 1 => s.stocks.reload_in = Some(n - 1),
-        Some(_) if shows(s, Tab::Stocks) => s.stocks_load(),
-        _ => {}
-    }
-    match s.contributions.reload_in.take() {
-        Some(n) if n > 1 => s.contributions.reload_in = Some(n - 1),
-        Some(_) if s.mode == Mode::Large && s.tab == Tab::Overview && s.cfg.dashboard.iter().any(|t| t.widget == Widget::Contributions) => s.contributions_load(),
-        _ => {}
-    }
+    if waited(&mut s.stocks.reload_in) && shows(s, Tab::Stocks) { s.stocks_load() }
+    if waited(&mut s.contributions.reload_in) && shows_widget(s, Widget::Contributions) { s.contributions_load() }
     s.pomodoro.tick_all(now) | plugins | agents
 }
 
@@ -198,7 +234,7 @@ impl Island {
     pub fn undo(&mut self) {
         match self.undo.take() {
             Some(Undo::Item(kind, i, item)) => {
-                let (key, syncing) = (item.key, self.nextcloud[kind as usize].running);
+                let (key, syncing) = (item.key, self.nextcloud[kind].running);
                 self.save(|c| nextcloud::restore(c, kind, i, item, syncing));
                 if kind == Kind::Notes { self.open_note(self.cfg.notes.iter().position(|n| n.key == key).unwrap_or(0)) }
                 self.nextcloud_sync(kind);

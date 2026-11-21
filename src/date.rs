@@ -1,19 +1,47 @@
 //! Calendar dates as (year, month, day), and the wall clock.
 
-/// Unix milliseconds now.
 pub fn now_ms() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64)
 }
 
-/// Unix seconds now.
 pub fn now_secs() -> i64 { now_ms() / 1000 }
 
-/// "Thu, Jan 1".
-pub fn format_date(year: i32, month: u32, day: u32) -> String {
-    const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-    const DAYS: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-    format!("{}, {} {}", DAYS[weekday(year, month, day) as usize], MONTHS[(month as usize - 1) % 12], day)
+/// "9:41", or on a 12-hour clock "9:41" for 21:41 too.
+pub fn clock(hour: u32, minute: u32, hour12: bool) -> String {
+    format!("{}:{minute:02}", if hour12 { (hour + 11) % 12 + 1 } else { hour })
 }
+
+/// "2026-11-20" as (year, month, day); None for anything else or a day the month lacks.
+pub fn parse_ymd(s: &str) -> Option<(i32, u32, u32)> {
+    let mut p = s.splitn(3, '-').map(str::parse::<u32>);
+    let (y, m, d) = (p.next()?.ok()? as i32, p.next()?.ok()?, p.next()?.ok()?);
+    ((1..=12).contains(&m) && (1..=days_in(y, m)).contains(&d)).then_some((y, m, d))
+}
+
+/// `2026-11-20T07:12` as seconds since 1970 on that clock.
+pub fn local_secs(t: &str) -> Option<i64> {
+    let (date, time) = t.split_once('T')?;
+    let (y, m, d) = parse_ymd(date)?;
+    let (h, min) = time.split_once(':')?;
+    Some(days_from_civil(y, m, d) * 86_400 + i64::from(h.parse::<u32>().ok()? * 3600 + min.get(..2)?.parse::<u32>().ok()? * 60))
+}
+
+/// Each weekday's initial, from Sunday.
+pub const WEEKDAY_LETTERS: [&str; 7] = ["S", "M", "T", "W", "T", "F", "S"];
+
+/// "Thu".
+pub fn weekday_name(year: i32, month: u32, day: u32) -> &'static str {
+    ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][weekday(year, month, day) as usize]
+}
+
+/// "Jan 1".
+pub fn month_day(month: u32, day: u32) -> String {
+    const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    format!("{} {day}", MONTHS[(month as usize - 1) % 12])
+}
+
+/// "Thu, Jan 1".
+pub fn format_date(year: i32, month: u32, day: u32) -> String { format!("{}, {}", weekday_name(year, month, day), month_day(month, day)) }
 
 /// 0 for Sunday, by Sakamoto's method.
 pub fn weekday(year: i32, month: u32, day: u32) -> u32 {
@@ -31,10 +59,16 @@ pub fn days_in(year: i32, month: u32) -> u32 {
     }
 }
 
-/// The month `offset` months from (year, month).
 pub fn shift_month(year: i32, month: u32, offset: i32) -> (i32, u32) {
     let i = year * 12 + month as i32 - 1 + offset;
     (i.div_euclid(12), i.rem_euclid(12) as u32 + 1)
+}
+
+pub fn utc_days_ago(days: i64) -> rune::time::LocalTime { rune::time::LocalTime::at_offset(now_ms() - days * 86_400_000, 0) }
+
+pub fn add_days((y, m, d): (i32, u32, u32), days: i64) -> (i32, u32, u32) {
+    let t = rune::time::LocalTime::at_offset((days_from_civil(y, m, d) + days) * 86_400_000, 0);
+    (t.year, t.month, t.day)
 }
 
 /// Days since 1970-01-01, from Howard Hinnant's `days_from_civil`.
@@ -56,6 +90,14 @@ mod tests {
         assert_eq!(format_date(2024, 2, 29), "Thu, Feb 29");
         assert_eq!(format_date(2026, 11, 17), "Tue, Nov 17");
         assert_eq!(weekday(2026, 11, 18), 3);
+    }
+
+    #[test]
+    fn dates_and_times_parse_only_when_real() {
+        assert_eq!(parse_ymd("2024-02-29"), Some((2024, 2, 29)));
+        assert_eq!((parse_ymd("2026-02-29"), parse_ymd("2026-13-01"), parse_ymd("today")), (None, None, None));
+        assert_eq!(local_secs("1970-01-02T01:30"), Some(86_400 + 5400));
+        assert_eq!((clock(21, 5, true), clock(0, 5, true), clock(21, 5, false)), ("9:05".into(), "12:05".into(), "21:05".into()));
     }
 
     #[test]

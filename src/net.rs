@@ -6,14 +6,18 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 
-/// A client for short requests: 15 s for the whole call, and error statuses come back as
-/// responses so their bodies can be read.
-pub fn agent() -> ureq::Agent {
-    ureq::Agent::config_builder()
-        .timeout_global(Some(Duration::from_secs(15)))
-        .http_status_as_error(false)
-        .build()
-        .into()
+/// Every Ripple client's settings: its User-Agent (GitHub refuses requests without one), and
+/// error statuses come back as responses so their bodies can be read.
+pub fn config() -> ureq::config::ConfigBuilder<ureq::typestate::AgentScope> {
+    ureq::Agent::config_builder().user_agent("Ripple").http_status_as_error(false)
+}
+
+/// A client for short requests: 15 s for the whole call.
+pub fn agent() -> ureq::Agent { config().timeout_global(Some(Duration::from_secs(15))).build().into() }
+
+/// A response's body as JSON; `Null` when it is unreadable or not JSON.
+pub fn read_json(res: &mut ureq::http::Response<ureq::Body>) -> Value {
+    res.body_mut().read_to_string().ok().and_then(|b| serde_json::from_str(&b).ok()).unwrap_or_default()
 }
 
 #[derive(Clone, Debug, PartialEq, Default)]
@@ -32,7 +36,7 @@ pub struct Weather {
 }
 
 /// Whether a WMO code is rain (false) or snow (true); None for neither.
-pub fn precip_kind(code: u64) -> Option<bool> {
+fn precip_kind(code: u64) -> Option<bool> {
     match code { 51..=67 | 80..=82 | 95..=99 => Some(false), 71..=77 | 85 | 86 => Some(true), _ => None }
 }
 
@@ -53,7 +57,7 @@ pub fn weather(location: &str, unit: &str) -> Option<Weather> {
 fn get_json(req: ureq::RequestBuilder<ureq::typestate::WithoutBody>) -> Option<Value> {
     let mut res = req.call().ok()?;
     if !res.status().is_success() { return None }
-    serde_json::from_str(&res.body_mut().read_to_string().ok()?).ok()
+    Some(read_json(&mut res)).filter(|v| !v.is_null())
 }
 
 /// `location` is `lat,lon` or a place name; only the part before a comma is looked up
@@ -83,18 +87,11 @@ fn weather_from(geocoding: &str, forecast: &str, location: &str, unit: &str, now
     let at = |field: &str, i: usize| daily[field][i].as_f64().map(|t| t.round() as i32);
     // Today is the first day; the forecast starts tomorrow.
     let days = daily["time"].as_array().into_iter().flatten().enumerate().skip(1).filter_map(|(i, date)| {
-        let mut ymd = date.as_str()?.splitn(3, '-').map(str::parse::<u32>);
-        let date = (ymd.next()?.ok()? as i32, ymd.next()?.ok()?, ymd.next()?.ok()?);
+        let date = crate::date::parse_ymd(date.as_str()?)?;
         Some(Day { date, code: daily["weather_code"][i].as_u64(), high: at("temperature_2m_max", i)?, low: at("temperature_2m_min", i)? })
     }).take(5).collect();
     // `2026-11-20T07:12` on the location's clock, as Unix seconds.
-    let unix = |t: &str| -> Option<i64> {
-        let (date, time) = t.split_once('T')?;
-        let mut d = date.splitn(3, '-').map(str::parse::<u32>);
-        let day = crate::date::days_from_civil(d.next()?.ok()? as i32, d.next()?.ok()?, d.next()?.ok()?);
-        let (h, m) = time.split_once(':')?;
-        Some(day * 86_400 + i64::from(h.parse::<u32>().ok()? * 3600 + m.get(..2)?.parse::<u32>().ok()? * 60) - data["utc_offset_seconds"].as_i64()?)
-    };
+    let unix = |t: &str| Some(crate::date::local_secs(t)? - data["utc_offset_seconds"].as_i64()?);
     let sun = |field: &str| daily[field][0].as_str().and_then(unix);
     let hourly = &data["hourly"];
     let falling = current["weather_code"].as_u64().and_then(precip_kind).is_some();
@@ -133,8 +130,8 @@ fn github_cells(html: &str) -> Graph {
         let tag = cell.split_once('>')?.0;
         let date = attr(tag, "data-date")?;
         let level: u8 = attr(tag, "data-level")?.parse().ok().filter(|l| *l > 0)?;
-        let mut d = date.splitn(3, '-').map(str::parse::<u32>);
-        Some((crate::date::days_from_civil(d.next()?.ok()? as i32, d.next()?.ok()?, d.next()?.ok()?), level.min(4)))
+        let (y, m, d) = crate::date::parse_ymd(&date)?;
+        Some((crate::date::days_from_civil(y, m, d), level.min(4)))
     }).collect();
     days.sort_unstable();
     days
@@ -188,17 +185,8 @@ fn city_from(geocoding: &str, forecast: &str, name: &str) -> Option<City> {
         .query("latitude", lat.to_string()).query("longitude", lon.to_string())
         .query("daily", "sunrise,sunset").query("forecast_days", "1").query("timezone", "auto"))?;
     let offset = data["utc_offset_seconds"].as_i64()?;
-    let at = |field: &str| data["daily"][field][0].as_str().and_then(|t| local_secs(t)).map(|t| t - offset);
+    let at = |field: &str| data["daily"][field][0].as_str().and_then(crate::date::local_secs).map(|t| t - offset);
     Some(City { name: place["name"].as_str().unwrap_or(name).to_string(), offset, sun: at("sunrise").zip(at("sunset")) })
-}
-
-/// `2026-11-20T07:12` as seconds since 1970 on that clock.
-pub fn local_secs(t: &str) -> Option<i64> {
-    let (date, time) = t.split_once('T')?;
-    let mut d = date.splitn(3, '-').map(str::parse::<u32>);
-    let (y, m, day) = (d.next()?.ok()?, d.next()?.ok()?, d.next()?.ok()?);
-    let (h, min) = time.split_once(':')?;
-    Some(crate::date::days_from_civil(y as i32, m, day) * 86_400 + i64::from(h.parse::<u32>().ok()? * 3600 + min.get(..2)?.parse::<u32>().ok()? * 60))
 }
 
 /// Units of each currency per US dollar, by upper-case code, from Frankfurter (ECB reference
@@ -217,8 +205,7 @@ fn rates_from(base: &str) -> Option<std::collections::HashMap<String, f64>> {
 pub fn latest_release() -> Option<String> { latest_release_from("https://api.github.com/repos/theoneand33/Ripple") }
 
 fn latest_release_from(repo: &str) -> Option<String> {
-    // GitHub refuses requests without a User-Agent.
-    let data = get_json(agent().get(format!("{repo}/releases/latest")).header("User-Agent", "Ripple").header("Accept", "application/vnd.github+json"))?;
+    let data = get_json(agent().get(format!("{repo}/releases/latest")).header("Accept", "application/vnd.github+json"))?;
     data["tag_name"].as_str().map(str::to_string)
 }
 
@@ -234,10 +221,9 @@ const SYSTEM_PROMPT: &str = "You are Ripple, a sleek and helpful desktop AI assi
 /// each piece of the answer. Returns whether anything was received.
 pub fn ask_ai(base: &str, model: &str, api_key: &str, question: &str, mut on_delta: impl FnMut(&str)) -> Result<bool, String> {
     // A stream runs as long as the answer takes; only connecting and the first byte are timed.
-    let agent: ureq::Agent = ureq::Agent::config_builder()
+    let agent: ureq::Agent = config()
         .timeout_connect(Some(Duration::from_secs(15)))
         .timeout_recv_response(Some(Duration::from_secs(60)))
-        .http_status_as_error(false)
         .build()
         .into();
     // OpenRouter credits the app by these; other services ignore them.
@@ -343,7 +329,7 @@ pub fn lyrics(artist: &str, title: &str, length: u32) -> Option<Vec<Lyric>> {
 }
 
 fn lyrics_from(base: &str, artist: &str, title: &str, length: u32) -> Option<Vec<Lyric>> {
-    let found = get_json(agent().get(format!("{base}/api/search")).header("User-Agent", "Ripple").query("artist_name", artist).query("track_name", title))?;
+    let found = get_json(agent().get(format!("{base}/api/search")).query("artist_name", artist).query("track_name", title))?;
     let synced: Vec<&Value> = found.as_array()?.iter().filter(|r| r["syncedLyrics"].as_str().is_some_and(|l| !l.trim().is_empty())).collect();
     let off = |r: &&Value| (r["duration"].as_f64().unwrap_or(f64::MAX) - length as f64).abs();
     // Search is fuzzy: a result more than 5 s off in length is another song or recording.

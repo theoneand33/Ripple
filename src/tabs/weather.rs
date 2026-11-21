@@ -22,7 +22,7 @@ pub fn view(s: &Island) -> El {
     for d in &w.days {
         let (y, m, day) = d.date;
         let date = format_date(y, m, day);
-        let weekday = date.split(',').next().unwrap_or_default().to_string();
+        let weekday = crate::date::weekday_name(y, m, day);
         days = days.child(
             col().key(format!("day-{y}-{m}-{day}")).role("listitem").label(format!("{date}: high {}º, low {}º", d.high, d.low))
                 .w(0.0).grow(1.0).py(10.0).gap(6.0).items_center().radius(s.cfg.radius(16.0)).fill(card(fg))

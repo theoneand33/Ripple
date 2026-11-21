@@ -11,7 +11,8 @@ use crate::config::Item;
 use crate::icons;
 use crate::date::{days_in, format_date, shift_month, weekday};
 use crate::island::Island;
-use crate::nextcloud::{self, Kind, event_day};
+use crate::ics::{event_day, feed_events, leading_time};
+use crate::nextcloud::{self, Kind};
 
 #[derive(Default)]
 pub struct Calendar {
@@ -27,13 +28,13 @@ pub struct Calendar {
     pub feed_error: Option<String>,
     /// The links last fetched, and when (Unix seconds).
     feeds_loaded: (Vec<String>, i64),
-    /// An event alert due in quiet hours, (title, meeting link): it shows once they end.
+    /// An event alert due in quiet hours, (title, meeting link, how many it stands for): it shows once they end.
     held: Option<(String, Option<String>, usize)>,
 }
 
 impl Island {
     /// Fetches the ICS links once every 30 minutes, or at once when they changed.
-    pub fn calendar_feeds_load(&mut self) {
+    fn calendar_feeds_load(&mut self) {
         let now = crate::date::now_secs();
         let feeds = self.cfg.calendar_feeds.clone();
         if feeds == self.calendar.feeds_loaded.0 && now - self.calendar.feeds_loaded.1 < 1800 { return }
@@ -47,7 +48,7 @@ impl Island {
         me.spawn(move || {
             let (mut events, mut errors) = (Vec::new(), Vec::new());
             for url in &feeds {
-                match crate::net::calendar_feed(url) { Ok(ics) => events.extend(nextcloud::feed_events(&ics, &since)), Err(e) => errors.push(e) }
+                match crate::net::calendar_feed(url) { Ok(ics) => events.extend(feed_events(&ics, &since)), Err(e) => errors.push(e) }
             }
             (feeds, events, errors.into_iter().next())
         }, move |s, (feeds, events, error)| if s.cfg.calendar_feeds == feeds { (s.calendar.feed_events, s.calendar.feed_error) = (events, error) });
@@ -58,7 +59,7 @@ const MONTHS: [&str; 12] = ["January", "February", "March", "April", "May", "Jun
 
 /// The first `https://` link in an event's title, and the title without it. An `http://` link
 /// stays in the title and gets no Join button.
-pub fn meeting_link(title: &str) -> (Option<String>, String) {
+fn meeting_link(title: &str) -> (Option<String>, String) {
     let link = title.split_whitespace().find(|w| w.starts_with("https://"));
     let rest = title.split_whitespace().filter(|w| Some(*w) != link).collect::<Vec<_>>().join(" ");
     (link.map(str::to_string), rest)
@@ -80,7 +81,7 @@ const EVENT_GRACE: i64 = 15;
 pub fn due_events(events: &[Item], now: i64, lead: i64, alerted: &[String]) -> Vec<(String, String, Option<String>)> {
     events.iter().filter_map(|e| {
         let ((y, m, d), title) = event_day(&e.text)?;
-        let (Some((h, min)), rest) = nextcloud::leading_time(title) else { return None };
+        let (Some((h, min)), rest) = leading_time(title) else { return None };
         let start = crate::date::days_from_civil(y, m, d) * 1440 + i64::from(h * 60 + min);
         let id = format!("{start} {rest}");
         if !(start - lead..=start + EVENT_GRACE).contains(&now) || alerted.contains(&id) { return None }
@@ -94,7 +95,7 @@ impl Island {
     /// Large draws no alerts, and a showing reminder isn't replaced, so one waits for both.
     pub fn event_alerts(&mut self, now: f64) {
         let lead = i64::from(self.cfg.event_alert_minutes);
-        if rune::is_headless() || lead == 0 || self.large_open() || self.reminder.is_some() { return }
+        if lead == 0 || !self.can_remind() { return }
         let quiet = self.quiet();
         if !quiet && let Some((title, link, _)) = self.calendar.held.take() { return self.remind_event(title, link, now) }
         let t = rune::time::LocalTime::at(crate::date::now_ms());
@@ -147,6 +148,14 @@ fn start_edit(s: &mut Island, key: u64) {
     (s.calendar.editing, s.calendar.day) = (Some(key), Some(day));
 }
 
+/// As the tab opens: back to this month, an edit left open dropped, and events and feeds load.
+pub(super) fn entered(s: &mut Island) {
+    (s.calendar.offset, s.calendar.day) = (0, None);
+    if s.calendar.editing.is_some() { cancel_edit(s) }
+    s.nextcloud_sync(Kind::Events);
+    s.calendar_feeds_load();
+}
+
 fn cancel_edit(s: &mut Island) {
     s.calendar.editing = None;
     s.calendar.event.clear();
@@ -183,7 +192,6 @@ pub fn view(s: &Island) -> El {
                 .child(text(year.to_string()).font(s.cfg.font(17.0, 400.0).features("'tnum' 1")).color(fg.alpha(0.5 * fg.a))),
         );
     if s.calendar.offset != 0 || s.calendar.day.is_some_and(|d| d != s.today) {
-        // Shaped like `tool`, so it sits quietly beside the arrows.
         header = header.child(pill(s, "calendar-today", "Today").on_press(|s: &mut Island| (s.calendar.offset, s.calendar.day) = (0, None)));
     }
     header = header
@@ -191,7 +199,7 @@ pub fn view(s: &Island) -> El {
         .child(tool(s, "calendar-next", &icons::CHEVRON_RIGHT, "Next month").on_press(|s: &mut Island| s.calendar.offset += 1));
 
     let mut names = row().key("calendar-weekdays").w_full();
-    for (i, d) in ["S", "M", "T", "W", "T", "F", "S"].into_iter().enumerate() {
+    for (i, d) in crate::date::WEEKDAY_LETTERS.into_iter().enumerate() {
         names = names.child(el().key(format!("weekday-{i}")).w(0.0).grow(1.0).h(16.0).center().a11y_hidden()
             .child(text(d).font(s.cfg.font(11.0, 600.0)).color(fg.alpha(0.45 * fg.a))));
     }
@@ -229,7 +237,7 @@ pub fn view(s: &Island) -> El {
     }
 
     let mut list = col().key("event-list").w_full().gap(6.0);
-    for e in [&s.nextcloud[Kind::Events as usize].error, &s.calendar.feed_error].into_iter().flatten() {
+    for e in [&s.nextcloud[Kind::Events].error, &s.calendar.feed_error].into_iter().flatten() {
         list = list.child(text(e).font(s.cfg.font(12.0, 400.0)).color(fg.alpha(0.55 * fg.a)).wrap_anywhere());
     }
     let events = day_events(s, picked);
@@ -263,11 +271,9 @@ pub fn view(s: &Island) -> El {
         .child(row().key("calendar-day-title").w_full().h(28.0).center_y().justify_between()
             .child({
                 // "THU Jan 1": the weekday in dimmed capitals, as Droppy heads its day.
-                let date = format_date(py_, pm_, pd_);
-                let (wd, rest) = date.split_once(", ").unwrap_or(("", &date));
                 row().gap(6.0).center_y()
-                    .child(text(wd.to_uppercase()).font(s.cfg.font(15.0, 700.0)).color(fg.alpha(0.5 * fg.a)))
-                    .child(text(rest.to_string()).font(s.cfg.font(15.0, 700.0)).color(fg))
+                    .child(text(crate::date::weekday_name(py_, pm_, pd_).to_uppercase()).font(s.cfg.font(15.0, 700.0)).color(fg.alpha(0.5 * fg.a)))
+                    .child(text(crate::date::month_day(pm_, pd_)).font(s.cfg.font(15.0, 700.0)).color(fg))
             })
             .children(undo_button(s))
             .children(editing.then(|| pill(s, "cancel-edit", "Cancel edit").on_press(cancel_edit))))
