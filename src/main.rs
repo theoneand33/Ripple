@@ -413,6 +413,11 @@ fn island_spec() -> AppSpec<Island> {
                 // Too tall for four columns: side by side in five.
                 s.cfg.dashboard = [(config::Widget::Media, 3), (config::Widget::Clock, 2), (config::Widget::Quote, 3), (config::Widget::Battery, 2)].map(|(w, n)| config::Tile::new(w).sized(n, 3)).into();
             }),
+            ("overview-full", |s| {
+                s.cfg.notch_mode = true; s.placement = island::Placement::of(&s.cfg, (1920.0, 1080.0)); s.mode = Mode::Large; s.tab = Tab::Overview;
+                // Too tall at any width: every tile shrinks to show at a glance.
+                s.cfg.dashboard = config::Widget::OWN.into_iter().map(|w| config::Tile::new(w).sized(4, 3)).collect();
+            }),
             ("overview-edit", |s| { s.mode = Mode::Large; s.tab = Tab::Overview; s.dashboard.edit = true }),
             ("overview-drag-in", |s| { s.mode = Mode::Large; s.tab = Tab::Overview; s.dashboard.edit = true; s.dashboard.add = Some((config::Widget::Quote, Some(2))) }),
             ("overview-resize", |s| { s.mode = Mode::Large; s.tab = Tab::Overview; s.dashboard.edit = true; s.dashboard.drag = Some((0, -130.0, -60.0, true)) }),
