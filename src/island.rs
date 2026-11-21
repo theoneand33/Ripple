@@ -559,12 +559,19 @@ impl Island {
     /// The full screen rule in force now; "none" while no app is full screen.
     fn fullscreen_rule(&self) -> &str { if self.fullscreen { &self.cfg.fullscreen } else { "none" } }
 
-    /// Hide when inactive: resting with no track to show.
-    pub fn hidden(&self) -> bool { self.hiding() && self.mode == Mode::Still && !self.shows_track() && !self.caps_lock && !self.pomodoro.active() && self.download.is_none() }
+    /// Hide when inactive: resting with no track or live activity to show.
+    pub fn hidden(&self) -> bool { self.hiding() && self.mode == Mode::Still && !self.shows_track() && self.activities().is_empty() }
+
+    /// The live activities besides a track, first first: the glance shows the first of the
+    /// track and these, and bubbles beside it the rest.
+    fn activities(&self) -> Vec<Bubble> {
+        [(self.pomodoro.active(), Bubble::Pomodoro), (self.download.is_some(), Bubble::Download), (self.caps_lock, Bubble::CapsLock)]
+            .into_iter().filter_map(|(on, kind)| on.then_some(kind)).collect()
+    }
 
     pub fn alert(&self) -> Option<Alert> {
-        // A playing track goes over Caps Lock; beside another live activity, Caps Lock moves to a bubble.
-        let caps = self.caps_lock && !self.shows_track() && !self.pomodoro.active() && self.download.is_none();
+        // Caps Lock is an alert when it is the only live activity; otherwise it takes a bubble.
+        let caps = !self.shows_track() && self.activities() == [Bubble::CapsLock];
         self.timed.iter().map(|t| t.0).min().or(caps.then_some(Alert::CapsLock))
     }
 
@@ -584,15 +591,10 @@ impl Island {
     /// away from the display edge the Island hugs, or taking turns right then left when centred.
     pub fn bubbles(&self) -> Vec<(Bubble, [f32; 4])> {
         if self.mode == Mode::Large { return Vec::new() }
-        let track = self.shows_track();
-        let mut kinds = Vec::new();
-        if track && self.pomodoro.active() { kinds.push(Bubble::Pomodoro) }
-        // The glance shows one live activity; a download beside a track or a clock takes a bubble.
-        if self.download.is_some() && (track || self.pomodoro.active()) { kinds.push(Bubble::Download) }
-        if self.caps_lock && (track || self.pomodoro.active() || self.download.is_some()) { kinds.push(Bubble::CapsLock) }
+        let kinds = self.activities().into_iter().skip(usize::from(!self.shows_track()));
         let [x, y, w, h] = self.rect();
         let (mut right, mut left) = (x + w, x);
-        kinds.into_iter().enumerate().map(|(i, kind)| {
+        kinds.enumerate().map(|(i, kind)| {
             let want_right = match self.placement.align { -1 => true, 1 => false, _ => i % 2 == 0 };
             // A side with no room left in the window gives way to the other.
             let (fits_right, fits_left) = (right + BUBBLE_GAP + h <= CANVAS.0, left - BUBBLE_GAP - h >= 0.0);
