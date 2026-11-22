@@ -18,8 +18,9 @@ use crate::system::{self, MediaCommand, Track};
 use crate::tabs::{self, accent};
 use crate::icons;
 
-/// The Island's window, in points: the largest Island at its hover scale, its tab dock, plus their shadows.
-/// Wide enough for a widened Overview; no wider than 180% zoom fits on a 1920 display.
+/// The Island's smallest window, in points: the largest Island at its hover scale, its tab dock, plus their shadows.
+/// The window spans the display's width when that's wider, so a widened Overview grows to it.
+/// No larger than 180% zoom fits on a 1920 display.
 pub const CANVAS: (f32, f32) = (1060.0, 600.0);
 /// Room kept around the Island inside the window for its shadow and hover scale.
 const PAD: f32 = 30.0;
@@ -209,6 +210,8 @@ pub struct Placement {
     pub visible_h: f32,
     /// How far right the window stays on the display: less than `CANVAS.0` on a narrow display.
     pub visible_w: f32,
+    /// The window's width: the display's, though never below `CANVAS.0`.
+    pub canvas_w: f32,
 }
 
 impl Placement {
@@ -216,6 +219,8 @@ impl Placement {
         // Only as large as fits the display, though never below 100%.
         let zoom = cfg.zoom().min((display.0 / CANVAS.0).min(display.1 / CANVAS.1).max(1.0));
         let (dw, dh) = (display.0 / zoom, display.1 / zoom);
+        // A headless capture draws at `CANVAS`: no window to resize.
+        let canvas_w = if rune::is_headless() { CANVAS.0 } else { dw.floor().max(CANVAS.0) };
         // (align, x on the display, top?, y on the display)
         let (align, x, top, y) = if cfg.notch_mode {
             (0, dw * 0.5, true, 0.0)
@@ -232,9 +237,9 @@ impl Placement {
         };
         // The window stays on the display; the Island moves inside it instead.
         // Round before the clamp, and floor the limit, so a fractional zoom never pushes the window past the edge.
-        let wx = match align { -1 => x - PAD, 0 => x - CANVAS.0 / 2.0, _ => x + PAD - CANVAS.0 }.round().min((dw - CANVAS.0).floor()).max(0.0);
+        let wx = match align { -1 => x - PAD, 0 => x - canvas_w / 2.0, _ => x + PAD - canvas_w }.round().min((dw - canvas_w).floor()).max(0.0);
         let wy = if top { y - PAD } else { y + PAD - CANVAS.1 }.round().min((dh - CANVAS.1).floor()).max(0.0);
-        Placement { window: (wx, wy), align, x: x - wx, top, y: y - wy, zoom, visible_h: (dh - wy).min(CANVAS.1), visible_w: (dw - wx).min(CANVAS.0) }
+        Placement { window: (wx, wy), align, x: x - wx, top, y: y - wy, zoom, visible_h: (dh - wy).min(CANVAS.1), visible_w: (dw - wx).min(canvas_w), canvas_w }
     }
 
     /// The tallest the Island gets with its dock and shadow still on the display.
@@ -250,7 +255,7 @@ impl Placement {
     /// The window's rect on the display, in the display's points.
     pub fn frame(&self) -> [f32; 4] {
         let k = self.zoom;
-        [self.window.0 * k, self.window.1 * k, CANVAS.0 * k, CANVAS.1 * k]
+        [self.window.0 * k, self.window.1 * k, self.canvas_w * k, CANVAS.1 * k]
     }
 
     pub fn rect(&self, (w, h): (f32, f32)) -> [f32; 4] {
@@ -599,7 +604,7 @@ impl Island {
         kinds.enumerate().map(|(i, kind)| {
             let want_right = match self.placement.align { -1 => true, 1 => false, _ => i % 2 == 0 };
             // A side with no room left in the window gives way to the other.
-            let (fits_right, fits_left) = (right + BUBBLE_GAP + h <= CANVAS.0, left - BUBBLE_GAP - h >= 0.0);
+            let (fits_right, fits_left) = (right + BUBBLE_GAP + h <= self.placement.canvas_w, left - BUBBLE_GAP - h >= 0.0);
             let x = if if want_right { fits_right || !fits_left } else { fits_right && !fits_left } {
                 right += BUBBLE_GAP + h;
                 right - h
@@ -713,7 +718,7 @@ impl Island {
         let w = n * button + (n - 1.0) * space + 2.0 * space;
         let [x, y, iw, ih] = self.rect();
         // Not clamp: a dock wider than the canvas would panic it.
-        let left = (x + iw / 2.0 - w / 2.0).min(CANVAS.0 - w - 4.0).max(4.0);
+        let left = (x + iw / 2.0 - w / 2.0).min(self.placement.canvas_w - w - 4.0).max(4.0);
         Some([left, if self.placement.top { y + ih } else { y - gap - h }, w, gap + h])
     }
 
@@ -1414,7 +1419,7 @@ impl Island {
         }
 
         // A select's menu opens outside the Island: the whole window takes clicks while one is open.
-        let region = if self.open_select.is_some() { [0.0, 0.0, CANVAS.0, CANVAS.1] } else {
+        let region = if self.open_select.is_some() { [0.0, 0.0, self.placement.canvas_w, CANVAS.1] } else {
             let [x, y, w, h] = self.rect();
             let grow = (HOVER_SCALE - 1.0) / 2.0;
             let (mx, my) = (w * grow + 2.0, h * grow + 2.0);
@@ -2060,7 +2065,7 @@ mod tests {
                 let p = Placement::of(&Config { island_scale: scale, position_mode: mode.into(), ..Config::default() }, (1920.0, 1080.0));
                 let [x, y, w, h] = p.frame();
                 assert!(x >= 0.0 && y >= 0.0 && x + w <= 1920.01 && y + h <= 1080.01, "{scale}% {mode}: {:?}", p.frame());
-                assert!((w - CANVAS.0 * scale / 100.0).abs() < 0.01, "{scale}%: {w}");
+                assert!(w > 1918.0, "{scale}%: spans the display, {w}");
             }
         }
         let small = Placement::of(&Config { island_scale: 200.0, ..Config::default() }, (1366.0, 768.0));
@@ -2174,7 +2179,7 @@ mod tests {
         };
         assert_eq!(at("top-left"), (15.0, 15.0, 140.0, 40.0, (0.0, 0.0)));
         let (x, y, w, _, window) = at("top-right");
-        assert_eq!((x + w, y, window.0), (1905.0, 15.0, 1920.0 - CANVAS.0));
+        assert_eq!((x + w, y, window.0), (1905.0, 15.0, 0.0));
         let (x, y, _, h, window) = at("bottom-left");
         assert_eq!((x, y + h, window.1), (15.0, 1035.0, 1035.0 + 30.0 - CANVAS.1));
         // An Island `max_w` wide stays in its window and on the display, whatever its anchor.
@@ -2333,7 +2338,7 @@ mod tests {
         s.set_caps_lock(true);
         s.set_track(Some(Track { name: "Song".into(), playing: true, ..Default::default() }), &mut tx);
         s.pomodoro.ends = Some(60.0);
-        assert!(s.bubbles().iter().all(|b| b.1[0] >= 0.0 && b.1[0] + b.1[2] <= CANVAS.0));
+        assert!(s.bubbles().iter().all(|b| b.1[0] >= 0.0 && b.1[0] + b.1[2] <= s.placement.canvas_w));
 
         // A bubble that goes away under the pointer lets go of the hover.
         s.bubble_hovered = Some(Bubble::CapsLock);
@@ -2415,7 +2420,7 @@ mod tests {
         s.mode = Mode::Large;
         assert_eq!(s.visible_tabs().len(), Tab::ALL.len());
         let [x, _, w, _] = s.dock_rect().unwrap();
-        assert!(x >= 4.0 && x + w <= CANVAS.0 - 4.0, "dock spans {x}..{}", x + w);
+        assert!(x >= 4.0 && x + w <= s.placement.canvas_w - 4.0, "dock spans {x}..{}", x + w);
     }
 
     #[test]
