@@ -942,7 +942,7 @@ impl Island {
     }
 
     /// Dropped files go on top of the Shelf; one already there moves up.
-    fn drop_files(&mut self, files: &[std::path::PathBuf], _: &mut Tx) {
+    pub fn drop_files(&mut self, files: &[std::path::PathBuf], _: &mut Tx) {
         self.save(|c| {
             c.shelf.retain(|f| !files.contains(f));
             c.shelf.splice(0..0, files.iter().cloned());
