@@ -268,8 +268,8 @@ pub struct Island {
     pub hovered: bool,
     /// Large was opened on purpose (a click, Cmd+number, the Shelf), not resting there.
     large_by_hand: bool,
-    /// Over the Island, over the dock, over a bubble.
-    over: [bool; 3],
+    /// Over the Island, over the dock, over a bubble, over the Island while a select's menu is open.
+    over: [bool; 4],
     /// The pointer left both; the next poll lets the Island rest.
     left: bool,
 
@@ -426,7 +426,7 @@ impl Island {
             tab: cfg.default_tab,
             hovered: false,
             large_by_hand: false,
-            over: [false; 3],
+            over: [false; 4],
             left: false,
             time: String::new(),
             today: (1970, 1, 1),
@@ -1678,6 +1678,8 @@ pub fn view(s: &Island, cx: &mut Cx<Island>) -> El {
         // The open select's menu is the layer's last element.
         if s.open_select.is_some() && let Some(menu) = layer.pop() {
             layer.push(menu.on_hover_change(|s: &mut Island, hovered, _| s.menu_hovered = hovered));
+            // The open menu makes the Island inert, so it hears no hover: this stands in for it. It has no press handler, so presses go through.
+            layer.push(el().key("island-hover").hit().absolute(left, top).size(w, h).on_hover_change(|s: &mut Island, inside, tx| s.set_over(3, inside, tx)));
         }
     } else if s.mode == Mode::Quick || s.alert().is_some() || s.shows_track() || cfg.show_info_idle || s.live().is_some() {
         island = island.child(if s.shows_track() && s.alert().is_none() { now_playing(s, fg) } else { glance(s, fg) });
