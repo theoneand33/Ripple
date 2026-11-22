@@ -59,6 +59,29 @@ fn job(s: &mut Island, busy: &str, work: impl FnOnce() -> io::Result<PathBuf> + 
     });
 }
 
+/// Puts the clipboard on the Shelf: copied files as they are, an image or a text as a new file
+/// in a `Pasted` folder beside prefs.json.
+fn paste(_: &mut Island, tx: &mut Tx) {
+    tx.read_clipboard(|s: &mut Island, content, tx| {
+        if !content.files().is_empty() { return s.drop_files(content.files(), tx) }
+        let Some(dir) = s.store.dir().map(|d| d.join("Pasted")) else { s.shelf.status = "Nowhere to save the paste".into(); return };
+        let (stem, ext, bytes) = match content.image() {
+            Some(image) => ("Pasted image", ".png", image.png().to_vec()),
+            None if !content.text().is_empty() => ("Pasted text", ".txt", content.text().as_bytes().to_vec()),
+            None => { s.shelf.status = "The clipboard is empty".into(); return }
+        };
+        job(s, "Pasting…", move || save_new(&dir, stem, ext, &bytes));
+    });
+}
+
+/// Writes `bytes` to a new file named from `stem` in `dir`; never over an existing one.
+fn save_new(dir: &Path, stem: &str, ext: &str, bytes: &[u8]) -> io::Result<PathBuf> {
+    std::fs::create_dir_all(dir)?;
+    let out = free(dir, stem, ext);
+    io::Write::write_all(&mut std::fs::OpenOptions::new().write(true).create_new(true).open(&out)?, bytes)?;
+    Ok(out)
+}
+
 fn start_rename(s: &mut Island, path: PathBuf, tx: &mut Tx) {
     let name = file_name(&path);
     // Select the stem, as a file manager does, so typing keeps the extension.
@@ -181,6 +204,7 @@ pub fn view(s: &Island, layer: &mut Vec<El>) -> El {
     }
     header = header.child(el().grow(1.0));
     if let Some(undo) = undo_button(s) { header = header.child(undo) }
+    header = header.child(tool(s, "paste-shelf", &icons::CLIPBOARD_PASTE, "Add from clipboard").on_press_tx(paste));
     if !s.cfg.shelf.is_empty() {
         header = header.child(tool(s, "clear-shelf", &icons::TRASH, "Clear shelf").on_press(|s: &mut Island| {
             let mut gone = Vec::new();
@@ -250,13 +274,17 @@ mod tests {
 
     #[test]
     fn compress_extract_and_rename_round_trip() {
-        let dir = std::env::temp_dir().join(format!("ripple-shelf-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("ripple-shelf-files-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("docs/sub")).unwrap();
         #[cfg(unix)]
         std::os::unix::fs::symlink(&dir, dir.join("docs/loop")).unwrap();
         std::fs::write(dir.join("docs/a.txt"), "hello").unwrap();
         std::fs::write(dir.join("docs/sub/b.txt"), "world").unwrap();
+
+        let pasted = save_new(&dir.join("Pasted"), "Pasted text", ".txt", b"hi").unwrap();
+        assert_eq!(save_new(&dir.join("Pasted"), "Pasted text", ".txt", b"yo").unwrap(), dir.join("Pasted/Pasted text 2.txt"));
+        assert_eq!(std::fs::read_to_string(pasted).unwrap(), "hi");
 
         let zip = compress(&dir.join("docs")).unwrap();
         assert_eq!(zip, dir.join("docs.zip"));
