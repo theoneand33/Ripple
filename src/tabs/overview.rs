@@ -841,7 +841,7 @@ mod tests {
     fn a_dashboard_too_big_for_any_columns_shrinks_to_show_every_tile() {
         use crate::config::{Config, Store};
         let mut shrank = 0;
-        for notch in [false, true] { for count in 6..=12 {
+        for notch in [false, true] { for count in 8..=16 {
             let mut s = Island::new(Store::memory(Config { notch_mode: notch, ..Config::default() }), Vec::new());
             s.cfg.dashboard = vec![tile(4, 3); count];
             let (n, k) = fit(&s);
