@@ -198,7 +198,8 @@ fn submit(s: &mut Island, _: &mut Tx) {
 pub fn view(s: &Island) -> El {
     let fg = s.cfg.text();
     let sum = s.calc.input.text.trim();
-    let preview = if sum.is_empty() { String::new() } else { answer(sum, s.calc.rates.as_ref()).map_or("…".into(), |a| format!("= {a}")) };
+    let live = if sum.is_empty() { None } else { answer(sum, s.calc.rates.as_ref()) };
+    let preview = if sum.is_empty() { String::new() } else { live.as_ref().map_or("…".into(), |a| format!("= {a}")) };
     let tape_items = &s.cfg.calc_tape;
     let mut tape = col().key("calc-tape").w_full().gap(4.0);
     if tape_items.is_empty() { tape = tape.child(empty(s, "Type a sum and press Enter")) }
@@ -212,6 +213,7 @@ pub fn view(s: &Island) -> El {
     }
     let mut header = row().key("calc-result").w_full().h(40.0).gap(8.0).center_y()
         .child(text(preview).key("calc-preview").font(s.cfg.font(28.0, 600.0).features("'tnum' 1")).color(fg).grow(1.0).min_w(0.0).max_lines(1));
+    if let Some(a) = live { header = header.child(pill(s, "calc-copy", "Copy").on_press_tx(move |_: &mut Island, tx| tx.copy(a.clone()))) }
     if !tape_items.is_empty() { header = header.child(pill(s, "calc-clear", "Clear").on_press(|s: &mut Island| s.save(|c| c.calc_tape.clear()))) }
     col().key("calculator").w_full().h_full().px(16.0).pt(14.0).pb(14.0).gap(10.0)
         .child(header)
