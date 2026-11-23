@@ -292,6 +292,10 @@ pub struct Island {
     pub art: Option<Image>,
     /// The track's synced lyrics, once LRCLIB has them.
     pub lyrics: Option<Vec<crate::net::Lyric>>,
+    /// The playback position in ms, run on from the last poll so lyrics keep time between polls.
+    pub lyric_ms: u32,
+    /// When the track's position was last polled.
+    track_at: f64,
     pub art_hovered: bool,
     /// The bubble under the pointer: a bubble that goes away takes no hover-leave with it.
     bubble_hovered: Option<Bubble>,
@@ -443,6 +447,8 @@ impl Island {
             weather: Weather::default(),
             track: None,
             lyrics: None,
+            lyric_ms: 0,
+            track_at: 0.0,
             art: None,
             art_hovered: false,
             bubble_hovered: None,
@@ -1334,6 +1340,8 @@ impl Island {
         let art_url = |t: &Option<Track>| t.as_ref().and_then(|t| t.artwork_url.clone());
         let (old_art, new_art) = (art_url(&self.track), art_url(&track));
         self.track = track;
+        self.track_at = tx.clock();
+        self.lyric_ms = self.track.as_ref().and_then(|t| t.progress).map_or(0, |(p, _)| p * 1000);
         if new_song { self.fetch_lyrics() }
         if old_art != new_art {
             self.art = None;
@@ -1348,6 +1356,19 @@ impl Island {
     }
 
     // --- Timers ---
+
+    /// Runs `lyric_ms` on at playback speed and wakes for the next line; true when the line changed.
+    fn run_lyrics(&mut self, now: f64, tx: &mut Tx) -> bool {
+        let Some(lines) = self.lyrics.as_deref().filter(|_| self.cfg.lyrics) else { return false };
+        let Some((position, length)) = self.track.as_ref().filter(|t| t.playing).and_then(|t| t.progress) else { return false };
+        // Up to 3 s past the poll: a late poll holds the line rather than running past the song.
+        let ahead = ((now - self.track_at).clamp(0.0, 3.0) * 1000.0) as u32;
+        let ms = (position * 1000 + ahead).min(length * 1000);
+        let changed = crate::net::lyric_at(lines, ms) != crate::net::lyric_at(lines, self.lyric_ms);
+        self.lyric_ms = ms;
+        if let Some(next) = lines.iter().map(|l| l.0).find(|t| *t > ms) { tx.wake_at(now + f64::from(next - ms) / 1000.0) }
+        changed
+    }
 
     /// Asks for a poll at the next deadline any timer holds.
     fn schedule(&self, tx: &mut Tx) {
@@ -1373,6 +1394,7 @@ impl Island {
             if let Some(theme) = theme { self.save(|c| c.set_theme(&theme)) }
         }
         changed |= tabs::poll(self, now, tx);
+        changed |= self.run_lyrics(now, tx);
 
         let due = |t: &mut Option<f64>| t.is_some_and(|d| now >= d) && { *t = None; true };
         let (ended, timed): (Vec<_>, Vec<_>) = std::mem::take(&mut self.timed).into_iter().partition(|t| now >= t.1);
@@ -2232,6 +2254,21 @@ mod tests {
         assert!(s.hidden());
         s.set_track(Some(Track { name: "Song".into(), playing: true, ..Default::default() }), &mut Tx::default());
         assert!(s.mode == Mode::Still && !s.hidden());
+    }
+
+    #[test]
+    fn lyrics_run_on_between_polls() {
+        let mut s = island(Config { lyrics: true, ..Config::default() });
+        let mut tx = Tx::default();
+        s.set_track(Some(Track { name: "Song".into(), playing: true, progress: Some((10, 200)), ..Default::default() }), &mut tx);
+        s.lyrics = Some(crate::net::parse_lrc("[00:10.00]First\n[00:11.50]Second"));
+        let at = tx.clock();
+        assert!(!s.run_lyrics(at + 1.0, &mut tx));
+        assert!(s.run_lyrics(at + 1.6, &mut tx));
+        assert_eq!(s.lyric_ms, 11_600);
+        // A late poll holds at 3 s past the last one.
+        s.run_lyrics(at + 60.0, &mut tx);
+        assert_eq!(s.lyric_ms, 13_000);
     }
 
     #[test]
