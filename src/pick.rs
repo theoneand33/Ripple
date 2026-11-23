@@ -18,6 +18,10 @@ pub fn pick() -> Option<[u8; 3]> {
     { windows() }
 }
 
+/// How long a pick waits for the user before it gives up, so a pick left alone never keeps the
+/// pointer grabbed or the Pick button disabled.
+const LIMIT: std::time::Duration = std::time::Duration::from_secs(60);
+
 /// 0..1 channels to bytes.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn bytes(rgb: [f64; 3]) -> [u8; 3] { rgb.map(|c| (c.clamp(0.0, 1.0) * 255.0).round() as u8) }
@@ -47,7 +51,10 @@ fn portal() -> zbus::Result<Option<[u8; 3]>> {
         .body().deserialize()?;
     // Portals older than handle_token answer on a path of their own.
     if handle.as_str() != expected { responses = request(handle.to_string())?.receive_signal("Response")? }
-    let Some(answer) = responses.next() else { return Ok(None) };
+    // The iterator has no timeout: wait on a thread, left blocked if the portal never answers.
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || { let _ = tx.send(responses.next()); });
+    let Ok(Some(answer)) = rx.recv_timeout(LIMIT) else { return Ok(None) };
     let (code, results): (u32, HashMap<String, OwnedValue>) = answer.body().deserialize()?;
     let Some(color) = results.get("color").filter(|_| code == 0) else { return Ok(None) };
     let (r, g, b): (f64, f64, f64) = color.try_clone()?.try_into()?;
@@ -78,11 +85,15 @@ fn x11() -> Result<Option<[u8; 3]>, Box<dyn std::error::Error>> {
     }
     // The keyboard too, so Escape cancels; without it only a click ends the grab.
     conn.grab_keyboard(false, root, x11rb::CURRENT_TIME, GrabMode::ASYNC, GrabMode::ASYNC)?.reply()?;
+    // Polled, as x11rb's wait has no deadline.
+    let start = std::time::Instant::now();
     let at = loop {
-        match conn.wait_for_event()? {
-            Event::ButtonPress(e) => break (e.detail == 1).then_some((e.root_x, e.root_y)),
-            Event::KeyPress(_) => break None,
-            _ => {}
+        match conn.poll_for_event()? {
+            Some(Event::ButtonPress(e)) => break (e.detail == 1).then_some((e.root_x, e.root_y)),
+            Some(Event::KeyPress(_)) => break None,
+            Some(_) => {}
+            None if start.elapsed() > LIMIT => break None,
+            None => std::thread::sleep(std::time::Duration::from_millis(10)),
         }
     };
     conn.ungrab_keyboard(x11rb::CURRENT_TIME)?;
@@ -132,7 +143,7 @@ fn mac() -> Option<[u8; 3]> {
     let (tx, rx) = channel();
     // SAFETY: the main queue is libdispatch's static; `show` takes the box back.
     unsafe { dispatch_async_f(&raw const _dispatch_main_q, Box::into_raw(Box::new(tx)).cast(), show) };
-    rx.recv().ok().flatten()
+    rx.recv_timeout(LIMIT).ok().flatten()
 }
 
 /// Windows has no system sampler and no notice of clicks outside Ripple's windows, so this
@@ -160,7 +171,7 @@ fn windows() -> Option<[u8; 3]> {
     // The press on Pick itself.
     while down(1) { tick() }
     loop {
-        if down(2) || down(0x1b) || start.elapsed() > Duration::from_secs(60) { return None }
+        if down(2) || down(0x1b) || start.elapsed() > LIMIT { return None }
         if down(1) { break }
         tick();
     }
