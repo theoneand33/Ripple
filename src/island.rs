@@ -1341,7 +1341,9 @@ impl Island {
         let (old_art, new_art) = (art_url(&self.track), art_url(&track));
         self.track = track;
         self.track_at = tx.clock();
-        self.lyric_ms = self.track.as_ref().and_then(|t| t.progress).map_or(0, |(p, _)| p * 1000);
+        // Polls round down, so one up to 1.5 s behind the run-on position is the same moment; further back is a seek.
+        let polled = self.track.as_ref().and_then(|t| t.progress).map_or(0, |(p, _)| p * 1000);
+        self.lyric_ms = if !new_song && polled + 1500 > self.lyric_ms { polled.max(self.lyric_ms) } else { polled };
         if new_song { self.fetch_lyrics() }
         if old_art != new_art {
             self.art = None;
@@ -1363,7 +1365,7 @@ impl Island {
         let Some((position, length)) = self.track.as_ref().filter(|t| t.playing).and_then(|t| t.progress) else { return false };
         // Up to 3 s past the poll: a late poll holds the line rather than running past the song.
         let ahead = ((now - self.track_at).clamp(0.0, 3.0) * 1000.0) as u32;
-        let ms = (position * 1000 + ahead).min(length * 1000);
+        let ms = (position * 1000 + ahead).min(length * 1000).max(self.lyric_ms);
         let changed = crate::net::lyric_at(lines, ms) != crate::net::lyric_at(lines, self.lyric_ms);
         self.lyric_ms = ms;
         if let Some(next) = lines.iter().map(|l| l.0).find(|t| *t > ms) { tx.wake_at(now + f64::from(next - ms) / 1000.0) }
@@ -2269,6 +2271,13 @@ mod tests {
         // A late poll holds at 3 s past the last one.
         s.run_lyrics(at + 60.0, &mut tx);
         assert_eq!(s.lyric_ms, 13_000);
+        // A poll that rounds down behind the run-on position keeps the line; a seek back moves it.
+        let at_pos = |p| Some(Track { name: "Song".into(), playing: true, progress: Some((p, 200)), ..Default::default() });
+        s.set_track(at_pos(12), &mut tx);
+        assert!(!s.run_lyrics(tx.clock(), &mut tx));
+        assert_eq!(s.lyric_ms, 13_000);
+        s.set_track(at_pos(5), &mut tx);
+        assert_eq!(s.lyric_ms, 5_000);
     }
 
     #[test]
