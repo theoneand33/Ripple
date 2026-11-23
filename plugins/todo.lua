@@ -14,7 +14,7 @@ return {
         ui.text(s.branch or "branch?", { size = 12, dim = true }),
         ui.spacer(),
         ui.button("Refresh", function()
-          ripple.run({ "git", "-C", REPO:gsub("^~", os.getenv("HOME") or ""), "branch", "--show-current" },
+          ripple.run({ "git", "-C", REPO:gsub("^~", os.getenv("HOME") or os.getenv("USERPROFILE") or ""), "branch", "--show-current" },
             function(s, out) s.branch = out end)
         end),
       },
