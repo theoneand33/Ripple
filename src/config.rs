@@ -45,6 +45,7 @@ tabs! {
     Calculator = 17,
     Habits = 18,
     Stocks = 20,
+    Discord = 23,
     Clocks = 21,
     Plugins = 15,
     Weather = 19,
@@ -74,6 +75,7 @@ impl Tab {
             Tab::Calculator => "Calculator",
             Tab::Habits => "Habits",
             Tab::Stocks => "Stocks",
+            Tab::Discord => "Discord",
             Tab::Clocks => "World Clocks",
         }
     }
@@ -117,11 +119,13 @@ pub enum Widget {
     Quote,
     /// Today as one timeline: the share gone, and its timed events and due tasks.
     Day,
+    /// The Discord voice channel the user is in: who is there and who is speaking.
+    Voice,
     Panel(Tab),
 }
 
 impl Widget {
-    pub const OWN: [Widget; 9] = [Widget::Clock, Widget::Media, Widget::Weather, Widget::Battery, Widget::Today, Widget::Day, Widget::Quote, Widget::Water, Widget::Contributions];
+    pub const OWN: [Widget; 10] = [Widget::Clock, Widget::Media, Widget::Weather, Widget::Battery, Widget::Today, Widget::Day, Widget::Quote, Widget::Water, Widget::Contributions, Widget::Voice];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -134,6 +138,7 @@ impl Widget {
             Widget::Contributions => "Contributions",
             Widget::Quote => "Quote of the Day",
             Widget::Day => "Day Progress",
+            Widget::Voice => "Discord Voice",
             Widget::Panel(tab) => tab.name(),
         }
     }
@@ -484,6 +489,11 @@ pub struct Config {
     pub sure_key: String,
     /// Stocks: the currency every account is converted to before the totals.
     pub stocks_currency: String,
+    /// Discord: the user's own Discord app (Developer Portal), as Discord lets only its testers use RPC; empty turns it off.
+    pub discord_id: String,
+    pub discord_secret: String,
+    /// Discord: the token the app was granted, renewed as it nears expiry.
+    pub discord_token: Option<crate::discord::Token>,
 }
 
 impl Default for Config {
@@ -581,6 +591,9 @@ impl Default for Config {
             sure_url: String::new(),
             sure_key: String::new(),
             stocks_currency: "USD".into(),
+            discord_id: String::new(),
+            discord_secret: String::new(),
+            discord_token: None,
         }
     }
 }

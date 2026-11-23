@@ -361,6 +361,7 @@ pub struct Island {
     pub stocks: tabs::Stocks,
     pub contributions: tabs::Contributions,
     pub clocks: tabs::Clocks,
+    pub discord: tabs::Discord,
     pub agents: tabs::Agents,
     pub t3: tabs::T3,
     pub plugins: crate::plugins::Plugins,
@@ -488,6 +489,7 @@ impl Island {
             stocks: tabs::Stocks::default(),
             contributions: tabs::Contributions::default(),
             clocks: tabs::Clocks::default(),
+            discord: tabs::Discord::default(),
             agents: tabs::Agents::default(),
             t3: tabs::T3::new(store.dir().as_deref()),
             plugins: crate::plugins::Plugins::new(store.dir().as_deref()),
@@ -1507,6 +1509,7 @@ impl Island {
         std::thread::spawn(move || system::watch_levels(|v, b| h.update_if(move |s, tx| s.set_levels(v, b, tx))));
         let h = me.clone();
         std::thread::spawn(move || crate::downloads::watch(|d| h.update_if(move |s, tx| s.set_download(d, tx))));
+        self.discord_watch();
         let h = me.clone();
         every(5000, move || { let b = system::battery(); h.update_if(move |s, tx| s.set_battery(b, tx)); });
         let h = me.clone();
@@ -2418,7 +2421,7 @@ mod tests {
     #[test]
     fn the_dock_fits_the_canvas_with_every_tab_visible() {
         let t3 = crate::config::T3Device { name: "t".into(), url: "u".into(), token: "t".into() };
-        let mut s = island(Config { hidden_tabs: Vec::new(), t3_devices: vec![t3], ..Config::default() });
+        let mut s = island(Config { hidden_tabs: Vec::new(), t3_devices: vec![t3], discord_id: "1".into(), discord_secret: "s".into(), ..Config::default() });
         s.mode = Mode::Large;
         assert_eq!(s.visible_tabs().len(), Tab::ALL.len());
         let [x, _, w, _] = s.dock_rect().unwrap();

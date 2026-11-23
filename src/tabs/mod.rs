@@ -7,6 +7,7 @@ mod calculator;
 mod calendar;
 mod clipboard;
 mod clocks;
+mod discord;
 mod habits;
 mod limits;
 mod monitor;
@@ -31,6 +32,7 @@ pub use calendar::{link_host, Calendar};
 pub use clipboard::{Clipboard, Content};
 pub use overview::{Contributions, Dashboard, height as overview_height, width as overview_width};
 pub use clocks::Clocks;
+pub use discord::{Discord, widget as discord_widget};
 pub use habits::Habits;
 pub use limits::Limits;
 pub use notes::Notes;
@@ -76,6 +78,7 @@ fn panel(s: &Island, tab: Tab, layer: &mut Vec<El>) -> El {
         Tab::Habits => habits::view(s),
         Tab::Stocks => stocks::view(s),
         Tab::Clocks => clocks::view(s),
+        Tab::Discord => discord::view(s),
     }
 }
 
@@ -84,7 +87,7 @@ pub const fn size(tab: Tab) -> (f32, f32) {
     match tab {
         Tab::Search => (480.0, 330.0),
         Tab::Workflows => (520.0, 250.0),
-        Tab::Notes | Tab::Stremflix | Tab::Limits => (520.0, 290.0),
+        Tab::Notes | Tab::Stremflix | Tab::Limits | Tab::Discord => (520.0, 290.0),
         Tab::Shelf => (520.0, 230.0),
         Tab::System => (520.0, 342.0),
         Tab::T3 | Tab::Plugins | Tab::Calculator => (420.0, 290.0),
@@ -125,13 +128,16 @@ pub fn icon_of(tab: Tab) -> &'static rune::Icon {
         Tab::Habits => &icons::FLAME,
         Tab::Stocks => &icons::TRENDING_UP,
         Tab::Clocks => &icons::CLOCK,
+        Tab::Discord => &icons::HEADPHONES,
     }
 }
 
-/// Whether a tab has anything to show: T3 Code needs a device, AI Limits a signed-in agent once looked for.
+/// Whether a tab has anything to show: T3 Code needs a device, AI Limits a signed-in agent once
+/// looked for, Discord an app set up in Settings.
 pub fn has_content(s: &Island, tab: Tab) -> bool {
     match tab {
         Tab::T3 => !s.cfg.t3_devices.is_empty(),
+        Tab::Discord => s.discord_app().is_some(),
         Tab::Limits => !s.limits.usage.as_ref().is_some_and(Vec::is_empty),
         _ => true,
     }

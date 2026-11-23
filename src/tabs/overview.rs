@@ -319,6 +319,7 @@ fn tile(s: &Island, i: usize, t: Tile, [x, y, w, h]: [f32; 4], layer: &mut Vec<E
         Widget::Contributions => contributions(s, w, h),
         Widget::Quote => quote(s, h),
         Widget::Day => day(s, w, h),
+        Widget::Voice => super::discord_widget(s, w, h),
         Widget::Panel(tab) => super::panel(s, tab, layer),
     };
     let name = t.widget.name();

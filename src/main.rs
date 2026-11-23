@@ -7,6 +7,7 @@ mod agents;
 mod command;
 mod config;
 mod date;
+mod discord;
 mod downloads;
 mod icons;
 mod ics;
@@ -400,6 +401,13 @@ fn island_spec() -> AppSpec<Island> {
                 s.contributions.github = Some(("octocat".into(), Ok(graph(5))));
                 s.contributions.leetcode = Some(("ana".into(), Ok(graph(3))));
             }),
+            ("discord", |s| { s.mode = Mode::Large; s.tab = Tab::Discord; discord_scene(s) }),
+            ("overview-discord", |s| {
+                s.mode = Mode::Large;
+                s.tab = Tab::Overview;
+                s.cfg.dashboard = [config::Tile::new(config::Widget::Voice), config::Tile::new(config::Widget::Clock), config::Tile::new(config::Widget::Voice).sized(4, 1)].into();
+                discord_scene(s);
+            }),
             ("overview-quote", |s| { s.mode = Mode::Large; s.tab = Tab::Overview; s.cfg.dashboard = [config::Widget::Quote, config::Widget::Clock].map(config::Tile::new).into() }),
             ("overview-day", |s| {
                 s.mode = Mode::Large;
@@ -473,6 +481,7 @@ fn settings_spec() -> AppSpec<Settings> {
             ("features-quiet", |s| { s.page = Page::Features; s.cfg.quiet_hours = true; s.cfg.quiet_fullscreen = true }),
             ("search", |s| s.query.replace_text("alert")),
             ("panel-stocks", |s| s.page = Page::Tab(Tab::Stocks)),
+            ("panel-discord", |s| s.page = Page::Tab(Tab::Discord)),
             ("panel-ai", |s| s.page = Page::Tab(Tab::Assistant)),
             ("panel-limits", |s| s.page = Page::Tab(Tab::Limits)),
             ("panel-tasks", |s| s.page = Page::Tab(Tab::Tasks)),
@@ -637,4 +646,12 @@ fn main() {
         let options = options.macos(MacWindowOptions::default().shadow(false).level(101).collection_behavior(1 | 16 | 64 | 256));
         vec![rune::AnyWindowSpec::from(WindowSpec::from_app("island", app).configured_options(options))]
     });
+}
+
+/// A Discord call for the scenes: four in General, one speaking, one muted and deafened.
+fn discord_scene(s: &mut Island) {
+    (s.cfg.discord_id, s.cfg.discord_secret) = ("1".into(), "s".into());
+    let m = |id: &str, name: &str, speaking, off| discord::Member { id: id.into(), name: name.into(), avatar: None, speaking, muted: off, deafened: off };
+    let members = vec![m("1", "Ada", true, false), m("2", "Bob", false, true), m("3", "Carol with a very long display name", false, false), m("4", "Dee", false, false)];
+    s.discord_set(Ok(discord::Voice { channel: Some(discord::Channel { id: "c".into(), name: "General".into(), members }), mute: true, deaf: false }));
 }
