@@ -147,16 +147,17 @@ impl Plugin {
             Ok(spec) => {
                 if let Ok(name) = spec.get::<String>("name") { p.name = name }
                 if let (Some(path), Ok(Some(true))) = (store, spec.get::<Option<bool>>("persist")) {
-                    // A missing file is a first run; a broken one is reported and replaced by the next save.
+                    // A missing file is a first run. A broken one is reported and left alone: nothing is saved
+                    // over it this load, so the user can fix it and the error comes back on each reload until then.
                     let last = std::fs::read_to_string(&path).unwrap_or_default();
-                    if !last.is_empty() {
-                        let state = serde_json::from_str::<serde_json::Value>(&last).map_err(mlua::Error::external).and_then(|v| p.lua.to_value(&v));
-                        match state.and_then(|v| spec.set("state", v)) {
-                            Ok(()) => {}
-                            Err(e) => p.fail(mlua::Error::runtime(format!("saved state {}: {e}", path.display()))),
-                        }
+                    let state = if last.is_empty() { Ok(()) } else {
+                        serde_json::from_str::<serde_json::Value>(&last).map_err(mlua::Error::external)
+                            .and_then(|v| p.lua.to_value(&v)).and_then(|v| spec.set("state", v))
+                    };
+                    match state {
+                        Ok(()) => p.saved = Some(Saved { path, last }),
+                        Err(e) => p.fail(mlua::Error::runtime(format!("saved state {}: {e}", path.display()))),
                     }
-                    p.saved = Some(Saved { path, last });
                 }
                 p.spec = Some(spec);
                 p.render(deadline);
@@ -198,9 +199,15 @@ impl Plugin {
     fn render(&mut self, deadline: Instant) {
         let Some(spec) = &self.spec else { return };
         let mut handlers = Vec::new();
+        let queued = self.lua.app_data_ref::<Vec<Effect>>().map_or(0, |v| v.len());
         let view = guarded(&self.lua, deadline, || {
             let view: Function = spec.get("view").map_err(|_| mlua::Error::runtime("the plugin's table has no view function"))?;
             node(&view.call::<Value>(spec.get::<Value>("state")?)?, &mut handlers, 0, &mut 0)
+        });
+        // The view runs after every tick and callback, so a job started there would start the next one forever.
+        let view = view.and_then(|v| match self.lua.app_data_mut::<Vec<Effect>>() {
+            Some(mut e) if e.len() > queued => { e.truncate(queued); Err(mlua::Error::runtime("view can't call ripple.*; call it from tick or a handler")) }
+            _ => Ok(v),
         });
         match view {
             Ok(view) => {
@@ -646,6 +653,8 @@ mod tests {
         let Some(Node::Col { children, .. }) = &p.view else { panic!("{:?}", p.view) };
         assert_eq!(children[0], Node::Text { text: "hi".into(), size: 14.0, weight: 400.0, dim: false }, "a job calls back once");
         assert!(plugin(r#"ripple.run(""); return { view = function() return "" end }"#).error.unwrap().contains("no command"));
+        let mut v = plugin(r#"return { view = function() ripple.run("echo"); return "" end }"#);
+        assert!(v.error.clone().unwrap().contains("view can't call") && v.take_effects().is_empty(), "a job started from view would chain forever");
         let mut q = plugin(r#"ripple.run('git -C "my dir" status'); return { view = function() return "" end }"#);
         let Some(Effect::Run { argv, .. }) = q.take_effects().pop() else { panic!() };
         assert_eq!(argv, ["git", "-C", "my dir", "status"], "a string splits into words without a shell");
@@ -693,9 +702,12 @@ mod tests {
         let p = Plugin::load("test.lua".into(), None, src, Some(path.clone()));
         assert!(format!("{:?}", p.view).contains("label: \"1\""), "{:?}", p.view);
         std::fs::write(&path, "{").unwrap();
-        let p = Plugin::load("test.lua".into(), None, src, Some(path.clone()));
+        let mut p = Plugin::load("test.lua".into(), None, src, Some(path.clone()));
+        p.press_key("+");
+        let kept = std::fs::read_to_string(&path).unwrap_or_default();
         let _ = std::fs::remove_file(&path);
         assert!(p.error.unwrap().contains("saved state"));
-        assert!(format!("{:?}", p.view).contains("label: \"0\""), "a broken file starts from the file's state");
+        assert_eq!(kept, "{", "a broken file isn't saved over");
+        assert!(format!("{:?}", p.view).contains("label: \"1\""), "a broken file starts from the file's state, which still works");
     }
 }

@@ -52,11 +52,11 @@ return {
 | `ripple.open(target)` | Opens an `http(s)://` or `file://` URL in its default app. Programs are refused. |
 | `ripple.copy(text)` | Copies `text` to the clipboard. |
 
-Use `ripple.run` for anything slow: `io.popen` blocks the Island until it returns.
+Use `ripple.run` for anything slow: `io.popen` blocks the Island until it returns. Call `ripple.*` from `tick`, a handler or a callback, not from `view`: `view` runs after each of those, so it is an error there.
 
 ### Saved state
 
-With `persist = true`, Ripple saves `state` as JSON to `plugin-data/<file name>.json` beside `prefs.json` after each change, and loads it in place of the file's `state` next time. Only strings, numbers, booleans and tables are saved; functions are dropped. An empty table comes back as an empty table. Nothing is saved while `RIPPLE_PLUGINS` is set or under `--test-plugin`.
+With `persist = true`, Ripple saves `state` as JSON to `plugin-data/<file name>.json` beside `prefs.json` after each change, and loads it in place of the file's `state` next time. Only strings, numbers, booleans and tables are saved; functions are dropped. An empty table comes back as an empty table. If the file can't be read back, the error shows and the file is left alone until you fix or delete it. Nothing is saved while `RIPPLE_PLUGINS` is set or under `--test-plugin`.
 
 Every plugin has its own Lua state, with the standard libraries except `debug` and `__gc` metamethods, so it can read files and run commands as you. Install only plugins you trust, as you would a shell script.
 
