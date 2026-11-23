@@ -149,13 +149,19 @@ impl Plugin {
                 if let (Some(path), Ok(Some(true))) = (store, spec.get::<Option<bool>>("persist")) {
                     // A missing file is a first run. A broken one is reported and left alone: nothing is saved
                     // over it this load, so the user can fix it and the error comes back on each reload until then.
-                    let last = std::fs::read_to_string(&path).unwrap_or_default();
-                    let state = if last.is_empty() { Ok(()) } else {
-                        serde_json::from_str::<serde_json::Value>(&last).map_err(mlua::Error::external)
-                            .and_then(|v| p.lua.to_value(&v)).and_then(|v| spec.set("state", v))
+                    let read = match std::fs::read_to_string(&path) {
+                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+                        r => r.map_err(mlua::Error::external),
                     };
+                    let state = read.and_then(|last| {
+                        if !last.is_empty() {
+                            let v = serde_json::from_str::<serde_json::Value>(&last).map_err(mlua::Error::external)?;
+                            spec.set("state", p.lua.to_value(&v)?)?;
+                        }
+                        Ok(last)
+                    });
                     match state {
-                        Ok(()) => p.saved = Some(Saved { path, last }),
+                        Ok(last) => p.saved = Some(Saved { path, last }),
                         Err(e) => p.fail(mlua::Error::runtime(format!("saved state {}: {e}", path.display()))),
                     }
                 }
@@ -708,6 +714,13 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         assert!(p.error.unwrap().contains("saved state"));
         assert_eq!(kept, "{", "a broken file isn't saved over");
+        std::fs::write(&path, [0xff]).unwrap();
+        let mut p = Plugin::load("test.lua".into(), None, src, Some(path.clone()));
+        p.press_key("+");
+        let kept = std::fs::read(&path).unwrap_or_default();
+        let _ = std::fs::remove_file(&path);
+        assert!(p.error.unwrap().contains("saved state"));
+        assert_eq!(kept, [0xff], "an unreadable file isn't saved over");
         assert!(format!("{:?}", p.view).contains("label: \"1\""), "a broken file starts from the file's state, which still works");
     }
 }
