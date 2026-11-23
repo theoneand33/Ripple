@@ -240,7 +240,7 @@ pub fn view(s: &Island) -> El {
 
 #[cfg(test)]
 mod tests {
-    use super::{answer, convert, eval, format};
+    use super::{Calculator, RATES_FOR_MS, answer, convert, eval, format};
 
     #[test]
     fn units_and_currencies_convert() {
