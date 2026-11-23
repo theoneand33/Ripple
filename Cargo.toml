@@ -8,8 +8,8 @@ license = "MIT"
 [dependencies]
 # Rune is pre-release: pin one `dev` rev here and in every [patch] below.
 # native-file-dialog: Settings export and import.
-rune = { git = "https://github.com/theoneand33/rune", rev = "4572283169bf132823ec10a07bf5d209e64427ae", features = ["native-file-dialog"] }
-rune-kit = { git = "https://github.com/theoneand33/rune", rev = "4572283169bf132823ec10a07bf5d209e64427ae", features = ["markdown"] }
+rune = { git = "https://github.com/theoneand33/rune", rev = "141ebdf7413b0fa519611e89cd4b1089032b6e21", features = ["native-file-dialog"] }
+rune-kit = { git = "https://github.com/theoneand33/rune", rev = "141ebdf7413b0fa519611e89cd4b1089032b6e21", features = ["markdown"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # Every HTTP call (see net::config); T3's /ws RPC.
@@ -42,11 +42,12 @@ wayland-client = "0.31"
 
 # Cargo doesn't inherit a dependency's patches; these mirror Rune's own [patch.crates-io].
 [patch.crates-io]
-winit = { git = "https://github.com/theoneand33/rune", rev = "4572283169bf132823ec10a07bf5d209e64427ae" }
-parley_engine = { git = "https://github.com/theoneand33/rune", rev = "4572283169bf132823ec10a07bf5d209e64427ae" }
-wgpu-hal = { git = "https://github.com/theoneand33/rune", rev = "4572283169bf132823ec10a07bf5d209e64427ae" }
-accesskit_windows = { git = "https://github.com/theoneand33/rune", rev = "4572283169bf132823ec10a07bf5d209e64427ae" }
-accesskit_macos = { git = "https://github.com/theoneand33/rune", rev = "4572283169bf132823ec10a07bf5d209e64427ae" }
+winit = { git = "https://github.com/theoneand33/rune", rev = "141ebdf7413b0fa519611e89cd4b1089032b6e21" }
+parley_engine = { git = "https://github.com/theoneand33/rune", rev = "141ebdf7413b0fa519611e89cd4b1089032b6e21" }
+wgpu-hal = { git = "https://github.com/theoneand33/rune", rev = "141ebdf7413b0fa519611e89cd4b1089032b6e21" }
+accesskit_windows = { git = "https://github.com/theoneand33/rune", rev = "141ebdf7413b0fa519611e89cd4b1089032b6e21" }
+accesskit_macos = { git = "https://github.com/theoneand33/rune", rev = "141ebdf7413b0fa519611e89cd4b1089032b6e21" }
+sctk-adwaita = { git = "https://github.com/theoneand33/rune", rev = "141ebdf7413b0fa519611e89cd4b1089032b6e21" }
 
 # Rune's debug info alone can take many GB of RAM to link; line tables keep panics readable.
 [profile.dev]
