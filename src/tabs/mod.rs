@@ -225,7 +225,7 @@ pub fn each_second(s: &mut Island, now: f64) -> bool {
 /// Before every frame, from `Island::poll`.
 pub fn poll(s: &mut Island, now: f64, tx: &mut Tx) -> bool {
     if shows(s, Tab::Search) { s.search_poll() }
-    s.clipboard_poll(now, tx)
+    plugins::poll(s, tx) | s.clipboard_poll(now, tx)
 }
 
 /// The next time a tab needs a poll.
@@ -354,7 +354,7 @@ fn button(s: &Island, key: &str, label: &str, enabled: bool) -> El {
 }
 
 /// A one-line field in the Island's colours.
-fn field(s: &Island, key: &str, edit: &TextEdit, placeholder: &str, access: fn(&mut Island) -> &mut TextEdit, submit: fn(&mut Island, &mut Tx)) -> El {
+fn field(s: &Island, key: &str, edit: &TextEdit, placeholder: &str, access: impl for<'a> Fn(&'a mut Island) -> &'a mut TextEdit + 'static, submit: impl Fn(&mut Island, &mut Tx) + 'static) -> El {
     let fg = s.cfg.text();
     let input = text_input(edit, s.cfg.font(14.0, 400.0).lh(20.0)).key(key).label(placeholder).single_line().grow(1.0).min_w(0.0)
         .color(fg).placeholder(placeholder, fg.alpha(0.5 * fg.a))

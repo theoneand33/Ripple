@@ -1,10 +1,27 @@
 //! Plugins: one panel per Lua file in the plugins folder (src/plugins.rs runs them).
 
-use rune::{El, col, el, row, text};
+use rune::{El, Tx, col, edit_access, el, icon, row, text};
 
-use super::{Scrolls, empty};
+use super::{Scrolls, checkbox, empty, field};
 use crate::island::Island;
-use crate::plugins::Node;
+use crate::plugins::{Effect, Node};
+
+/// Every frame: runs `on_change` for typed fields and carries out what plugins asked for.
+pub fn poll(s: &mut Island, tx: &mut Tx) -> bool {
+    let (changed, effects) = s.plugins.poll();
+    for (path, effect) in effects {
+        match effect {
+            Effect::Run { id, argv } => if let Some(me) = &s.me {
+                me.spawn(move || crate::plugins::run(&argv), move |s, out| s.plugins.finish(&path, id, out));
+            },
+            // Queued like `ripple notify`, so it shows once the Island is compact.
+            Effect::Notify { text } => if let Some(dir) = s.store.dir() { let _ = crate::notify::queue(&dir, &text); },
+            Effect::Open { target } => crate::system::open_external(&target),
+            Effect::Copy { text } => tx.copy(text),
+        }
+    }
+    changed
+}
 
 pub fn view(s: &Island) -> El {
     let fg = s.cfg.text();
@@ -44,12 +61,30 @@ fn node(s: &Island, n: &Node, key: String) -> El {
     let kids = |children: &[Node]| children.iter().enumerate().map(|(i, c)| node(s, c, format!("{key}.{i}"))).collect::<Vec<_>>();
     match n {
         Node::Text { text: t, size, weight, dim } => text(t).key(key).font(s.cfg.font(*size, *weight)).color(if *dim { fg.alpha(0.55 * fg.a) } else { fg }),
-        Node::Row { gap, children } => row().children(kids(children)).key(key).gap(*gap).center_y(),
+        Node::Row { gap, children } => row().children(kids(children)).key(key).w_full().gap(*gap).center_y(),
         Node::Col { gap, children } => col().children(kids(children)).key(key).w_full().gap(*gap).items_start(),
         Node::Button { key: k, label, action } => {
             let action = *action;
             super::button(s, k, label, true).on_press(move |s: &mut Island| s.plugins.press(action))
         }
+        Node::Toggle { key: k, label, on, action } => {
+            let action = *action;
+            row().key(key).gap(8.0).center_y().role("checkbox").label(label.clone()).checked(*on).focusable(true)
+                .child(checkbox(s, k, label, *on).focusable(false).a11y_hidden())
+                .child(text(label).font(s.cfg.font(14.0, 400.0)).color(fg).a11y_hidden())
+                .on_press(move |s: &mut Island| s.plugins.press(action))
+        }
+        Node::Input { key: k, placeholder, .. } => {
+            let (edit, submit) = (k.clone(), k.clone());
+            let shown = s.plugins.list.get(s.plugins.open).and_then(|p| p.inputs.get(k)).map(|i| &i.edit);
+            row().key(key).w_full().child(field(s, k, shown.unwrap_or(&Default::default()), placeholder,
+                edit_access(move |s: &mut Island| s.plugins.edit(&edit)), move |s: &mut Island, _: &mut Tx| s.plugins.submit(&submit)))
+        }
+        Node::Icon { name, size } => match crate::icons::named(name) {
+            Some(glyph) => icon(glyph, *size).key(key).color(fg),
+            None => el().key(key),
+        },
+        Node::Spacer => el().key(key).grow(1.0),
         Node::Bar { value } => row().key(key).role("progressbar").w_full().h(6.0).radius(3.0).fill(fg.alpha(0.12 * fg.a))
             .child(el().w(0.0).grow(*value).h_full().radius(3.0).fill(fg))
             .child(el().w(0.0).grow(1.0 - value)),

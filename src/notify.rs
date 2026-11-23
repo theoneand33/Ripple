@@ -11,7 +11,10 @@ const STALE_MS: i64 = 5 * 60 * 1000;
 
 /// Queues `text` for the running Island.
 pub fn queue(dir: &Path, text: &str) -> std::io::Result<()> {
-    let name = format!("{}-{}.txt", crate::date::now_ms(), std::process::id());
+    // The count keeps two alerts queued in one millisecond by one process apart.
+    static COUNT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let n = COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let name = format!("{}-{}-{n:06}.txt", crate::date::now_ms(), std::process::id());
     crate::paths::write_atomic(&dir.join("notify").join(name), &text.chars().take(LIMIT).collect::<String>())
 }
 
