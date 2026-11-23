@@ -13,18 +13,35 @@ use crate::island::Island;
 pub struct Calculator {
     pub input: TextEdit,
     /// Units per US dollar, by code; None until loaded. Stocks converts with them too.
+    /// Stale rates stay in use until a refetch succeeds.
     pub rates: Option<HashMap<String, f64>>,
+    /// Wall-clock ms when `rates` were fetched: it counts the time a laptop sleeps.
+    rates_at: i64,
     rates_asked: bool,
 }
 
+/// The ECB publishes reference rates once a working day.
+const RATES_FOR_MS: i64 = 24 * 60 * 60 * 1000;
+
+impl Calculator {
+    /// Whether `rates` were fetched within the last day.
+    pub fn rates_fresh(&self) -> bool {
+        self.rates.is_some() && (0..RATES_FOR_MS).contains(&(crate::date::now_ms() - self.rates_at))
+    }
+
+    /// Keeps newly fetched rates; a failed fetch keeps the old ones.
+    pub fn got_rates(&mut self, rates: Option<HashMap<String, f64>>) {
+        if rates.is_some() { self.rates = rates; self.rates_at = crate::date::now_ms() }
+    }
+}
+
 impl Island {
-    /// Loads exchange rates once, as the tab opens, unless Stocks already did.
-    /// shortcut: rates are fetched once per run; refetch daily if Ripple runs for days.
+    /// Loads exchange rates as the tab opens, unless they are under a day old.
     pub fn calc_load(&mut self) {
-        if self.calc.rates_asked || self.calc.rates.is_some() { return }
+        if self.calc.rates_asked || self.calc.rates_fresh() { return }
         let Some(me) = self.me.clone() else { return };
         self.calc.rates_asked = true;
-        me.spawn(crate::net::rates, |s, rates| { s.calc.rates_asked = rates.is_some(); s.calc.rates = rates });
+        me.spawn(crate::net::rates, |s, rates| { s.calc.rates_asked = false; s.calc.got_rates(rates) });
     }
 }
 
@@ -246,6 +263,14 @@ mod tests {
         assert_eq!(answer("20 usd in eur", Some(&rates)).as_deref(), Some("18.00 EUR"));
         assert_eq!(answer("900 JPY to eur", Some(&rates)).as_deref(), Some("5.40 EUR"));
         assert_eq!(answer("20 usd in eur", None), None, "no rates yet");
+        let mut calc = Calculator::default();
+        assert!(!calc.rates_fresh());
+        calc.got_rates(Some(rates));
+        assert!(calc.rates_fresh());
+        calc.got_rates(None);
+        assert!(calc.rates.is_some(), "a failed refetch keeps the old rates");
+        calc.rates_at -= RATES_FOR_MS;
+        assert!(!calc.rates_fresh(), "a day old");
         assert_eq!(answer("1 cup to ml", None).as_deref(), Some("236.588237 ml"));
         assert_eq!(answer("2 * 3", None).as_deref(), Some("6"));
     }
