@@ -411,7 +411,7 @@ fn tab_pages(cfg: &Config) -> impl Iterator<Item = Page> + '_ {
 fn has_panel(tab: Tab) -> bool {
     match tab {
         Tab::Search | Tab::Workflows | Tab::Overview | Tab::Weather | Tab::Assistant | Tab::T3 | Tab::Limits | Tab::Tasks | Tab::Notes | Tab::Calendar | Tab::Shelf | Tab::Stocks => true,
-        Tab::Clipboard | Tab::Stremflix | Tab::System | Tab::Plugins | Tab::Pomodoro | Tab::Calculator | Tab::Habits | Tab::Clocks | Tab::Agents => false,
+        Tab::Clipboard | Tab::Stremflix | Tab::System | Tab::Plugins | Tab::Pomodoro | Tab::Calculator | Tab::Habits | Tab::Clocks | Tab::Agents | Tab::Controls => false,
     }
 }
 

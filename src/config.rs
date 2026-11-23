@@ -46,6 +46,7 @@ tabs! {
     Habits = 18,
     Stocks = 20,
     Clocks = 21,
+    Controls = 23,
     Plugins = 15,
     Weather = 19,
 }
@@ -75,6 +76,7 @@ impl Tab {
             Tab::Habits => "Habits",
             Tab::Stocks => "Stocks",
             Tab::Clocks => "World Clocks",
+            Tab::Controls => "Controls",
         }
     }
 }
