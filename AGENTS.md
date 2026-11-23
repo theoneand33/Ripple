@@ -19,6 +19,7 @@ Ripple is a Dynamic Island-style bar for Windows, Linux, and macOS. It is one Ru
 | `src/nextcloud.rs` | Nextcloud's protocols: Notes API, CalDAV and WebDAV, and the merge that keeps local edits. `tabs/sync.rs` starts syncs and applies their outcome |
 | `src/ics.rs` | iCalendar text: tasks and events to and from their one-line texts, and in-place edits |
 | `src/task.rs` | A task's one-line text (`!! Title due:… every:…`), read and written |
+| `src/discord.rs` | Discord's local RPC (IPC socket or named pipe): the voice channel, its members and speakers, and mute, deafen and leave |
 | `src/limits.rs` | AI Limits: finds each coding agent's saved sign-in and reads its plan usage |
 | `src/plugins.rs` | Lua plugins: loading the plugins folder, the `ui.*` nodes, and `--test-plugin`. API in `PLUGINS.md` |
 | `src/t3.rs` | T3 Code client (HTTP, `/ws` RPC, `/mcp` sign-in) |

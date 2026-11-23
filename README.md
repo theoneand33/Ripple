@@ -50,6 +50,7 @@ https://github.com/user-attachments/assets/a7b9ed8a-97b5-4603-bad7-6f4c4bef1f5d
 - Controls switches Wi-Fi, Bluetooth and mute, and locks, sleeps, restarts or shuts down the computer. Restart and Shut Down ask for a second press. On macOS, Bluetooth needs `blueutil`, and Lock sleeps the display, which locks when a password is asked on wake.
 - Color Picker samples any pixel on screen and shows it as HEX, RGB, HSL and OKLCH; press a format to copy it.
 - World Clocks shows the time in the cities you add on the tab, with today's sunrise and sunset there and the moon's phase. Open-Meteo looks each city up.
+- Discord shows the voice channel you're in on the Discord desktop app: who is there, who is speaking, and who is muted. Mute, deafen or leave the call from the Island. The Overview's Discord Voice widget shows the channel's members and a mute button. Discord lets only an app's own testers read voice, so you use your own app: in the [Discord Developer Portal](https://discord.com/developers/applications), create an application, add `http://127.0.0.1` as an OAuth2 redirect, and paste its client ID and secret into the tab's settings. Discord asks you once to approve it. The tab stays hidden until you add an app.
 - Habits tracks things to do every day. Tick off today or any of the last six days; each habit shows its streak of days in a row.
 - Plugins shows panels you write in Lua: drop a `.lua` file in the `plugins` folder next to `prefs.json`. See [PLUGINS.md](PLUGINS.md) for the API and how to test a plugin without a display.
 

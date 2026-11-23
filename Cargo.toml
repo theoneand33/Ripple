@@ -28,6 +28,14 @@ mlua = { version = "0.12", features = ["lua54", "vendored"] }
 # Shelf: compressing to and extracting from .zip.
 zip = { version = "9.8.0", default-features = false, features = ["deflate-flate2"] }
 
+[target.'cfg(unix)'.dependencies]
+# Discord: the user's id, so the token goes only to a Discord socket they own (src/discord.rs).
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+# Discord: the pipe server's session, so the token goes only to a Discord in the user's own (src/discord.rs).
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Pipes", "Win32_System_RemoteDesktop"] }
+
 [target.'cfg(target_os = "macos")'.dependencies]
 # The status-bar item and the Island's unconstrained frame (src/mac.rs).
 objc2 = "0.6"

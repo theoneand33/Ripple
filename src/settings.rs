@@ -77,6 +77,8 @@ pub struct Settings {
     nc_shelf: TextEdit,
     sure_url: TextEdit,
     sure_key: TextEdit,
+    discord_id: TextEdit,
+    discord_secret: TextEdit,
     stocks_currency: TextEdit,
     pub hotkey: ShortcutRecorderState,
     github_user: TextEdit,
@@ -121,6 +123,8 @@ impl Settings {
             nc_shelf: edit(&cfg.nextcloud.shelf_folder),
             sure_url: edit(&cfg.sure_url),
             sure_key: TextEdit::new("").secure(),
+            discord_id: edit(&cfg.discord_id),
+            discord_secret: TextEdit::new("").secure(),
             stocks_currency: edit(&cfg.stocks_currency),
             hotkey: ShortcutRecorderState::new(cfg.hotkey.parse().ok()),
             github_user: edit(&cfg.github_user),
@@ -410,7 +414,7 @@ fn tab_pages(cfg: &Config) -> impl Iterator<Item = Page> + '_ {
 /// Whether a tab has its own settings page: one `panel` has sections for.
 fn has_panel(tab: Tab) -> bool {
     match tab {
-        Tab::Search | Tab::Workflows | Tab::Overview | Tab::Weather | Tab::Assistant | Tab::T3 | Tab::Limits | Tab::Tasks | Tab::Notes | Tab::Calendar | Tab::Shelf | Tab::Stocks => true,
+        Tab::Search | Tab::Workflows | Tab::Overview | Tab::Weather | Tab::Assistant | Tab::T3 | Tab::Limits | Tab::Tasks | Tab::Notes | Tab::Calendar | Tab::Shelf | Tab::Stocks | Tab::Discord => true,
         Tab::Clipboard | Tab::Stremflix | Tab::System | Tab::Plugins | Tab::Pomodoro | Tab::Calculator | Tab::Habits | Tab::Clocks | Tab::Colors | Tab::Agents | Tab::Controls => false,
     }
 }
@@ -608,6 +612,17 @@ fn panel(s: &Settings, k: &Kit, layer: &mut Vec<El>, tab: Tab) -> Vec<El> {
                 setting(s, "Portfolio currency", TextInput::new(&s.stocks_currency).label("Base currency").placeholder("USD").width(Some(120.0))
                     .binds(|s| &mut s.stocks_currency, |c, v| c.stocks_currency = v.trim().to_uppercase()).build(k)),
                 text("Accounts in other currencies convert at Frankfurter's reference rates before the totals.").font(cfg.font(12.0, 400.0)).color(fg.alpha(0.6)).wrap(),
+            ]));
+        }
+        Tab::Discord => {
+            sections.push(section(s, "discord", "Discord app", vec![
+                text(&format!("Discord lets only an app's own testers read voice over RPC, so Ripple uses yours. In the Discord Developer Portal, make an application, add {} as an OAuth2 redirect, and paste its client ID and secret here. Discord asks once to approve it.", crate::discord::REDIRECT))
+                    .font(cfg.font(12.0, 400.0)).color(fg.alpha(0.6)).wrap(),
+                stacked(s, "Client ID", TextInput::new(&s.discord_id).width(None).label("Client ID").placeholder("123456789012345678")
+                    // Another app's token is no good: the next connection asks again.
+                    .binds(|s| &mut s.discord_id, |c, v| { let v = v.trim(); if c.discord_id != v { c.discord_token = None } c.discord_id = v.into() }).build(k)),
+                stacked(s, "Client secret", TextInput::new(&s.discord_secret).width(None).label("Client secret").secure().placeholder(if cfg.discord_secret.is_empty() { "Client secret" } else { "Saved" })
+                    .binds(|s| &mut s.discord_secret, |c, v| c.discord_secret = v.trim().into()).build(k)),
             ]));
         }
         // `has_panel` lists the tabs without settings.
