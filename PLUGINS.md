@@ -48,7 +48,7 @@ return {
 | Function | Does |
 | --- | --- |
 | `ripple.run(cmd, function(state, out) end)` | Runs a command off the UI thread, then calls back with its trimmed stdout, or `nil` if it failed, exited non-zero or ran over 30 s. `cmd` is a string, split into words without a shell (quotes group), or an argv table such as `{ "git", "-C", dir, "status" }`. Returns the job's id. |
-| `ripple.notify(text)` | Shows `text` as an Island alert, as `ripple notify` does. It waits until the Island is compact. |
+| `ripple.notify(text)` | Shows `text` as an Island alert, as `ripple notify` does. While Large Mode is open it waits until the Island is compact, for up to 5 minutes; an older alert is dropped unseen. |
 | `ripple.open(target)` | Opens an `http(s)://` or `file://` URL in its default app. Programs are refused. |
 | `ripple.copy(text)` | Copies `text` to the clipboard. |
 
