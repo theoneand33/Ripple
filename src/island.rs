@@ -1318,7 +1318,7 @@ impl Island {
         if track == self.track {
             // The position stalled: hold the polled position rather than run on past it.
             if self.track_at.take().is_none() { return false }
-            self.lyric_ms = track.as_ref().and_then(|t| t.progress).map_or(0, |(p, _)| p * 1000);
+            self.lyric_ms = track.as_ref().and_then(|t| t.progress).map_or(0, |(p, _)| p.saturating_mul(1000));
             return true;
         }
         // A poll that only played on a few seconds: the bar runs at playback speed until the next one.
@@ -1347,8 +1347,8 @@ impl Island {
         self.track = track;
         self.track_at = Some(tx.clock());
         // Polls round down, so one up to 1.5 s behind the run-on position is the same moment; further back is a seek.
-        let polled = self.track.as_ref().and_then(|t| t.progress).map_or(0, |(p, _)| p * 1000);
-        self.lyric_ms = if !new_song && polled + 1500 > self.lyric_ms { polled.max(self.lyric_ms) } else { polled };
+        let polled = self.track.as_ref().and_then(|t| t.progress).map_or(0, |(p, _)| p.saturating_mul(1000));
+        self.lyric_ms = if !new_song && polled.saturating_add(1500) > self.lyric_ms { polled.max(self.lyric_ms) } else { polled };
         if new_song { self.fetch_lyrics() }
         if old_art != new_art {
             self.art = None;
@@ -1370,7 +1370,7 @@ impl Island {
         let Some((position, length)) = self.track.as_ref().filter(|t| t.playing).and_then(|t| t.progress) else { return false };
         // Up to 3 s past the poll: a late poll holds the line rather than running past the song.
         let ahead = self.track_at.map_or(0, |at| ((now - at).clamp(0.0, 3.0) * 1000.0) as u32);
-        let ms = (position * 1000 + ahead).min(length * 1000).max(self.lyric_ms);
+        let ms = position.saturating_mul(1000).saturating_add(ahead).min(length.saturating_mul(1000)).max(self.lyric_ms);
         let changed = crate::net::lyric_at(lines, ms) != crate::net::lyric_at(lines, self.lyric_ms);
         self.lyric_ms = ms;
         if let Some(next) = lines.iter().map(|l| l.0).find(|t| *t > ms) { tx.wake_at(now + f64::from(next - ms) / 1000.0) }
