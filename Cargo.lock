@@ -2874,6 +2874,7 @@ dependencies = [
  "ureq",
  "wayland-client",
  "x11rb",
+ "zbus",
  "zip",
 ]
 

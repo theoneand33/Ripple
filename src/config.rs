@@ -45,8 +45,10 @@ tabs! {
     Calculator = 17,
     Habits = 18,
     Stocks = 20,
-    Discord = 23,
+    Discord = 25,
     Clocks = 21,
+    Controls = 23,
+    Colors = 24,
     Plugins = 15,
     Weather = 19,
 }
@@ -77,6 +79,8 @@ impl Tab {
             Tab::Stocks => "Stocks",
             Tab::Discord => "Discord",
             Tab::Clocks => "World Clocks",
+            Tab::Controls => "Controls",
+            Tab::Colors => "Color Picker",
         }
     }
 }

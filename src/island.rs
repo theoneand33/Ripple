@@ -292,6 +292,10 @@ pub struct Island {
     pub art: Option<Image>,
     /// The track's synced lyrics, once LRCLIB has them.
     pub lyrics: Option<Vec<crate::net::Lyric>>,
+    /// The playback position in ms, run on from the last poll so lyrics keep time between polls.
+    pub lyric_ms: u32,
+    /// When a poll last moved the track's position; None once a poll repeats it (buffering, a stale player).
+    track_at: Option<f64>,
     pub art_hovered: bool,
     /// The bubble under the pointer: a bubble that goes away takes no hover-leave with it.
     bubble_hovered: Option<Bubble>,
@@ -362,6 +366,8 @@ pub struct Island {
     pub contributions: tabs::Contributions,
     pub clocks: tabs::Clocks,
     pub discord: tabs::Discord,
+    pub controls: tabs::Controls,
+    pub colors: tabs::Colors,
     pub agents: tabs::Agents,
     pub t3: tabs::T3,
     pub plugins: crate::plugins::Plugins,
@@ -443,6 +449,8 @@ impl Island {
             weather: Weather::default(),
             track: None,
             lyrics: None,
+            lyric_ms: 0,
+            track_at: None,
             art: None,
             art_hovered: false,
             bubble_hovered: None,
@@ -490,6 +498,8 @@ impl Island {
             contributions: tabs::Contributions::default(),
             clocks: tabs::Clocks::default(),
             discord: tabs::Discord::default(),
+            controls: tabs::Controls::default(),
+            colors: tabs::Colors::default(),
             agents: tabs::Agents::default(),
             t3: tabs::T3::new(store.dir().as_deref()),
             plugins: crate::plugins::Plugins::new(store.dir().as_deref()),
@@ -1309,7 +1319,12 @@ impl Island {
     }
 
     pub fn set_track(&mut self, track: Option<Track>, tx: &mut Tx) -> bool {
-        if track == self.track { return false }
+        if track == self.track {
+            // The position stalled: hold the polled position rather than run on past it.
+            if self.track_at.take().is_none() { return false }
+            self.lyric_ms = track.as_ref().and_then(|t| t.progress).map_or(0, |(p, _)| p.saturating_mul(1000));
+            return true;
+        }
         // A poll that only played on a few seconds: the bar runs at playback speed until the next one.
         // Polls land at once (no input caused them), so this one asks for motion; seeks still jump.
         if let (Some(old), Some(new)) = (&self.track, &track)
@@ -1334,6 +1349,10 @@ impl Island {
         let art_url = |t: &Option<Track>| t.as_ref().and_then(|t| t.artwork_url.clone());
         let (old_art, new_art) = (art_url(&self.track), art_url(&track));
         self.track = track;
+        self.track_at = Some(tx.clock());
+        // Polls round down, so one up to 1.5 s behind the run-on position is the same moment; further back is a seek.
+        let polled = self.track.as_ref().and_then(|t| t.progress).map_or(0, |(p, _)| p.saturating_mul(1000));
+        self.lyric_ms = if !new_song && polled.saturating_add(1500) > self.lyric_ms { polled.max(self.lyric_ms) } else { polled };
         if new_song { self.fetch_lyrics() }
         if old_art != new_art {
             self.art = None;
@@ -1348,6 +1367,19 @@ impl Island {
     }
 
     // --- Timers ---
+
+    /// Runs `lyric_ms` on at playback speed and wakes for the next line; true when the line changed.
+    fn run_lyrics(&mut self, now: f64, tx: &mut Tx) -> bool {
+        let Some(lines) = self.lyrics.as_deref().filter(|_| self.cfg.lyrics) else { return false };
+        let Some((position, length)) = self.track.as_ref().filter(|t| t.playing).and_then(|t| t.progress) else { return false };
+        // Up to 3 s past the poll: a late poll holds the line rather than running past the song.
+        let ahead = self.track_at.map_or(0, |at| ((now - at).clamp(0.0, 3.0) * 1000.0) as u32);
+        let ms = position.saturating_mul(1000).saturating_add(ahead).min(length.saturating_mul(1000)).max(self.lyric_ms);
+        let changed = crate::net::lyric_at(lines, ms) != crate::net::lyric_at(lines, self.lyric_ms);
+        self.lyric_ms = ms;
+        if let Some(next) = lines.iter().map(|l| l.0).find(|t| *t > ms) { tx.wake_at(now + f64::from(next - ms) / 1000.0) }
+        changed
+    }
 
     /// Asks for a poll at the next deadline any timer holds.
     fn schedule(&self, tx: &mut Tx) {
@@ -1373,6 +1405,7 @@ impl Island {
             if let Some(theme) = theme { self.save(|c| c.set_theme(&theme)) }
         }
         changed |= tabs::poll(self, now, tx);
+        changed |= self.run_lyrics(now, tx);
 
         let due = |t: &mut Option<f64>| t.is_some_and(|d| now >= d) && { *t = None; true };
         let (ended, timed): (Vec<_>, Vec<_>) = std::mem::take(&mut self.timed).into_iter().partition(|t| now >= t.1);
@@ -2236,6 +2269,33 @@ mod tests {
     }
 
     #[test]
+    fn lyrics_run_on_between_polls() {
+        let mut s = island(Config { lyrics: true, ..Config::default() });
+        let mut tx = Tx::default();
+        s.set_track(Some(Track { name: "Song".into(), playing: true, progress: Some((10, 200)), ..Default::default() }), &mut tx);
+        s.lyrics = Some(crate::net::parse_lrc("[00:10.00]First\n[00:11.50]Second"));
+        let at = tx.clock();
+        assert!(!s.run_lyrics(at + 1.0, &mut tx));
+        assert!(s.run_lyrics(at + 1.6, &mut tx));
+        assert_eq!(s.lyric_ms, 11_600);
+        // A late poll holds at 3 s past the last one.
+        s.run_lyrics(at + 60.0, &mut tx);
+        assert_eq!(s.lyric_ms, 13_000);
+        // A poll that rounds down behind the run-on position keeps the line; a seek back moves it.
+        let at_pos = |p| Some(Track { name: "Song".into(), playing: true, progress: Some((p, 200)), ..Default::default() });
+        s.set_track(at_pos(12), &mut tx);
+        assert!(!s.run_lyrics(tx.clock(), &mut tx));
+        assert_eq!(s.lyric_ms, 13_000);
+        s.set_track(at_pos(5), &mut tx);
+        assert_eq!(s.lyric_ms, 5_000);
+        // A poll that repeats the position stops the run-on until the position moves again.
+        s.run_lyrics(tx.clock() + 2.0, &mut tx);
+        assert!(s.set_track(at_pos(5), &mut tx));
+        s.run_lyrics(tx.clock() + 2.0, &mut tx);
+        assert_eq!(s.lyric_ms, 5_000);
+    }
+
+    #[test]
     fn a_play_pause_click_holds_until_the_player_agrees() {
         let mut s = island(Config::default());
         let mut tx = Tx::default();
@@ -2318,7 +2378,7 @@ mod tests {
         assert!(s.bubbles().is_empty());
         assert_eq!(s.alert(), Some(Alert::CapsLock));
         s.set_track(Some(Track { name: "Song".into(), playing: true, ..Default::default() }), &mut tx);
-        s.pomodoro.ends = Some(60.0);
+        s.pomodoro.ends = Some(crate::date::wall() + 60.0);
         assert_eq!(s.alert(), None);
         let [x, _, w, h] = s.rect();
         let bubbles = s.bubbles();
@@ -2334,7 +2394,7 @@ mod tests {
         let mut s = island(Config { position_mode: "top-left".into(), ..Config::default() });
         s.set_caps_lock(true);
         s.set_track(Some(Track { name: "Song".into(), playing: true, ..Default::default() }), &mut tx);
-        s.pomodoro.ends = Some(60.0);
+        s.pomodoro.ends = Some(crate::date::wall() + 60.0);
         let [x, _, w, h] = s.rect();
         assert_eq!(s.bubbles().iter().map(|b| b.1[0]).collect::<Vec<_>>(), [x + w + BUBBLE_GAP, x + w + 2.0 * BUBBLE_GAP + h]);
 
@@ -2342,7 +2402,7 @@ mod tests {
         let mut s = island(Config { island_x: 0.0, ..Config::default() });
         s.set_caps_lock(true);
         s.set_track(Some(Track { name: "Song".into(), playing: true, ..Default::default() }), &mut tx);
-        s.pomodoro.ends = Some(60.0);
+        s.pomodoro.ends = Some(crate::date::wall() + 60.0);
         assert!(s.bubbles().iter().all(|b| b.1[0] >= 0.0 && b.1[0] + b.1[2] <= s.placement.canvas_w));
 
         // A bubble that goes away under the pointer lets go of the hover.
@@ -2354,7 +2414,7 @@ mod tests {
 
         // With info shown when idle, hovering a bubble still leaves the Island compact.
         let mut s = island(Config { show_info_idle: true, ..Config::default() });
-        s.pomodoro.ends = Some(60.0);
+        s.pomodoro.ends = Some(crate::date::wall() + 60.0);
         s.set_caps_lock(true);
         s.bubble_hovered = Some(Bubble::CapsLock);
         s.set_over(2, true, &mut tx);

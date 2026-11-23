@@ -564,7 +564,7 @@ pub fn watch_levels(on: impl Fn(Option<u8>, Option<u8>)) {
     }
     // One process for good: starting one per poll costs too much CPU at this rate.
     #[cfg(windows)]
-    let (mut cmd, from_stderr) = { let mut c = command("powershell"); c.args(["-NoProfile", "-EncodedCommand", &ps_encode(WINDOWS_LEVELS)]); (c, false) };
+    let (mut cmd, from_stderr) = { let mut c = command("powershell"); c.args(["-NoProfile", "-EncodedCommand", &ps_encode(&format!("{WINDOWS_AUDIO}{WINDOWS_LEVELS}"))]); (c, false) };
     // AppleScript's `log` writes to stderr. shortcut: no brightness, as macOS has no public CLI for it; read it through IOKit/DisplayServices if users ask.
     #[cfg(target_os = "macos")]
     let (mut cmd, from_stderr) = { let mut c = command("osascript"); for line in MAC_LEVELS { c.args(["-e", line]); } (c, true) };
@@ -609,10 +609,10 @@ const MAC_LEVELS: [&str; 9] = [
     "delay 0.1", "end repeat",
 ];
 
-/// Prints "volume brightness" ten times a second; -1 for one it can't read.
+/// `RippleAudio`: the default output's level and mute, through Core Audio. Added once per process.
 #[cfg(windows)]
-const WINDOWS_LEVELS: &str = r#"
-Add-Type -TypeDefinition @'
+const WINDOWS_AUDIO: &str = r#"
+if (-not ('RippleAudio' -as [type])) { Add-Type -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
 [Guid("5CDF2C82-841E-4546-9722-0CF74078229A"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
@@ -622,7 +622,7 @@ interface IAudioEndpointVolume {
   int j();
   int GetMasterVolumeLevelScalar(out float level);
   int k(); int l(); int m(); int n();
-  int SetMute([MarshalAs(UnmanagedType.Bool)] bool mute, Guid context);
+  int SetMute([MarshalAs(UnmanagedType.Bool)] bool mute, IntPtr context);
   int GetMute([MarshalAs(UnmanagedType.Bool)] out bool mute);
 }
 [Guid("D666063F-1587-4E43-81F1-B948E807363F"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
@@ -631,19 +631,33 @@ interface IMMDevice { int Activate(ref Guid id, int ctx, int args, out IAudioEnd
 interface IMMDeviceEnumerator { int f(); int GetDefaultAudioEndpoint(int flow, int role, out IMMDevice device); }
 [ComImport, Guid("BCDE0395-E52F-467C-8E3D-C4579291692E")] class MMDeviceEnumerator { }
 public static class RippleAudio {
-  public static int Level() {
+  static IAudioEndpointVolume Endpoint() {
     IMMDevice device;
     Marshal.ThrowExceptionForHR(((IMMDeviceEnumerator)new MMDeviceEnumerator()).GetDefaultAudioEndpoint(0, 1, out device));
     IAudioEndpointVolume volume;
     Guid id = typeof(IAudioEndpointVolume).GUID;
     Marshal.ThrowExceptionForHR(device.Activate(ref id, 23, 0, out volume));
-    bool mute; float level;
-    Marshal.ThrowExceptionForHR(volume.GetMute(out mute));
-    Marshal.ThrowExceptionForHR(volume.GetMasterVolumeLevelScalar(out level));
-    return mute ? 0 : (int)Math.Round(level * 100);
+    return volume;
+  }
+  public static bool Muted() {
+    bool mute;
+    Marshal.ThrowExceptionForHR(Endpoint().GetMute(out mute));
+    return mute;
+  }
+  public static void Mute(bool mute) { Marshal.ThrowExceptionForHR(Endpoint().SetMute(mute, IntPtr.Zero)); }
+  public static int Level() {
+    if (Muted()) { return 0; }
+    float level;
+    Marshal.ThrowExceptionForHR(Endpoint().GetMasterVolumeLevelScalar(out level));
+    return (int)Math.Round(level * 100);
   }
 }
-'@
+'@ }
+"#;
+
+/// Prints "volume brightness" ten times a second, after `WINDOWS_AUDIO`; -1 for one it can't read.
+#[cfg(windows)]
+const WINDOWS_LEVELS: &str = r#"
 while ($true) {
   $v = try { [RippleAudio]::Level() } catch { -1 }
   # WMI is slow: brightness every third pass; -1 keeps the last level.
@@ -686,6 +700,130 @@ fn brightness() -> Option<u8> {
     (max > 0.0).then(|| (now / max * 100.0).round().clamp(0.0, 100.0) as u8)
 }
 
+
+// --- Quick toggles and power actions ---
+
+/// A setting the Controls tab switches on and off.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Toggle { Wifi, Bluetooth, Mute }
+
+impl Toggle {
+    pub const ALL: [Toggle; 3] = [Toggle::Wifi, Toggle::Bluetooth, Toggle::Mute];
+}
+
+/// Whether a toggle is on; None where the OS (or a missing tool) can't say, so it can't be switched either.
+pub fn toggle(t: Toggle) -> Option<bool> {
+    #[cfg(target_os = "linux")]
+    {
+        match t {
+            Toggle::Wifi => output("nmcli", &["radio", "wifi"]).map(|o| o == "enabled"),
+            Toggle::Bluetooth => output("bluetoothctl", &["show"]).filter(|o| o.contains("Powered:")).map(|o| o.contains("Powered: yes")),
+            Toggle::Mute => output("wpctl", &["get-volume", "@DEFAULT_AUDIO_SINK@"]).map(|o| o.contains("[MUTED]"))
+                .or_else(|| output("pactl", &["get-sink-mute", "@DEFAULT_SINK@"]).map(|o| o.contains("yes"))),
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        match t {
+            // shortcut: assumes Wi-Fi is en0, as on every Mac without extra adapters; look it up with -listallhardwareports if users ask.
+            Toggle::Wifi => output("networksetup", &["-getairportpower", "en0"]).map(|o| o.ends_with("On")),
+            // macOS has no Bluetooth CLI of its own: blueutil (Homebrew) when installed.
+            Toggle::Bluetooth => output("blueutil", &["-p"]).map(|o| o == "1"),
+            Toggle::Mute => output("osascript", &["-e", "output muted of (get volume settings)"]).map(|o| o == "true"),
+        }
+    }
+    #[cfg(windows)]
+    {
+        let out = match t {
+            Toggle::Wifi | Toggle::Bluetooth => powershell_radios(&format!("{WINDOWS_RADIOS}(@($radios | Where-Object {{ \"$($_.Kind)\" -eq '{}' }}) | Select-Object -First 1).State", radio_kind(t))),
+            Toggle::Mute => powershell(&format!("{WINDOWS_AUDIO}[RippleAudio]::Muted()")),
+        };
+        match out.as_str() { "On" | "True" => Some(true), "Off" | "False" => Some(false), _ => None }
+    }
+}
+
+/// Switches a toggle. Blocks until the OS has it; call `toggle` after to see what took.
+pub fn set_toggle(t: Toggle, on: bool) {
+    #[cfg(target_os = "linux")]
+    {
+        let (word, bit) = (if on { "on" } else { "off" }, if on { "1" } else { "0" });
+        match t {
+            Toggle::Wifi => { output("nmcli", &["radio", "wifi", word]); }
+            Toggle::Bluetooth => { output("bluetoothctl", &["power", word]); }
+            Toggle::Mute => if output("wpctl", &["set-mute", "@DEFAULT_AUDIO_SINK@", bit]).is_none() { output("pactl", &["set-sink-mute", "@DEFAULT_SINK@", bit]); },
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        match t {
+            Toggle::Wifi => { output("networksetup", &["-setairportpower", "en0", if on { "on" } else { "off" }]); }
+            Toggle::Bluetooth => { output("blueutil", &["-p", if on { "1" } else { "0" }]); }
+            Toggle::Mute => { output("osascript", &["-e", &format!("set volume output muted {on}")]); }
+        }
+    }
+    #[cfg(windows)]
+    {
+        let _ = match t {
+            Toggle::Wifi | Toggle::Bluetooth => powershell_radios(&format!("{WINDOWS_RADIOS}foreach ($r in @($radios | Where-Object {{ \"$($_.Kind)\" -eq '{}' }})) {{ Await ($r.SetStateAsync('{}')) ([Windows.Devices.Radios.RadioAccessStatus]) | Out-Null }}", radio_kind(t), if on { "On" } else { "Off" })),
+            Toggle::Mute => powershell(&format!("{WINDOWS_AUDIO}[RippleAudio]::Mute(${on})")),
+        };
+    }
+}
+
+/// WinRT radio calls get a process of their own, so a slow one doesn't hold up the shared pollers.
+#[cfg(windows)]
+fn powershell_radios(script: &str) -> String {
+    static SERVER: PsSlot = std::sync::Mutex::new(None);
+    powershell_in(&SERVER, script)
+}
+
+#[cfg(windows)]
+fn radio_kind(t: Toggle) -> &'static str { if t == Toggle::Wifi { "WiFi" } else { "Bluetooth" } }
+
+/// `$radios`: the PC's Wi-Fi and Bluetooth radios, through WinRT, which switches them without admin rights.
+#[cfg(windows)]
+const WINDOWS_RADIOS: &str = r#"
+Add-Type -AssemblyName System.Runtime.WindowsRuntime
+$asTask = [System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object { $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1' } | Select-Object -First 1
+function Await($op, [Type]$type) { $t = $asTask.MakeGenericMethod($type).Invoke($null, @($op)); $t.Wait(-1) | Out-Null; $t.Result }
+[Windows.Devices.Radios.Radio, Windows.System.Devices, ContentType = WindowsRuntime] | Out-Null
+Await ([Windows.Devices.Radios.Radio]::RequestAccessAsync()) ([Windows.Devices.Radios.RadioAccessStatus]) | Out-Null
+$radios = Await ([Windows.Devices.Radios.Radio]::GetRadiosAsync()) ([System.Collections.Generic.IReadOnlyList[Windows.Devices.Radios.Radio]])
+"#;
+
+/// What the Controls tab's power buttons do.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Power { Lock, Sleep, Restart, ShutDown }
+
+/// Locks, sleeps, restarts or shuts down the computer. Doesn't wait for it.
+pub fn power(p: Power) {
+    #[cfg(target_os = "linux")]
+    let (program, args): (&str, &[&str]) = match p {
+        Power::Lock => ("loginctl", &["lock-session"]),
+        Power::Sleep => ("systemctl", &["suspend"]),
+        Power::Restart => ("systemctl", &["reboot"]),
+        Power::ShutDown => ("systemctl", &["poweroff"]),
+    };
+    // System Events asks each app to quit, so unsaved work gets its prompt.
+    #[cfg(target_os = "macos")]
+    let (program, args): (&str, &[&str]) = match p {
+        // Sleeps the display, which locks when a password is asked on wake (macOS's default).
+        Power::Lock => ("pmset", &["displaysleepnow"]),
+        Power::Sleep => ("pmset", &["sleepnow"]),
+        Power::Restart => ("osascript", &["-e", "tell application \"System Events\" to restart"]),
+        Power::ShutDown => ("osascript", &["-e", "tell application \"System Events\" to shut down"]),
+    };
+    #[cfg(windows)]
+    let (program, args): (&str, &[&str]) = match p {
+        Power::Lock => ("rundll32.exe", &["user32.dll,LockWorkStation"]),
+        Power::Sleep => ("powershell", &["-NoProfile", "-Command", "Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.Application]::SetSuspendState('Suspend', $false, $false)"]),
+        Power::Restart => ("shutdown", &["/r", "/t", "0"]),
+        Power::ShutDown => ("shutdown", &["/s", "/t", "0"]),
+    };
+    let mut cmd = command(program);
+    cmd.args(args);
+    spawn(cmd);
+}
 
 // --- Caps Lock ---
 

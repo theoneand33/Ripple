@@ -19,6 +19,7 @@ mod net;
 mod nextcloud;
 mod notify;
 mod paths;
+mod pick;
 mod platform;
 mod plugins;
 mod settings;
@@ -229,13 +230,21 @@ fn island_spec() -> AppSpec<Island> {
                 let city = |name: &str, offset: i64| Some(net::City { name: name.into(), offset, sun: Some((now - 4 * 3600, now + 5 * 3600)) });
                 s.clocks.cities = [("London", city("London", 0)), ("New York", city("New York", -5 * 3600)), ("Tokyo", city("Tokyo", 9 * 3600))].map(|(n, c)| (n.to_string(), c)).into();
             }),
+            ("controls", |s| { s.mode = Mode::Large; s.tab = Tab::Controls; s.controls.toggles = [Some(true), Some(false), None]; s.controls.armed = Some(system::Power::Restart) }),
+            ("overview-controls", |s| {
+                s.mode = Mode::Large;
+                s.tab = Tab::Overview;
+                s.cfg.dashboard = [config::Widget::Clock, config::Widget::Panel(Tab::Controls)].map(config::Tile::new).into();
+                s.controls.toggles = [Some(true), Some(true), Some(false)];
+            }),
+            ("colors", |s| { s.mode = Mode::Large; s.tab = Tab::Colors; s.colors.color = [0xe8, 0x5d, 0x75] }),
             ("pomodoro", |s| { s.mode = Mode::Large; s.tab = Tab::Pomodoro; s.pomodoro.left = 18.0 * 60.0 + 42.0; s.pomodoro.rounds = 2 }),
             // Ends on the app clock, which starts near zero in a headless render.
             ("timer", |s| { s.mode = Mode::Large; s.tab = Tab::Pomodoro; s.pomodoro.clock = tabs::Clock::Timer; s.pomodoro.timer.set(10.0, 0.0); s.pomodoro.timer.left = 4.0 * 60.0 + 12.0 }),
             ("stopwatch", |s| { s.mode = Mode::Large; s.tab = Tab::Pomodoro; s.pomodoro.clock = tabs::Clock::Stopwatch; s.pomodoro.stopwatch.elapsed = 83.0 }),
             ("timer-done", |s| { s.pomodoro.timer.rung = true; s.pomodoro.timer.left = 0.0 }),
-            ("stopwatch-live", |s| { s.pomodoro.stopwatch.toggle(0.0); s.pomodoro.stopwatch.elapsed = 3723.0; s.pomodoro.stopwatch.since = Some(-3723.0) }),
-            ("pomodoro-live", |s| { s.pomodoro.ends = Some(15.0 * 60.0 + 23.0); s.pomodoro.tick(0.0); }),
+            ("stopwatch-live", |s| { s.pomodoro.stopwatch.elapsed = 3723.0; s.pomodoro.stopwatch.since = Some(crate::date::wall() - 3723.0) }),
+            ("pomodoro-live", |s| { let now = crate::date::wall(); s.pomodoro.ends = Some(now + 15.0 * 60.0 + 23.0); s.pomodoro.tick(now); }),
             ("download", |s| { s.set_download(Some(downloads::Progress { fraction: Some(0.42), count: 1, done: false }), &mut rune::Tx::default()); }),
             ("download-done", |s| { let mut tx = rune::Tx::default(); s.set_download(Some(downloads::Progress { fraction: Some(0.9), count: 1, done: false }), &mut tx); s.set_download(Some(downloads::Progress { fraction: Some(1.0), count: 1, done: true }), &mut tx); }),
             ("calculator", |s| {
@@ -353,8 +362,9 @@ fn island_spec() -> AppSpec<Island> {
             ("playing-bubbles", |s| {
                 let mut tx = rune::Tx::default();
                 s.set_track(Some(system::Track { name: "Song".into(), artist: "Artist".into(), playing: true, ..Default::default() }), &mut tx);
-                s.pomodoro.ends = Some(15.0 * 60.0 + 23.0);
-                s.pomodoro.tick(0.0);
+                let now = crate::date::wall();
+                s.pomodoro.ends = Some(now + 15.0 * 60.0 + 23.0);
+                s.pomodoro.tick(now);
                 s.set_download(Some(downloads::Progress { fraction: None, count: 2, done: false }), &mut tx);
                 s.set_caps_lock(true);
             }),

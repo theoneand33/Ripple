@@ -23,6 +23,7 @@ Ripple is a Dynamic Island-style bar for Windows, Linux, and macOS. It is one Ru
 | `src/limits.rs` | AI Limits: finds each coding agent's saved sign-in and reads its plan usage |
 | `src/plugins.rs` | Lua plugins: loading the plugins folder, the `ui.*` nodes, and `--test-plugin`. API in `PLUGINS.md` |
 | `src/t3.rs` | T3 Code client (HTTP, `/ws` RPC, `/mcp` sign-in) |
+| `src/pick.rs` | Screen sampling: the colour of a pixel the user clicks, from each OS |
 | `src/platform.rs` | Displays, click-through around the Island (X11 input shape), and focus hand-back |
 | `src/mac.rs` | macOS status-bar item and the notch window frame |
 | `src/date.rs` | Calendar date maths and the wall clock |
