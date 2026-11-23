@@ -2373,7 +2373,7 @@ mod tests {
         assert!(s.bubbles().is_empty());
         assert_eq!(s.alert(), Some(Alert::CapsLock));
         s.set_track(Some(Track { name: "Song".into(), playing: true, ..Default::default() }), &mut tx);
-        s.pomodoro.ends = Some(60.0);
+        s.pomodoro.ends = Some(crate::date::wall() + 60.0);
         assert_eq!(s.alert(), None);
         let [x, _, w, h] = s.rect();
         let bubbles = s.bubbles();
@@ -2389,7 +2389,7 @@ mod tests {
         let mut s = island(Config { position_mode: "top-left".into(), ..Config::default() });
         s.set_caps_lock(true);
         s.set_track(Some(Track { name: "Song".into(), playing: true, ..Default::default() }), &mut tx);
-        s.pomodoro.ends = Some(60.0);
+        s.pomodoro.ends = Some(crate::date::wall() + 60.0);
         let [x, _, w, h] = s.rect();
         assert_eq!(s.bubbles().iter().map(|b| b.1[0]).collect::<Vec<_>>(), [x + w + BUBBLE_GAP, x + w + 2.0 * BUBBLE_GAP + h]);
 
@@ -2397,7 +2397,7 @@ mod tests {
         let mut s = island(Config { island_x: 0.0, ..Config::default() });
         s.set_caps_lock(true);
         s.set_track(Some(Track { name: "Song".into(), playing: true, ..Default::default() }), &mut tx);
-        s.pomodoro.ends = Some(60.0);
+        s.pomodoro.ends = Some(crate::date::wall() + 60.0);
         assert!(s.bubbles().iter().all(|b| b.1[0] >= 0.0 && b.1[0] + b.1[2] <= s.placement.canvas_w));
 
         // A bubble that goes away under the pointer lets go of the hover.
@@ -2409,7 +2409,7 @@ mod tests {
 
         // With info shown when idle, hovering a bubble still leaves the Island compact.
         let mut s = island(Config { show_info_idle: true, ..Config::default() });
-        s.pomodoro.ends = Some(60.0);
+        s.pomodoro.ends = Some(crate::date::wall() + 60.0);
         s.set_caps_lock(true);
         s.bubble_hovered = Some(Bubble::CapsLock);
         s.set_over(2, true, &mut tx);

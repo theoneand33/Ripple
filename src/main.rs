@@ -240,8 +240,8 @@ fn island_spec() -> AppSpec<Island> {
             ("timer", |s| { s.mode = Mode::Large; s.tab = Tab::Pomodoro; s.pomodoro.clock = tabs::Clock::Timer; s.pomodoro.timer.set(10.0, 0.0); s.pomodoro.timer.left = 4.0 * 60.0 + 12.0 }),
             ("stopwatch", |s| { s.mode = Mode::Large; s.tab = Tab::Pomodoro; s.pomodoro.clock = tabs::Clock::Stopwatch; s.pomodoro.stopwatch.elapsed = 83.0 }),
             ("timer-done", |s| { s.pomodoro.timer.rung = true; s.pomodoro.timer.left = 0.0 }),
-            ("stopwatch-live", |s| { s.pomodoro.stopwatch.toggle(0.0); s.pomodoro.stopwatch.elapsed = 3723.0; s.pomodoro.stopwatch.since = Some(-3723.0) }),
-            ("pomodoro-live", |s| { s.pomodoro.ends = Some(15.0 * 60.0 + 23.0); s.pomodoro.tick(0.0); }),
+            ("stopwatch-live", |s| { s.pomodoro.stopwatch.elapsed = 3723.0; s.pomodoro.stopwatch.since = Some(crate::date::wall() - 3723.0) }),
+            ("pomodoro-live", |s| { let now = crate::date::wall(); s.pomodoro.ends = Some(now + 15.0 * 60.0 + 23.0); s.pomodoro.tick(now); }),
             ("download", |s| { s.set_download(Some(downloads::Progress { fraction: Some(0.42), count: 1, done: false }), &mut rune::Tx::default()); }),
             ("download-done", |s| { let mut tx = rune::Tx::default(); s.set_download(Some(downloads::Progress { fraction: Some(0.9), count: 1, done: false }), &mut tx); s.set_download(Some(downloads::Progress { fraction: Some(1.0), count: 1, done: true }), &mut tx); }),
             ("calculator", |s| {
@@ -359,8 +359,9 @@ fn island_spec() -> AppSpec<Island> {
             ("playing-bubbles", |s| {
                 let mut tx = rune::Tx::default();
                 s.set_track(Some(system::Track { name: "Song".into(), artist: "Artist".into(), playing: true, ..Default::default() }), &mut tx);
-                s.pomodoro.ends = Some(15.0 * 60.0 + 23.0);
-                s.pomodoro.tick(0.0);
+                let now = crate::date::wall();
+                s.pomodoro.ends = Some(now + 15.0 * 60.0 + 23.0);
+                s.pomodoro.tick(now);
                 s.set_download(Some(downloads::Progress { fraction: None, count: 2, done: false }), &mut tx);
                 s.set_caps_lock(true);
             }),

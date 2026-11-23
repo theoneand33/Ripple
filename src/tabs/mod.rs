@@ -208,7 +208,7 @@ pub fn each_second(s: &mut Island, now: f64) -> bool {
     let agents = s.agents_poll(now);
     if waited(&mut s.stocks.reload_in) && shows(s, Tab::Stocks) { s.stocks_load() }
     if waited(&mut s.contributions.reload_in) && shows_widget(s, Widget::Contributions) { s.contributions_load() }
-    s.pomodoro.tick_all(now) | plugins | agents
+    s.pomodoro.tick_all(crate::date::wall()) | plugins | agents
 }
 
 /// Before every frame, from `Island::poll`.

@@ -6,6 +6,9 @@ pub fn now_ms() -> i64 {
 
 pub fn now_secs() -> i64 { now_ms() / 1000 }
 
+/// Wall-clock seconds. Unlike the app clock, it keeps counting while the computer sleeps.
+pub fn wall() -> f64 { now_ms() as f64 / 1000.0 }
+
 /// "9:41", or on a 12-hour clock "9:41" for 21:41 too.
 pub fn clock(hour: u32, minute: u32, hour12: bool) -> String {
     format!("{}:{minute:02}", if hour12 { (hour + 11) % 12 + 1 } else { hour })

@@ -2,7 +2,7 @@
 //! and a stopwatch. While one runs, the compact Island shows it beside a ring, as a live activity.
 
 use rune::tok::TextStyle;
-use rune::{El, Tx, col, el, icon, row, text};
+use rune::{El, col, el, icon, row, text};
 
 use super::{accent, chip, ring, tinted, tool};
 use crate::icons;
@@ -27,7 +27,7 @@ pub struct Pomodoro {
     pub focus: bool,
     /// Seconds left, as of the last tick.
     pub left: f64,
-    /// When the phase ends, on the app clock; None while paused.
+    /// When the phase ends, in wall-clock seconds; None while paused.
     pub ends: Option<f64>,
     /// Focus phases finished.
     pub rounds: u32,
@@ -84,7 +84,7 @@ impl Timer {
 #[derive(Default)]
 pub struct Stopwatch {
     pub elapsed: f64,
-    /// The app clock when it would have started, had it never paused; None while paused.
+    /// The wall clock when it would have started, had it never paused; None while paused.
     pub since: Option<f64>,
 }
 
@@ -102,7 +102,8 @@ impl Stopwatch {
 
     fn tick(&mut self, now: f64) -> bool {
         let Some(since) = self.since.filter(|_| now.is_finite()) else { return false };
-        self.elapsed = now - since;
+        // A wall clock set back would run it backwards: hold its time and count on from there.
+        if now - since < self.elapsed { self.since = Some(now - self.elapsed) } else { self.elapsed = now - since }
         true
     }
 }
@@ -147,7 +148,6 @@ impl Pomodoro {
 
     /// Counts down; a phase that ends starts the next one. False while paused.
     pub fn tick(&mut self, now: f64) -> bool {
-        // shortcut: the app clock may stop while the computer sleeps, so the timer falls behind; use wall time if that matters.
         let Some(mut ends) = self.ends.filter(|_| now.is_finite()) else { return false };
         while now >= ends {
             if self.focus { self.rounds += 1 }
@@ -200,13 +200,13 @@ fn timer_view(s: &Island) -> El {
     for m in [1.0, 5.0, 10.0, 15.0, 30.0] {
         presets = presets.child(chip(s, &format!("timer-{m}"), &format!("{m}m"), tint, t.length == m * 60.0)
             .role("button").label(format!("{m} minutes")).focusable(true)
-            .on_press_tx(move |s: &mut Island, tx: &mut Tx| s.pomodoro.timer.set(m, tx.clock())));
+            .on_press(move |s: &mut Island| s.pomodoro.timer.set(m, crate::date::wall())));
     }
     row().key("timer").w_full().gap(18.0).center_y()
         .child(dial(s, "timer", t.percent(), tint, t.label()))
         .child(col().gap(12.0).child(presets).child(row().gap(10.0).center_y()
             .child(tinted(s, "timer-start", if t.ends.is_some() { "Pause" } else { "Start" }, tint)
-                .on_press_tx(|s: &mut Island, tx: &mut Tx| s.pomodoro.timer.toggle(tx.clock())))
+                .on_press(|s: &mut Island| s.pomodoro.timer.toggle(crate::date::wall())))
             .child(tool(s, "timer-reset", &icons::ROTATE_CCW, "Reset").on_press(|s: &mut Island| s.pomodoro.timer.reset()))))
 }
 
@@ -217,7 +217,7 @@ fn stopwatch_view(s: &Island) -> El {
         .child(dial(s, "stopwatch", w.percent(), tint, w.label()))
         .child(row().gap(10.0).center_y()
             .child(tinted(s, "stopwatch-start", if w.since.is_some() { "Pause" } else { "Start" }, tint)
-                .on_press_tx(|s: &mut Island, tx: &mut Tx| s.pomodoro.stopwatch.toggle(tx.clock())))
+                .on_press(|s: &mut Island| s.pomodoro.stopwatch.toggle(crate::date::wall())))
             .child(tool(s, "stopwatch-reset", &icons::ROTATE_CCW, "Reset").on_press(|s: &mut Island| s.pomodoro.stopwatch.reset())))
 }
 
@@ -261,9 +261,9 @@ fn pomodoro_view(s: &Island) -> El {
     }
     let controls = row().key("pomodoro-controls").w_full().gap(10.0).center_y()
         .child(tinted(s, "pomodoro-start", if p.running() { "Pause" } else { "Start Timer" }, color)
-            .on_press_tx(|s: &mut Island, tx: &mut Tx| s.pomodoro.toggle(tx.clock())))
+            .on_press(|s: &mut Island| s.pomodoro.toggle(crate::date::wall())))
         .child(tool(s, "pomodoro-reset", &icons::ROTATE_CCW, "Reset").on_press(|s: &mut Island| s.pomodoro.reset()))
-        .child(tool(s, "pomodoro-skip", &icons::SKIP_FORWARD, "Skip").on_press_tx(|s: &mut Island, tx: &mut Tx| s.pomodoro.skip(tx.clock())))
+        .child(tool(s, "pomodoro-skip", &icons::SKIP_FORWARD, "Skip").on_press(|s: &mut Island| s.pomodoro.skip(crate::date::wall())))
         .child(el().grow(1.0))
         .child(text(p.label()).key("pomodoro-time").font(s.cfg.font(40.0, 700.0).lh(44.0).features("'tnum' 1")).color(color).a11y_hidden());
     col().key("pomodoro").w_full().gap(14.0).child(header).child(ruler).child(controls)
@@ -319,6 +319,10 @@ mod tests {
         p.stopwatch.toggle(100.0);
         p.tick_all(105.0);
         assert_eq!((p.stopwatch.elapsed, p.live_label()), (20.0, "0:20".to_string()));
+        // The clock set back an hour: the stopwatch holds, then counts on.
+        p.tick_all(105.0 - 3600.0);
+        p.tick_all(110.0 - 3600.0);
+        assert_eq!(p.stopwatch.elapsed, 25.0);
         p.stopwatch.elapsed = 3723.0;
         assert_eq!(p.stopwatch.label(), "1:02:03");
     }
