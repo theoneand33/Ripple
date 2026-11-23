@@ -35,12 +35,12 @@ impl Island {
         let (generation, range) = (self.stocks.generation, self.stocks.range);
         if !self.cfg.sure_key.is_empty() {
             let (url, key, base, rates) = (self.cfg.sure_url.clone(), self.cfg.sure_key.clone(), self.cfg.stocks_currency(), self.calc.rates.clone());
-            let fresh = self.calc.rates_fresh();
             if matches!(self.stocks.portfolio, Some(Err(_))) { self.stocks.portfolio = None }
-            // The Calculator's rates, refetched here if they are missing or a day old.
+            // The Calculator's rates: old ones serve now while their own job refreshes them; none yet are fetched first.
+            if rates.is_some() { self.calc_load() }
             me.spawn(move || {
-                let fetched = if fresh { None } else { crate::net::rates() };
-                (api::portfolio(&url, &key, range, &base, fetched.as_ref().or(rates.as_ref())), fetched)
+                let fetched = if rates.is_none() { crate::net::rates() } else { None };
+                (api::portfolio(&url, &key, range, &base, rates.as_ref().or(fetched.as_ref())), fetched)
             }, move |s, (p, fetched)| {
                 s.calc.got_rates(fetched);
                 if s.stocks.generation == generation { s.stocks.portfolio = Some(p) }
