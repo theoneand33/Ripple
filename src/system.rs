@@ -49,7 +49,8 @@ pub(crate) fn output(program: &str, args: &[&str]) -> Option<String> {
     let mut child = command(program).args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().ok()?;
     // Read stdout on its own thread: a full pipe would otherwise block the child forever.
     let mut stdout = child.stdout.take()?;
-    let reader = std::thread::spawn(move || { let mut out = Vec::new(); let _ = stdout.read_to_end(&mut out); out });
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || { let mut out = Vec::new(); let _ = stdout.read_to_end(&mut out); let _ = tx.send(out); });
     let started = std::time::Instant::now();
     let status = loop {
         match child.try_wait() {
@@ -58,7 +59,8 @@ pub(crate) fn output(program: &str, args: &[&str]) -> Option<String> {
             _ => { let _ = child.kill(); let _ = child.wait(); return None }
         }
     };
-    let out = reader.join().ok()?;
+    // A process the child left behind can hold stdout open long after it exits: wait only until the same deadline.
+    let out = rx.recv_timeout(TIMEOUT.saturating_sub(started.elapsed())).ok()?;
     status.success().then(|| String::from_utf8_lossy(&out).trim().to_string())
 }
 
