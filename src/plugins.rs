@@ -211,10 +211,9 @@ impl Plugin {
             node(&view.call::<Value>(spec.get::<Value>("state")?)?, &mut handlers, 0, &mut 0)
         });
         // The view runs after every tick and callback, so a job started there would start the next one forever.
-        let view = view.and_then(|v| match self.lua.app_data_mut::<Vec<Effect>>() {
-            Some(mut e) if e.len() > queued => { e.truncate(queued); Err(mlua::Error::runtime("view can't call ripple.*; call it from tick or a handler")) }
-            _ => Ok(v),
-        });
+        // Dropped whether or not the view then failed.
+        let called = self.lua.app_data_mut::<Vec<Effect>>().is_some_and(|mut e| { let more = e.len() > queued; e.truncate(queued); more });
+        let view = view.and_then(|v| if called { Err(mlua::Error::runtime("view can't call ripple.*; call it from tick or a handler")) } else { Ok(v) });
         match view {
             Ok(view) => {
                 self.sync_inputs(&view);
@@ -661,6 +660,8 @@ mod tests {
         assert!(plugin(r#"ripple.run(""); return { view = function() return "" end }"#).error.unwrap().contains("no command"));
         let mut v = plugin(r#"return { view = function() ripple.run("echo"); return "" end }"#);
         assert!(v.error.clone().unwrap().contains("view can't call") && v.take_effects().is_empty(), "a job started from view would chain forever");
+        let mut w = plugin(r#"return { view = function() ripple.run("echo"); error("boom") end }"#);
+        assert!(w.take_effects().is_empty(), "dropped when the view fails too");
         let mut q = plugin(r#"ripple.run('git -C "my dir" status'); return { view = function() return "" end }"#);
         let Some(Effect::Run { argv, .. }) = q.take_effects().pop() else { panic!() };
         assert_eq!(argv, ["git", "-C", "my dir", "status"], "a string splits into words without a shell");
