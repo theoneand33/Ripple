@@ -39,6 +39,8 @@ block2 = "0.6"
 x11rb = { version = "0.13", features = ["shape", "xfixes"] }
 # Whether the compositor has layer-shell, which the Island needs to run natively on Wayland.
 wayland-client = "0.31"
+# The portal's screen colour sampler (src/pick.rs); already in the tree for AccessKit.
+zbus = { version = "5", default-features = false, features = ["async-io", "blocking-api"] }
 
 # Cargo doesn't inherit a dependency's patches; these mirror Rune's own [patch.crates-io].
 [patch.crates-io]

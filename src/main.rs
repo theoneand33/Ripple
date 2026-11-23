@@ -18,6 +18,7 @@ mod net;
 mod nextcloud;
 mod notify;
 mod paths;
+mod pick;
 mod platform;
 mod plugins;
 mod settings;
@@ -235,6 +236,7 @@ fn island_spec() -> AppSpec<Island> {
                 s.cfg.dashboard = [config::Widget::Clock, config::Widget::Panel(Tab::Controls)].map(config::Tile::new).into();
                 s.controls.toggles = [Some(true), Some(true), Some(false)];
             }),
+            ("colors", |s| { s.mode = Mode::Large; s.tab = Tab::Colors; s.colors.color = [0xe8, 0x5d, 0x75] }),
             ("pomodoro", |s| { s.mode = Mode::Large; s.tab = Tab::Pomodoro; s.pomodoro.left = 18.0 * 60.0 + 42.0; s.pomodoro.rounds = 2 }),
             // Ends on the app clock, which starts near zero in a headless render.
             ("timer", |s| { s.mode = Mode::Large; s.tab = Tab::Pomodoro; s.pomodoro.clock = tabs::Clock::Timer; s.pomodoro.timer.set(10.0, 0.0); s.pomodoro.timer.left = 4.0 * 60.0 + 12.0 }),

@@ -47,6 +47,7 @@ tabs! {
     Stocks = 20,
     Clocks = 21,
     Controls = 23,
+    Colors = 24,
     Plugins = 15,
     Weather = 19,
 }
@@ -77,6 +78,7 @@ impl Tab {
             Tab::Stocks => "Stocks",
             Tab::Clocks => "World Clocks",
             Tab::Controls => "Controls",
+            Tab::Colors => "Color Picker",
         }
     }
 }

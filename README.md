@@ -48,6 +48,7 @@ https://github.com/user-attachments/assets/a7b9ed8a-97b5-4603-bad7-6f4c4bef1f5d
 - Calculator shows the answer as you type a sum (+ - × ÷ ^, % as remainder, and brackets). It also converts units and currencies, like `5 km to mi`, `100 °F to C` or `20 usd in eur` (reference rates from Frankfurter, fetched when the tab first opens). Press Enter to keep it on the history tape, which is kept across restarts.
 - Stocks shows a watchlist of tickers from Yahoo Finance, and your portfolio from a [Sure](https://sure.am) server's investment and crypto accounts. Every account converts into one currency (USD unless you set another) at Frankfurter's reference rates before the totals.
 - Controls switches Wi-Fi, Bluetooth and mute, and locks, sleeps, restarts or shuts down the computer. Restart and Shut Down ask for a second press. On macOS, Bluetooth needs `blueutil`, and Lock sleeps the display, which locks when a password is asked on wake.
+- Color Picker samples any pixel on screen and shows it as HEX, RGB, HSL and OKLCH; press a format to copy it.
 - World Clocks shows the time in the cities you add on the tab, with today's sunrise and sunset there and the moon's phase. Open-Meteo looks each city up.
 - Habits tracks things to do every day. Tick off today or any of the last six days; each habit shows its streak of days in a row.
 - Plugins shows panels you write in Lua: drop a `.lua` file in the `plugins` folder next to `prefs.json`. See [PLUGINS.md](PLUGINS.md) for the API and how to test a plugin without a display.

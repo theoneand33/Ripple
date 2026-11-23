@@ -8,6 +8,7 @@ mod calendar;
 mod clipboard;
 mod clocks;
 mod controls;
+mod colors;
 mod habits;
 mod limits;
 mod monitor;
@@ -33,6 +34,7 @@ pub use clipboard::{Clipboard, Content};
 pub use overview::{Contributions, Dashboard, height as overview_height, width as overview_width};
 pub use clocks::Clocks;
 pub use controls::Controls;
+pub use colors::Colors;
 pub use habits::Habits;
 pub use limits::Limits;
 pub use notes::Notes;
@@ -79,6 +81,7 @@ fn panel(s: &Island, tab: Tab, layer: &mut Vec<El>) -> El {
         Tab::Stocks => stocks::view(s),
         Tab::Clocks => clocks::view(s),
         Tab::Controls => controls::view(s),
+        Tab::Colors => colors::view(s),
     }
 }
 
@@ -102,6 +105,7 @@ pub const fn size(tab: Tab) -> (f32, f32) {
         Tab::Weather => (420.0, 190.0),
         Tab::Clocks => (480.0, 300.0),
         Tab::Controls => (440.0, 230.0),
+        Tab::Colors => (520.0, 240.0),
     }
 }
 
@@ -130,6 +134,7 @@ pub fn icon_of(tab: Tab) -> &'static rune::Icon {
         Tab::Stocks => &icons::TRENDING_UP,
         Tab::Clocks => &icons::CLOCK,
         Tab::Controls => &icons::POWER,
+        Tab::Colors => &icons::PIPETTE,
     }
 }
 
