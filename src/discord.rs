@@ -80,24 +80,47 @@ fn lost<T>(_: T) -> Failure { Failure::Lost(CLOSED.into()) }
 trait Stream: Read + Write + Send {}
 impl<T: Read + Write + Send> Stream for T {}
 
-/// The first IPC endpoint Discord (or its Flatpak or Snap) listens on.
+/// The first IPC endpoint Discord (or its Flatpak or Snap) listens on. Another local user can
+/// make one in a shared folder like /tmp while Discord is closed, and `AUTHENTICATE` sends the
+/// token: only a socket the user owns counts.
 #[cfg(unix)]
 fn connect() -> Option<Box<dyn Stream>> {
+    use std::os::unix::fs::MetadataExt;
+    // SAFETY: getuid takes nothing and cannot fail.
+    let me = unsafe { libc::getuid() };
     let dirs: Vec<String> = ["XDG_RUNTIME_DIR", "TMPDIR", "TMP", "TEMP"].iter().filter_map(|v| std::env::var(v).ok()).chain(["/tmp".into()]).collect();
     for dir in dirs {
         for sub in ["", "app/com.discordapp.Discord/", "snap.discord/", ".flatpak/dev.vencord.Vesktop/xdg-run/"] {
             for i in 0..10 {
-                if let Ok(s) = std::os::unix::net::UnixStream::connect(format!("{dir}/{sub}discord-ipc-{i}")) { return Some(Box::new(s)) }
+                let path = format!("{dir}/{sub}discord-ipc-{i}");
+                if std::fs::metadata(&path).is_ok_and(|m| m.uid() == me) && let Ok(s) = std::os::unix::net::UnixStream::connect(&path) { return Some(Box::new(s)) }
             }
         }
     }
     None
 }
 
+/// Any process can serve `discord-ipc-N` while Discord is closed: only a pipe served from the
+/// user's own login session counts. (A process of the same user could read the token from
+/// `prefs.json` anyway.)
 #[cfg(windows)]
 fn connect() -> Option<Box<dyn Stream>> {
-    (0..10).find_map(|i| std::fs::OpenOptions::new().read(true).write(true).open(format!(r"\\.\pipe\discord-ipc-{i}")).ok())
+    (0..10).find_map(|i| std::fs::OpenOptions::new().read(true).write(true).open(format!(r"\\.\pipe\discord-ipc-{i}")).ok().filter(same_session))
         .map(|f| Box::new(f) as Box<dyn Stream>)
+}
+
+#[cfg(windows)]
+fn same_session(pipe: &std::fs::File) -> bool {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::System::{Pipes::GetNamedPipeServerProcessId, RemoteDesktop::ProcessIdToSessionId};
+    let (mut server, mut theirs, mut ours) = (0u32, u32::MAX, 0u32);
+    // SAFETY: the handle is the open pipe's, and the out pointers are locals.
+    unsafe {
+        GetNamedPipeServerProcessId(pipe.as_raw_handle(), &mut server) != 0
+            && ProcessIdToSessionId(server, &mut theirs) != 0
+            && ProcessIdToSessionId(std::process::id(), &mut ours) != 0
+            && theirs == ours
+    }
 }
 
 #[cfg(not(any(unix, windows)))]
@@ -202,8 +225,10 @@ impl<S: Read + Write> Rpc<S> {
 fn grant(url: &str, app: &App, form: &[(&str, &str)], now: i64) -> Result<Token, Failure> {
     let form = [("client_id", app.id.as_str()), ("client_secret", app.secret.as_str())].into_iter().chain(form.iter().copied());
     let mut res = crate::net::agent().post(url).send_form(form).map_err(|e| Failure::Lost(format!("Couldn't reach Discord: {e}")))?;
-    // A server error says nothing about the token: try again later rather than ask anew.
-    if res.status().is_server_error() { return Err(Failure::Lost(format!("Discord answered {}", res.status().as_u16()))) }
+    // Only OAuth's refusals (400 invalid_grant, 401 invalid_client) say the token or app is no
+    // good; a rate limit or outage tries again later rather than asking the user anew.
+    let status = res.status().as_u16();
+    if !res.status().is_success() && !matches!(status, 400 | 401) { return Err(Failure::Lost(format!("Discord answered {status}"))) }
     let body = crate::net::read_json(&mut res);
     let (Some(access), Some(refresh)) = (body["access_token"].as_str(), body["refresh_token"].as_str()) else {
         return Err(Failure::Refused(format!("Discord refused the sign-in: {}", body["error_description"].as_str().or(body["error"].as_str()).unwrap_or("check the app's ID and secret"))));
@@ -343,23 +368,32 @@ pub fn watch(app: impl Fn() -> Option<(App, Option<Token>)>, save: impl Fn(Token
 }
 
 /// Sends one voice command on a connection of its own, as the watcher's only reads. Returns
-/// the token, if it had to be renewed first.
-pub fn command(app: &App, token: &Token, cmd: Command) -> Result<Option<Token>, String> {
-    let stream = connect().ok_or(CLOSED)?;
+/// the token if it was renewed first, to save even when the command fails: the old refresh
+/// token may be spent.
+pub fn command(app: &App, token: &Token, cmd: Command) -> (Option<Token>, Result<(), String>) {
+    let Some(stream) = connect() else { return (None, Err(CLOSED.into())) };
     run(stream, app, token, TOKEN_URL, crate::date::now_ms(), cmd)
 }
 
-fn run<S: Read + Write>(stream: S, app: &App, token: &Token, token_url: &str, now: i64, cmd: Command) -> Result<Option<Token>, String> {
-    let fresh = fresh(token.clone(), app, token_url, now)?.ok_or("Discord signed Ripple out: it asks again shortly")?;
+fn run<S: Read + Write>(stream: S, app: &App, token: &Token, token_url: &str, now: i64, cmd: Command) -> (Option<Token>, Result<(), String>) {
+    let fresh = match fresh(token.clone(), app, token_url, now) {
+        Ok(Some(t)) => t,
+        Ok(None) => return (None, Err("Discord signed Ripple out: it asks again shortly".into())),
+        Err(e) => return (None, Err(e.into())),
+    };
+    let renewed = (fresh != *token).then(|| fresh.clone());
+    (renewed, send(stream, app, &fresh, cmd).map_err(String::from))
+}
+
+fn send<S: Read + Write>(stream: S, app: &App, token: &Token, cmd: Command) -> Result<(), Failure> {
     let mut rpc = Rpc::open(stream, &app.id)?;
-    rpc.authenticate(&fresh)?;
+    rpc.authenticate(token)?;
     let (name, args) = match cmd {
         Command::Mute(on) => ("SET_VOICE_SETTINGS", json!({ "mute": on })),
         Command::Deaf(on) => ("SET_VOICE_SETTINGS", json!({ "deaf": on })),
         Command::Leave => ("SELECT_VOICE_CHANNEL", json!({ "channel_id": null })),
     };
-    rpc.call(name, args, None)?;
-    Ok((fresh != *token).then_some(fresh))
+    rpc.call(name, args, None).map(drop)
 }
 
 #[cfg(all(test, unix))]
@@ -492,17 +526,23 @@ mod tests {
         }, vec![]);
         let app = App { id: "app".into(), secret: "s".into() };
         let token = Token { access: "a2".into(), refresh: "r2".into(), expires: i64::MAX };
-        assert_eq!(run(ours, &app, &token, &token_url, 5, Command::Leave), Ok(None));
+        assert_eq!(run(ours, &app, &token, &token_url, 5, Command::Leave), (None, Ok(())));
         assert_eq!(fake.join().unwrap(), ["AUTHENTICATE", "SELECT_VOICE_CHANNEL"]);
         let (ours, theirs) = UnixStream::pair().unwrap();
         let fake = discord(theirs, |cmd, _| if cmd == "SET_VOICE_SETTINGS" { json!({ "error": "Missing scope" }) } else { json!({}) }, vec![]);
-        assert_eq!(run(ours, &app, &token, &token_url, 5, Command::Mute(true)), Err("Discord: Missing scope".into()));
+        assert_eq!(run(ours, &app, &token, &token_url, 5, Command::Mute(true)), (None, Err("Discord: Missing scope".into())));
         drop(fake);
-        // A command with an expired token renews it first, and hands the new one back to save.
+        // A command with an expired token renews it first, and hands the new one back to save,
+        // even when the command then fails.
         let (ours, theirs) = UnixStream::pair().unwrap();
-        let fake = discord(theirs, |cmd, args| if cmd == "AUTHENTICATE" && args["access_token"] != "a2" { json!({ "error": "Invalid token" }) } else { json!({}) }, vec![]);
+        let fake = discord(theirs, |cmd, args| match cmd {
+            "AUTHENTICATE" if args["access_token"] != "a2" => json!({ "error": "Invalid token" }),
+            "SET_VOICE_SETTINGS" => json!({ "error": "Missing scope" }),
+            _ => json!({}),
+        }, vec![]);
         let expired = Token { access: "a1".into(), refresh: "r1".into(), expires: 0 };
-        assert_eq!(run(ours, &app, &expired, &token_url, 5, Command::Deaf(true)), Ok(Some(Token { access: "a2".into(), refresh: "r2".into(), expires: 10_005 })));
+        let renewed = Token { access: "a2".into(), refresh: "r2".into(), expires: 10_005 };
+        assert_eq!(run(ours, &app, &expired, &token_url, 5, Command::Deaf(true)), (Some(renewed), Err("Discord: Missing scope".into())));
         assert_eq!(fake.join().unwrap(), ["AUTHENTICATE", "SET_VOICE_SETTINGS"]);
     }
 
@@ -510,7 +550,7 @@ mod tests {
     fn a_denied_approval_or_a_refused_renewal_is_refused_and_an_outage_is_lost() {
         let token_url = format!("{}/token", serve(|r| match r.body.contains("refresh_token=gone") {
             true => reply(400, json!({ "error": "invalid_grant" })),
-            false => reply(503, json!({})),
+            false => reply(429, json!({ "message": "You are being rate limited." })),
         }));
         let app = App { id: "app".into(), secret: "s".into() };
         let expired = |refresh: &str| Some(Token { access: "a".into(), refresh: refresh.into(), expires: 0 });
@@ -519,10 +559,10 @@ mod tests {
         let fake = discord(theirs, |cmd, _| if cmd == "AUTHORIZE" { json!({ "error": "User denied" }) } else { json!({}) }, vec![]);
         assert_eq!(session(ours, &app, expired("gone"), &token_url, 5, &|_| {}, &|_| {}), Err(Failure::Refused("Discord: User denied".into())));
         assert_eq!(fake.join().unwrap(), ["AUTHORIZE"]);
-        // Discord's token server down: no prompt, try again later.
+        // Discord's token server rate-limiting: no prompt, try again later.
         let (ours, theirs) = UnixStream::pair().unwrap();
         let fake = discord(theirs, |_, _| json!({}), vec![]);
-        assert_eq!(session(ours, &app, expired("ok"), &token_url, 5, &|_| {}, &|_| {}), Err(Failure::Lost("Discord answered 503".into())));
+        assert_eq!(session(ours, &app, expired("ok"), &token_url, 5, &|_| {}, &|_| {}), Err(Failure::Lost("Discord answered 429".into())));
         assert_eq!(fake.join().unwrap(), Vec::<String>::new());
     }
 

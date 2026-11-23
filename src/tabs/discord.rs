@@ -60,9 +60,9 @@ impl Island {
     fn discord_command(&mut self, cmd: Command) {
         let (Some(me), Some(app), Some(token)) = (self.me.clone(), self.discord_app(), self.cfg.discord_token.clone()) else { return };
         self.discord.status.clear();
-        me.spawn(move || api::command(&app, &token, cmd), |s, result| match result {
-            Ok(renewed) => if let Some(t) = renewed { s.save(|c| c.discord_token = Some(t)) },
-            Err(e) => s.discord.status = e,
+        me.spawn(move || api::command(&app, &token, cmd), |s, (renewed, result)| {
+            if let Some(t) = renewed { s.save(|c| c.discord_token = Some(t)) }
+            s.discord.status = result.err().unwrap_or_default();
         });
     }
 }
