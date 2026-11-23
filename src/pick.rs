@@ -51,10 +51,14 @@ fn portal() -> zbus::Result<Option<[u8; 3]>> {
         .body().deserialize()?;
     // Portals older than handle_token answer on a path of their own.
     if handle.as_str() != expected { responses = request(handle.to_string())?.receive_signal("Response")? }
-    // The iterator has no timeout: wait on a thread, left blocked if the portal never answers.
+    // The iterator has no timeout: wait on a thread, and on giving up close the connection,
+    // which ends the iterator and so the thread.
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || { let _ = tx.send(responses.next()); });
-    let Ok(Some(answer)) = rx.recv_timeout(LIMIT) else { return Ok(None) };
+    let answer = match rx.recv_timeout(LIMIT) {
+        Ok(Some(answer)) => answer,
+        _ => { let _ = conn.close(); return Ok(None) }
+    };
     let (code, results): (u32, HashMap<String, OwnedValue>) = answer.body().deserialize()?;
     let Some(color) = results.get("color").filter(|_| code == 0) else { return Ok(None) };
     let (r, g, b): (f64, f64, f64) = color.try_clone()?.try_into()?;
@@ -169,7 +173,7 @@ fn windows() -> Option<[u8; 3]> {
     let start = Instant::now();
     let tick = || std::thread::sleep(Duration::from_millis(10));
     // The press on Pick itself.
-    while down(1) { tick() }
+    while down(1) && start.elapsed() < LIMIT { tick() }
     loop {
         if down(2) || down(0x1b) || start.elapsed() > LIMIT { return None }
         if down(1) { break }
