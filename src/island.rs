@@ -294,8 +294,8 @@ pub struct Island {
     pub lyrics: Option<Vec<crate::net::Lyric>>,
     /// The playback position in ms, run on from the last poll so lyrics keep time between polls.
     pub lyric_ms: u32,
-    /// When the track's position was last polled.
-    track_at: f64,
+    /// When a poll last moved the track's position; None once a poll repeats it (buffering, a stale player).
+    track_at: Option<f64>,
     pub art_hovered: bool,
     /// The bubble under the pointer: a bubble that goes away takes no hover-leave with it.
     bubble_hovered: Option<Bubble>,
@@ -448,7 +448,7 @@ impl Island {
             track: None,
             lyrics: None,
             lyric_ms: 0,
-            track_at: 0.0,
+            track_at: None,
             art: None,
             art_hovered: false,
             bubble_hovered: None,
@@ -1315,7 +1315,12 @@ impl Island {
     }
 
     pub fn set_track(&mut self, track: Option<Track>, tx: &mut Tx) -> bool {
-        if track == self.track { return false }
+        if track == self.track {
+            // The position stalled: hold the polled position rather than run on past it.
+            if self.track_at.take().is_none() { return false }
+            self.lyric_ms = track.as_ref().and_then(|t| t.progress).map_or(0, |(p, _)| p * 1000);
+            return true;
+        }
         // A poll that only played on a few seconds: the bar runs at playback speed until the next one.
         // Polls land at once (no input caused them), so this one asks for motion; seeks still jump.
         if let (Some(old), Some(new)) = (&self.track, &track)
@@ -1340,7 +1345,7 @@ impl Island {
         let art_url = |t: &Option<Track>| t.as_ref().and_then(|t| t.artwork_url.clone());
         let (old_art, new_art) = (art_url(&self.track), art_url(&track));
         self.track = track;
-        self.track_at = tx.clock();
+        self.track_at = Some(tx.clock());
         // Polls round down, so one up to 1.5 s behind the run-on position is the same moment; further back is a seek.
         let polled = self.track.as_ref().and_then(|t| t.progress).map_or(0, |(p, _)| p * 1000);
         self.lyric_ms = if !new_song && polled + 1500 > self.lyric_ms { polled.max(self.lyric_ms) } else { polled };
@@ -1364,7 +1369,7 @@ impl Island {
         let Some(lines) = self.lyrics.as_deref().filter(|_| self.cfg.lyrics) else { return false };
         let Some((position, length)) = self.track.as_ref().filter(|t| t.playing).and_then(|t| t.progress) else { return false };
         // Up to 3 s past the poll: a late poll holds the line rather than running past the song.
-        let ahead = ((now - self.track_at).clamp(0.0, 3.0) * 1000.0) as u32;
+        let ahead = self.track_at.map_or(0, |at| ((now - at).clamp(0.0, 3.0) * 1000.0) as u32);
         let ms = (position * 1000 + ahead).min(length * 1000).max(self.lyric_ms);
         let changed = crate::net::lyric_at(lines, ms) != crate::net::lyric_at(lines, self.lyric_ms);
         self.lyric_ms = ms;
@@ -2277,6 +2282,11 @@ mod tests {
         assert!(!s.run_lyrics(tx.clock(), &mut tx));
         assert_eq!(s.lyric_ms, 13_000);
         s.set_track(at_pos(5), &mut tx);
+        assert_eq!(s.lyric_ms, 5_000);
+        // A poll that repeats the position stops the run-on until the position moves again.
+        s.run_lyrics(tx.clock() + 2.0, &mut tx);
+        assert!(s.set_track(at_pos(5), &mut tx));
+        s.run_lyrics(tx.clock() + 2.0, &mut tx);
         assert_eq!(s.lyric_ms, 5_000);
     }
 
