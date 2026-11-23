@@ -7,6 +7,7 @@ mod calculator;
 mod calendar;
 mod clipboard;
 mod clocks;
+mod controls;
 mod habits;
 mod limits;
 mod monitor;
@@ -31,6 +32,7 @@ pub use calendar::{link_host, Calendar};
 pub use clipboard::{Clipboard, Content};
 pub use overview::{Contributions, Dashboard, height as overview_height, width as overview_width};
 pub use clocks::Clocks;
+pub use controls::Controls;
 pub use habits::Habits;
 pub use limits::Limits;
 pub use notes::Notes;
@@ -76,6 +78,7 @@ fn panel(s: &Island, tab: Tab, layer: &mut Vec<El>) -> El {
         Tab::Habits => habits::view(s),
         Tab::Stocks => stocks::view(s),
         Tab::Clocks => clocks::view(s),
+        Tab::Controls => controls::view(s),
     }
 }
 
@@ -98,6 +101,7 @@ pub const fn size(tab: Tab) -> (f32, f32) {
         Tab::Clipboard => (420.0, 290.0),
         Tab::Weather => (420.0, 190.0),
         Tab::Clocks => (480.0, 300.0),
+        Tab::Controls => (440.0, 230.0),
     }
 }
 
@@ -125,6 +129,7 @@ pub fn icon_of(tab: Tab) -> &'static rune::Icon {
         Tab::Habits => &icons::FLAME,
         Tab::Stocks => &icons::TRENDING_UP,
         Tab::Clocks => &icons::CLOCK,
+        Tab::Controls => &icons::POWER,
     }
 }
 
@@ -182,6 +187,7 @@ fn load(s: &mut Island, tab: Tab) {
         Tab::Calculator => s.calc_load(),
         Tab::Stocks => s.stocks_load(),
         Tab::Clocks => s.clocks_load(),
+        Tab::Controls => s.controls_load(),
         Tab::Notes => s.nextcloud_sync(Kind::Notes),
         Tab::Tasks => tasks::entered(s),
         Tab::Calendar => calendar::entered(s),
