@@ -102,7 +102,8 @@ impl Stopwatch {
 
     fn tick(&mut self, now: f64) -> bool {
         let Some(since) = self.since.filter(|_| now.is_finite()) else { return false };
-        self.elapsed = now - since;
+        // A wall clock set back would run it backwards: hold its time and count on from there.
+        if now - since < self.elapsed { self.since = Some(now - self.elapsed) } else { self.elapsed = now - since }
         true
     }
 }
@@ -318,6 +319,10 @@ mod tests {
         p.stopwatch.toggle(100.0);
         p.tick_all(105.0);
         assert_eq!((p.stopwatch.elapsed, p.live_label()), (20.0, "0:20".to_string()));
+        // The clock set back an hour: the stopwatch holds, then counts on.
+        p.tick_all(105.0 - 3600.0);
+        p.tick_all(110.0 - 3600.0);
+        assert_eq!(p.stopwatch.elapsed, 25.0);
         p.stopwatch.elapsed = 3723.0;
         assert_eq!(p.stopwatch.label(), "1:02:03");
     }
