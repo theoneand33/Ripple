@@ -264,11 +264,11 @@ impl Plugin {
 
     /// Return in field `key`: its `on_submit` with the text.
     pub fn submit(&mut self, key: &str) {
+        // Typing that no frame has passed to `on_change` yet goes first, so `on_submit` sees state that matches the field.
+        self.changed();
         let mut action = None;
         if let Some(v) = &self.view { walk(v, &mut |n| if let Node::Input { key: k, submit: Some(a), .. } = n { if k == key { action = Some(*a) } }) }
-        // Submitted text counts as seen, so a later `changed` doesn't replay it over what `on_submit` set,
-        // and the view's value applies afresh, so `on_submit` can clear a field whose value it never changed.
-        let text = self.inputs.get_mut(key).map(|i| { i.seen = i.edit.text.clone(); i.given = None; i.seen.clone() });
+        let text = self.inputs.get(key).map(|i| i.edit.text.clone());
         if let Some(a) = action { self.handle(a, text) }
     }
 
@@ -685,7 +685,7 @@ mod tests {
         assert!(!p.changed(), "on_change runs once per edit");
         p.submit("q");
         assert_eq!(line(&p), Node::Text { text: "milk|milk".into(), size: 14.0, weight: 400.0, dim: false });
-        assert_eq!(p.inputs["q"].edit.text, "", "on_submit set the value to empty, which clears the field");
+        assert_eq!(p.inputs["q"].edit.text, "milk", "the view's value didn't change, so the text stays");
         assert!(p.press_key("On"));
         assert!(format!("{:?}", p.view).contains("on: true"));
         assert!(plugin(r#"return { view = function() return ui.icon("nope") end }"#).error.unwrap().contains("unknown icon"));
@@ -695,6 +695,12 @@ mod tests {
         t.submit("draft");
         assert!(!t.changed(), "on_change doesn't replay the submitted text");
         assert_eq!(t.inputs["draft"].edit.text, "", "on_submit cleared the field");
+        // Return with no on_submit, or one that leaves `value` alone, keeps the typed text.
+        let mut f = plugin(r#"return { state = { q = "x" }, tick = function() end, view = function(s) return ui.input("q", { value = s.q }) end }"#);
+        f.inputs.get_mut("q").unwrap().edit.replace_text("milk".to_string());
+        f.submit("q");
+        f.tick();
+        assert_eq!(f.inputs["q"].edit.text, "milk");
     }
 
     #[test]
