@@ -44,12 +44,20 @@ end
 ripple = {}
 do
   local spawn, effect = __ripple_spawn, __ripple_effect; __ripple_spawn, __ripple_effect = nil, nil
-  local jobs = {}
-  function ripple.run(cmd, on_done) local id = spawn(cmd); jobs[id] = on_done; return id end
+  -- At most 8 jobs at once, so a plugin that starts one every tick can't pile up processes.
+  local jobs, running = {}, 0
+  function ripple.run(cmd, on_done)
+    if running >= 8 then error("ripple.run: 8 jobs are already running", 2) end
+    local id = spawn(cmd); jobs[id] = on_done or false; running = running + 1; return id
+  end
   function ripple.notify(text) effect("notify", tostring(text)) end
   function ripple.open(target) effect("open", tostring(target)) end
   function ripple.copy(text) effect("copy", tostring(text)) end
-  return function(id, state, out) local f = jobs[id]; jobs[id] = nil; if f then f(state, out) end end
+  return function(id, state, out)
+    local f = jobs[id]; if f == nil then return end
+    jobs[id], running = nil, running - 1
+    if f then f(state, out) end
+  end
 end
 "#;
 
@@ -660,6 +668,13 @@ mod tests {
         assert!(plugin(r#"ripple.run(""); return { view = function() return "" end }"#).error.unwrap().contains("no command"));
         let mut v = plugin(r#"return { view = function() ripple.run("echo"); return "" end }"#);
         assert!(v.error.clone().unwrap().contains("view can't call") && v.take_effects().is_empty(), "a job started from view would chain forever");
+        let mut c = plugin(r#"return { view = function() return ui.button("go", function() for _ = 1, 9 do ripple.run("echo") end end) end }"#);
+        c.press_key("go");
+        let ids: Vec<u64> = c.take_effects().into_iter().filter_map(|e| if let Effect::Run { id, .. } = e { Some(id) } else { None }).collect();
+        assert!(ids.len() == 8 && c.error.take().unwrap().contains("already running"), "the ninth job is refused");
+        c.finish(ids[0], None);
+        c.press_key("go");
+        assert_eq!(c.take_effects().len(), 1, "a finished job frees its slot");
         let mut w = plugin(r#"return { view = function() ripple.run("echo"); error("boom") end }"#);
         assert!(w.take_effects().is_empty(), "dropped when the view fails too");
         let mut q = plugin(r#"ripple.run('git -C "my dir" status'); return { view = function() return "" end }"#);
