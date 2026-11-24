@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Ripple is a Dynamic Island-style bar for Windows, Linux, and macOS. It is one Rust binary built on [Rune](https://github.com/anomalyco/rune). The README covers features and usage. This file covers how to change the code.
+Ripple is a Dynamic Island-style bar for Windows, Linux, and macOS: one Rust binary built on [Rune](https://github.com/anomalyco/rune). Features and usage live in `README.md`; the Lua plugin API in `PLUGINS.md`.
 
 ## Layout
 
@@ -8,61 +8,58 @@ Ripple is a Dynamic Island-style bar for Windows, Linux, and macOS. It is one Ru
 | --- | --- |
 | `src/main.rs` | App setup, windows, tray, and the headless scenes (`island_spec().scenes`) |
 | `src/island.rs` | Island state, the Still/Quick/Large rules, alerts, and the compact views |
-| `src/tabs/` | One module per Large Mode tab: its state, its actions, and its view. `mod.rs` maps each tab to its view and size |
-| `src/settings.rs` | The Settings window. Each change saves at once. |
-| `src/config.rs` | Every user setting, stored as one JSON value in `prefs.json`; the `Tab` list, themes and AI providers |
+| `src/tabs/` | One module per Large Mode tab: its state, actions, and view. `mod.rs` maps each tab to its view and size |
+| `src/settings.rs` | The Settings window. Each change saves at once |
+| `src/config.rs` | Every user setting (one JSON value in `prefs.json`), the `Tab` list, themes, AI providers |
 | `src/system.rs` | OS queries: now playing, battery, Bluetooth, camera, mic, launching apps |
-| `src/net.rs` | Weather, the AI assistant stream, and images by URL |
+| `src/net.rs` | Weather, the AI assistant stream, images by URL |
 | `src/stocks.rs` | Stock quotes (Yahoo Finance) and the Sure portfolio |
 | `src/downloads.rs` | Download progress from each OS, shown as a live activity |
 | `src/stremflix.rs` | Stremflix-rs's local API: Continue Watching and playback |
-| `src/nextcloud.rs` | Nextcloud's protocols: Notes API, CalDAV and WebDAV, and the merge that keeps local edits. `tabs/sync.rs` starts syncs and applies their outcome |
-| `src/ics.rs` | iCalendar text: tasks and events to and from their one-line texts, and in-place edits |
-| `src/task.rs` | A task's one-line text (`!! Title due:… every:…`), read and written |
-| `src/discord.rs` | Discord's local RPC (IPC socket or named pipe): the voice channel, its members and speakers, and mute, deafen and leave |
-| `src/limits.rs` | AI Limits: finds each coding agent's saved sign-in and reads its plan usage |
-| `src/plugins.rs` | Lua plugins: loading the plugins folder, the `ui.*` nodes, and `--test-plugin`. API in `PLUGINS.md` |
+| `src/nextcloud.rs` | Notes API, CalDAV, WebDAV, and the merge that keeps local edits. `tabs/sync.rs` starts syncs and applies their outcome |
+| `src/ics.rs` | iCalendar text: tasks and events to and from their one-line texts, in-place edits |
+| `src/task.rs` | A task's one-line text (`!! Title due:… every:…`) |
+| `src/discord.rs` | Discord local RPC (IPC socket or named pipe): voice channel, members, speakers, mute/deafen/leave |
+| `src/limits.rs` | AI Limits: each coding agent's saved sign-in and plan usage |
+| `src/plugins.rs` | Lua plugins: the plugins folder, `ui.*` nodes, `--test-plugin` |
 | `src/t3.rs` | T3 Code client (HTTP, `/ws` RPC, `/mcp` sign-in) |
-| `src/pick.rs` | Screen sampling: the colour of a pixel the user clicks, from each OS |
-| `src/platform.rs` | Displays, click-through around the Island (X11 input shape), and focus hand-back |
+| `src/pick.rs` | Screen sampling: the colour of a clicked pixel, per OS |
+| `src/platform.rs` | Displays, click-through around the Island (X11 input shape), focus hand-back |
 | `src/mac.rs` | macOS status-bar item and the notch window frame |
 | `src/date.rs` | Calendar date maths and the wall clock |
-| `src/agents.rs` | `ripple hook <agent>`: records agent sessions and waits for the Island's answer to a permission or question. `integrations/opencode/ripple.ts` calls it from OpenCode |
+| `src/agents.rs` | `ripple hook <agent>`: records agent sessions and waits for the Island's answer to a permission or question. Called from `integrations/opencode/ripple.ts` |
 | `src/notify.rs` | `ripple notify "text"`: queues a script's alert as a file the Island picks up |
-| `src/paths.rs` | The app folder for the CLIs, `~` expansion, and atomic file writes |
+| `src/paths.rs` | The app folder, `~` expansion, atomic file writes |
 | `src/command.rs` | Splits a launch string into argv without a shell |
 | `src/icons.rs` | Lucide icons as Rune icon bodies |
 | `src/testserver.rs` | Local HTTP/WebSocket server for tests |
 
-## Build and verify
+## Verify a change
 
-- GitHub Actions (`.github/workflows/build.yml`) runs the tests, renders every scene, and smoke-runs the app on each OS.
-- You may run `cargo check`, `cargo test`, `cargo build`, and `cargo run` locally to confirm that a change or fix works. Debug builds render headlessly, so you need no display:
+1. Size the check to the change. A typo, string, constant, or a few lines with no new logic: `cargo check` only. New logic: `cargo test`, plus a render if it touches a view.
+2. A new view or state gets a **scene** in `scenes` in `src/main.rs`. Debug builds render headlessly, no display needed:
 
-  ```bash
-  cargo run -- --list-scenes
-  cargo run -- --window island --scene large --snap island.png
-  cargo run -- --window settings --size 520x2600 --snap settings.png
-  ```
+   ```bash
+   cargo run -- --list-scenes
+   cargo run -- --window island --scene large --snap island.png
+   cargo run -- --window settings --size 520x2600 --snap settings.png
+   ```
 
-- For a very small change, such as a typo, a string, a constant, or a few lines with no new logic, run only `cargo check` (fairly quick). Skip `cargo build` and `cargo test` (both can take a while if uncached) and let CI run them.
-- Then push and read the CI results.
-- When you add a view or a state that needs a visual check, add a scene to `scenes` in `src/main.rs`. CI renders every scene `--list-scenes` prints and uploads the PNGs as the `smoke-*` artifacts.
-- To add a tab, add it to `Tab` in `src/config.rs` with a new number, then follow the compiler: every `match` on `Tab` needs an arm.
-- Linux build deps: `libxkbcommon-dev libwayland-dev`. The toolchain must be the Rust version that Rune pins (1.99 or newer).
-- A full debug link uses a lot of RAM. Keep the `[profile.dev]` settings.
+3. Push and read CI (`.github/workflows/build.yml`). Done when CI is green on all three OSes: it runs the tests, renders every scene `--list-scenes` prints (PNGs in the `smoke-*` artifacts), and smoke-runs the app.
+
+Toolchain: the Rust version Rune pins (1.99+). Linux deps: `libxkbcommon-dev libwayland-dev`. Keep `[profile.dev]` as is: a full debug link otherwise exhausts RAM.
 
 ## Rules
 
-- Rune is pre-release. It is pinned to one git `rev`. If you bump it, change the `rev` in `[dependencies]` and in every `[patch.crates-io]` entry together.
-- `system.rs`, `net.rs` and the service clients (`t3`, `limits`, `stocks`, `stremflix`, `nextcloud`) block. Call them off the UI thread, the way the existing callers do.
-- Run user-supplied launch strings through `command.rs`. Never pass them to a shell.
-- Code must build and test on all three OSes. Gate platform code with `#[cfg(target_os = ...)]`. CI builds macOS, Windows, and Linux and smoke-runs each one.
-- `Config` uses `#[serde(default)]`. When you add a field, give it a value in `Default` so that old `prefs.json` files still load.
-- Network tests use `testserver.rs`. They never call real hosts.
-- Tests and headless renders must pass in CI with no display and no localhost services.
+- **Headless**: tests and renders pass in CI with no display and no localhost services. Network tests serve from `testserver.rs`.
+- **Blocking clients**: `system.rs`, `net.rs`, `t3`, `limits`, `stocks`, `stremflix`, and `nextcloud` block. Call them off the UI thread, the way existing callers do.
+- **Launch strings**: split user-supplied commands with `command.rs` and spawn the argv directly.
+- **Three OSes**: gate platform code with `#[cfg(target_os = ...)]` so every OS builds.
+- **New `Config` field**: give it a value in `Default` (`Config` is `#[serde(default)]`), so old `prefs.json` files still load.
+- **New tab**: add it to `Tab` in `src/config.rs` with a new number, then add an arm to every `match` the compiler flags.
+- **Rune bump**: Rune is pre-release, pinned to one git `rev`. Change it in `[dependencies]` and every `[patch.crates-io]` entry together.
 
 ## Commits and PRs
 
-- Use Conventional Commits with a scope, for example `fix(island): ...`, `feat: ...`, or `ci: ...`.
-- Keep one concern per PR. CI review reports only bugs, security issues, and regressions (`.github/review-guidelines.md`).
+- Conventional Commits with a scope: `fix(island): ...`, `feat: ...`, `ci: ...`.
+- One concern per PR. CI review reports only bugs, security issues, and regressions (`.github/review-guidelines.md`).
