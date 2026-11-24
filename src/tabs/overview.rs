@@ -31,23 +31,99 @@ const DRAWER_CHROME: f32 = 16.0 + 16.0 + 6.0;
 const MAX_H: f32 = 496.0;
 
 /// `n` cells and the gaps between them.
-fn span(n: u8, cell: f32) -> f32 { n as f32 * cell + (n as f32 - 1.0) * GAP }
+fn span(n: usize, cell: f32) -> f32 { n as f32 * cell + (n as f32 - 1.0) * GAP }
 
-/// Each tile's rect `[x, y, w, h]`: tiles fill a row left to right in order, and one that
-/// doesn't fit starts the next row, under the row's tallest tile.
-fn layout(tiles: &[Tile], cols: u8) -> Vec<[f32; 4]> {
-    let (mut x, mut y, mut row_h, mut used) = (0.0, 0.0, 0.0_f32, 0);
-    tiles.iter().map(|t| {
-        if used > 0 && used + t.w > cols { (x, y, row_h, used) = (0.0, y + row_h + GAP, 0.0, 0) }
-        let r = [x, y, span(t.w, CELL.0), span(t.h, CELL.1)];
-        (x, used, row_h) = (x + r[2] + GAP, used + t.w, row_h.max(r[3]));
-        r
-    }).collect()
+/// A tile's place in cells: `[column, row, w, h]`.
+type Cells = [usize; 4];
+
+fn overlaps(a: Cells, b: Cells) -> bool { a[0] < b[0] + b[2] && b[0] < a[0] + a[2] && a[1] < b[1] + b[3] && b[1] < a[1] + a[3] }
+
+/// Each tile's cells: in order, each takes the first free spot, top to bottom and left to right,
+/// so a small tile fills the hole beside a taller one.
+fn pack(tiles: &[Tile], cols: u8) -> Vec<Cells> {
+    let cols = cols as usize;
+    let mut placed: Vec<Cells> = Vec::with_capacity(tiles.len());
+    for t in tiles {
+        let w = (t.w as usize).min(cols);
+        let spot = (0..).flat_map(|y| (0..=cols - w).map(move |x| [x, y, w, t.h as usize]))
+            .find(|c| !placed.iter().any(|p| overlaps(*c, *p))).expect("a row below every tile is free");
+        placed.push(spot);
+    }
+    placed
+}
+
+/// Cells as a rect `[x, y, w, h]` in points.
+fn rect([x, y, w, h]: Cells) -> [f32; 4] { [x as f32 * (CELL.0 + GAP), y as f32 * (CELL.1 + GAP), span(w, CELL.0), span(h, CELL.1)] }
+
+/// Each tile's rect at its saved size.
+fn layout(tiles: &[Tile], cols: u8) -> Vec<[f32; 4]> { pack(tiles, cols).into_iter().map(rect).collect() }
+
+/// What a tile would do with more room: show what it cuts off, grow what it shows, or only add blank space.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+enum Need { Blank, Grows, Clipped }
+
+/// Grows tiles into the cells packing left empty, inside the grid's columns and rows so the
+/// Island keeps its size: a cell at a time, to the tile that needs it most, then the smallest.
+fn grow(cells: &mut [Cells], cols: u8, need: impl Fn(usize, [f32; 4]) -> Need) {
+    let rows = cells.iter().map(|c| c[1] + c[3]).max().unwrap_or(0);
+    let fits = |cells: &[Cells], i: usize, c: Cells| c[0] + c[2] <= cols as usize && c[1] + c[3] <= rows
+        && cells.iter().enumerate().all(|(j, o)| j == i || !overlaps(c, *o));
+    loop {
+        let best = (0..cells.len()).flat_map(|i| {
+            let [x, y, w, h] = cells[i];
+            let n = need(i, rect(cells[i]));
+            // Cut off content is under the fold: wider only grows it.
+            [([x, y, w, h + 1], n), ([x, y, w + 1, h], n.min(Need::Grows))].into_iter().map(move |(c, n)| (i, c, n))
+        }).filter(|&(i, c, _)| fits(cells, i, c))
+            .max_by_key(|&(i, _, n)| (n, std::cmp::Reverse(cells[i][2] * cells[i][3]), std::cmp::Reverse(i)));
+        let Some((i, c, _)) = best else { return };
+        cells[i] = c;
+    }
+}
+
+/// Each tile's rect as drawn: grown into the room left over, except while editing, where a tile
+/// shows the size it's saved at.
+fn arranged(s: &Island, tiles: &[Tile], cols: u8) -> Vec<[f32; 4]> {
+    let mut cells = pack(tiles, cols);
+    if !s.dashboard.edit { grow(&mut cells, cols, |i, [_, _, w, h]| need(s, tiles[i].widget, w, h)) }
+    cells.into_iter().map(rect).collect()
+}
+
+/// What `widget` would do with more room at `w`×`h`, from what its view drops to fit.
+fn need(s: &Island, widget: Widget, w: f32, h: f32) -> Need {
+    use Need::*;
+    let clipped = |cut: bool| if cut { Clipped } else { Blank };
+    match widget {
+        // Drawn for the whole Island: shorter cuts its list off, narrower squeezes it.
+        Widget::Panel(tab) => {
+            let (pw, ph) = super::size(tab);
+            let edge = 2.0 * crate::island::LARGE_EDGE;
+            if h < ph - edge { Clipped } else if w < pw - edge { Grows } else { Blank }
+        }
+        Widget::Clock => clipped(short(h)),
+        Widget::Weather | Widget::Water => clipped(short(h) && narrow(w)),
+        Widget::Battery => Blank,
+        Widget::Today => clipped(short(h) || today_events(s).len() > today_room(h)),
+        Widget::Day => clipped(short(h) || timeline(s).iter().filter(|i| i.0 >= s.minutes).count() > day_room(h)),
+        Widget::Media if s.track.is_none() => Blank,
+        Widget::Media => if short(h) || narrow(w) || h < span(3, CELL.1) { Clipped } else { Grows },
+        Widget::Contributions => {
+            let graphs = [&s.cfg.github_user, &s.cfg.leetcode_user].iter().filter(|u| !u.trim().is_empty()).count();
+            if graphs > lines(h - 24.0 + 12.0, GRAPH_H + 12.0) { Clipped } else if graphs > 0 { Grows } else { Blank }
+        }
+        Widget::Quote => {
+            let (words, _) = quote_of(crate::date::days_from_civil(s.today.0, s.today.1, s.today.2));
+            // shortcut: about 8pt a character at 15pt; measure the text if a quote cuts off early.
+            let needs = (words.chars().count() as f32 * 8.0 / (w - 28.0).max(1.0)).ceil() as usize;
+            clipped(short(h) || needs > quote_room(h))
+        }
+        Widget::Voice => Grows,
+    }
 }
 
 /// A tile after its corner was dragged by `(dx, dy)`, snapped to whole cells.
 fn resized(t: Tile, dx: f32, dy: f32) -> Tile {
-    let cells = |n: u8, cell: f32, d: f32| ((span(n, cell) + d + GAP) / (cell + GAP)).round() as i32;
+    let cells = |n: u8, cell: f32, d: f32| ((span(n.into(), cell) + d + GAP) / (cell + GAP)).round() as i32;
     t.sized(cells(t.w, CELL.0, dx), cells(t.h, CELL.1, dy))
 }
 
@@ -114,7 +190,7 @@ fn drawn_scale(s: &Island) -> f32 {
 }
 
 /// The grid's width at `cols` columns.
-fn grid_w(cols: u8) -> f32 { span(cols, CELL.0) }
+fn grid_w(cols: u8) -> f32 { span(cols.into(), CELL.0) }
 
 /// The grid's width as drawn: at its columns and scale.
 fn shown_w(s: &Island) -> f32 { let (n, k) = fit(s); k * grid_w(n) }
@@ -268,7 +344,7 @@ pub fn view(s: &Island, layer: &mut Vec<El>) -> El {
     let (tiles, new) = shown(s);
     let drag = s.dashboard.drag.filter(|d| d.0 < s.cfg.dashboard.len());
     let (n, k) = (cols(s), drawn_scale(s));
-    let rects = layout(&tiles, n);
+    let rects = arranged(s, &tiles, n);
     let target = drag.filter(|d| !d.3).map(|(i, dx, dy, _)| drop_at(&rects, i, dx, dy));
 
     let gh = grid_height(s.dashboard.edit, &rects);
@@ -431,10 +507,18 @@ fn battery(s: &Island, w: f32, h: f32) -> El {
 /// One line of text in a tile and the gap under it.
 const LINE: f32 = 21.0;
 
+/// Today's events.
+fn today_events(s: &Island) -> Vec<&str> {
+    s.cfg.events.iter().filter_map(|e| event_day(&e.text).filter(|(d, _)| *d == s.today).map(|(_, t)| t)).collect()
+}
+
+/// The event lines a tall Today tile holds, between its title and its tasks line.
+fn today_room(h: f32) -> usize { lines(h - 24.0 - 2.0 * LINE, LINE).max(1) }
+
 fn today(s: &Island, w: f32, h: f32) -> El {
     let fg = s.cfg.text();
     let muted = fg.alpha(0.6 * fg.a);
-    let events: Vec<&str> = s.cfg.events.iter().filter_map(|e| event_day(&e.text).filter(|(d, _)| *d == s.today).map(|(_, t)| t)).collect();
+    let events = today_events(s);
     let event = |i: usize, e: &str| text(e).key(format!("event-{i}")).font(s.cfg.font(13.0, 500.0)).color(fg).truncate();
     let title = text("Today").font(s.cfg.font(13.0, 700.0)).color(accent::red());
     if short(h) {
@@ -446,7 +530,7 @@ fn today(s: &Island, w: f32, h: f32) -> El {
     let mut c = col().key("today").w_full().h_full().padding(12.0).gap(4.0).child(title);
     if events.is_empty() { c = c.child(text("No events").font(s.cfg.font(13.0, 500.0)).color(muted)) }
     // Lines left between the title and the tasks line; the last says how many more there are.
-    let room = lines(h - 24.0 - 2.0 * LINE, LINE).max(1);
+    let room = today_room(h);
     let shown = if events.len() > room { room.saturating_sub(1).max(1) } else { events.len() };
     for (i, e) in events.iter().take(shown).enumerate() { c = c.child(event(i, e)) }
     if events.len() > shown { c = c.child(text(format!("+{} more", events.len() - shown)).font(s.cfg.font(12.0, 500.0)).color(muted)) }
@@ -616,13 +700,16 @@ const QUOTES: [(&str, &str); 30] = [
 /// The day's quote: the same all day, the next one tomorrow.
 fn quote_of(day: i64) -> (&'static str, &'static str) { QUOTES[day.rem_euclid(QUOTES.len() as i64) as usize] }
 
+/// The 20pt lines of quote a tall tile holds, less its padding and the author.
+fn quote_room(h: f32) -> usize { lines(h - 28.0 - 22.0, 20.0).max(1) }
+
 fn quote(s: &Island, h: f32) -> El {
     let fg = s.cfg.text();
     let (words, author) = quote_of(crate::date::days_from_civil(s.today.0, s.today.1, s.today.2));
     let c = col().key("quote").role("group").label(format!("Quote of the day: {words} {author}")).w_full().h_full().px(14.0).py(if short(h) { 0.0 } else { 14.0 }).gap(6.0).justify_center();
     // One row holds a line of the quote, not its author; taller tiles a 20pt line each, less the author's.
     if short(h) { return c.child(text(format!("“{words}”")).font(s.cfg.font(15.0, 600.0)).color(fg).truncate().a11y_hidden()) }
-    c.child(text(format!("“{words}”")).font(s.cfg.font(15.0, 600.0).lh(20.0)).color(fg).wrap().max_lines(lines(h - 28.0 - 22.0, 20.0).max(1)).a11y_hidden())
+    c.child(text(format!("“{words}”")).font(s.cfg.font(15.0, 600.0).lh(20.0)).color(fg).wrap().max_lines(quote_room(h)).a11y_hidden())
         .child(text(format!("— {author}")).font(s.cfg.font(12.0, 500.0)).color(fg.alpha(0.6 * fg.a)).truncate().a11y_hidden())
 }
 
@@ -643,6 +730,9 @@ fn timeline(s: &Island) -> Vec<(u32, String, bool)> {
     items.sort_by_key(|i| i.0);
     items
 }
+
+/// The lines of what's next a tall Day tile holds: the title, bar and hours take 70pt with the top padding.
+fn day_room(h: f32) -> usize { lines(h - 70.0, 22.0).max(1) }
 
 /// One line for the whole day: the share gone, a mark for each event and task, and what is next.
 fn day(s: &Island, w: f32, h: f32) -> El {
@@ -665,8 +755,8 @@ fn day(s: &Island, w: f32, h: f32) -> El {
         .child(text(format!("{:.0}%", gone * 100.0)).font(s.cfg.font(13.0, 700.0).features("'tnum' 1")).color(fg));
     // One row holds the title and the bar, without the hours or what's next.
     if short(h) { return col().key("day").w_full().h_full().px(12.0).gap(6.0).justify_center().child(head).child(bar) }
-    // What's next fills the room under the hours: the title, bar and hours take 70pt with the top padding.
-    let next: Vec<_> = items.iter().filter(|i| i.0 >= s.minutes).take(lines(h - 70.0, 22.0).max(1)).collect();
+    // What's next fills the room under the hours.
+    let next: Vec<_> = items.iter().filter(|i| i.0 >= s.minutes).take(day_room(h)).collect();
     let mut c = col().key("day").w_full().h_full().padding(12.0).gap(6.0).child(head).child(bar).child(hours);
     if next.is_empty() { c = c.child(text("Nothing left today").font(s.cfg.font(12.0, 500.0)).color(muted)) }
     for (i, (at, title, task)) in next.into_iter().enumerate() {
@@ -779,15 +869,41 @@ mod tests {
     }
 
     #[test]
-    fn tiles_fill_rows_in_order() {
+    fn tiles_take_the_first_spot_they_fit() {
         let r = layout(&[tile(2, 2), tile(1, 1), tile(2, 1), tile(4, 3)], Tile::COLS);
         assert_eq!((r[0][0], r[0][1]), (0.0, 0.0));
         // Four columns: a two-wide tile ends halfway, less half a gap.
         assert_eq!((r[1][0], r[1][1]), ((WIDTH + GAP) / 2.0, 0.0));
-        // Three columns used: the two-wide tile starts a row under the tallest one.
-        assert_eq!((r[2][0], r[2][1]), (0.0, 124.0));
-        assert_eq!(r[3][1], 186.0);
+        // One column left on the first row: the two-wide tile fills the hole beside the tall one.
+        assert_eq!((r[2][0], r[2][1]), ((WIDTH + GAP) / 2.0, CELL.1 + GAP));
+        assert_eq!(r[3][1], 124.0);
         assert_eq!(r[3][2], WIDTH);
+    }
+
+    #[test]
+    fn left_over_room_goes_to_the_tile_that_needs_it_most() {
+        use Need::*;
+        // A 2×2 and a 2×1 side by side leave a cell under the short one, and the grid's fifth column.
+        let tiles = [tile(2, 2), tile(2, 1)];
+        let grown = |needs: [Need; 2]| { let mut c = pack(&tiles, 5); grow(&mut c, 5, |i, _| needs[i]); c };
+        let all = |c: &[Cells]| c.iter().map(|c| c[2] * c[3]).sum::<usize>();
+        assert_eq!(grown([Blank, Clipped]), [[0, 0, 2, 2], [2, 0, 3, 2]], "the cut off tile grows down first");
+        assert_eq!(grown([Grows, Blank]), [[0, 0, 2, 2], [2, 0, 3, 2]], "the first has no room to grow, so the second takes it");
+        assert_eq!(all(&grown([Blank, Blank])), 10, "no cell left empty");
+        // The grid never grows: growing stops at its rows and columns.
+        let mut c = pack(&[tile(4, 2)], 4);
+        grow(&mut c, 4, |_, _| Clipped);
+        assert_eq!(c, [[0, 0, 4, 2]]);
+    }
+
+    #[test]
+    fn a_cut_off_panel_grows_except_while_editing() {
+        use crate::config::{Config, Store};
+        let mut s = Island::new(Store::memory(Config::default()), Vec::new());
+        let tiles = [tile(2, 2), Tile { widget: Widget::Panel(Tab::Tasks), w: 2, h: 1 }];
+        assert_eq!(arranged(&s, &tiles, Tile::COLS)[1], rect([2, 0, 2, 2]), "the panel takes the cell under it");
+        s.dashboard.edit = true;
+        assert_eq!(arranged(&s, &tiles, Tile::COLS), layout(&tiles, Tile::COLS), "editing shows saved sizes");
     }
 
     #[test]
