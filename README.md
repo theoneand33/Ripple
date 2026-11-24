@@ -10,7 +10,7 @@ Ripple is a native desktop app for Windows, Linux, and macOS, written in Rust wi
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
 [![Version](https://img.shields.io/badge/Version-0.3.1-blue)](Cargo.toml)
 
-https://github.com/user-attachments/assets/a7b9ed8a-97b5-4603-bad7-6f4c4bef1f5d
+https://github.com/user-attachments/assets/44171a15-ad2e-4f5f-989c-26578ba98882
 
 </div>
 
