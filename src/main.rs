@@ -321,7 +321,16 @@ fn island_spec() -> AppSpec<Island> {
                 s.mode = Mode::Large;
                 s.tab = Tab::Plugins;
                 // RIPPLE_PLUGINS=FILE shows that plugin; otherwise the example.
-                if s.plugins.list.is_empty() { s.plugins.list.push(plugins::Plugin::load("example.lua".into(), None, include_str!("../plugins/example.lua"))) }
+                if s.plugins.list.is_empty() { s.plugins.list.push(plugins::Plugin::load("example.lua".into(), None, include_str!("../plugins/example.lua"), None)) }
+            }),
+            ("plugins-todo", |s| {
+                s.mode = Mode::Large;
+                s.tab = Tab::Plugins;
+                let mut p = plugins::Plugin::load("todo.lua".into(), None, include_str!("../plugins/todo.lua"), None);
+                for task in ["Buy milk", "Ship the plugin API"] { p.type_key("draft", task); p.submit("draft") }
+                p.type_key("draft", "Write the dra");
+                p.press_key("item-1");
+                s.plugins.list = vec![p];
             }),
             ("plugins-empty", |s| { s.mode = Mode::Large; s.tab = Tab::Plugins; s.plugins = Default::default() }),
             ("shelf-drop", |s| { s.mode = Mode::Large; s.tab = Tab::Shelf; s.shelf.dropping = true }),

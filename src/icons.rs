@@ -135,3 +135,11 @@ pub fn ring(percent: u8) -> &'static Icon {
     }).collect());
     &rings[usize::from(percent.min(100))]
 }
+
+/// Every icon above, so a plugin can name one (`ui.icon("timer")`). An icon added above belongs here too.
+static ALL: &[&Icon] = &[&ACTIVITY, &CPU, &MEMORY, &HARD_DRIVE, &GLOBE, &BOT, &GAUGE, &PUZZLE, &ROTATE_CCW, &TIMER, &CALCULATOR, &COFFEE, &FLAME, &PENCIL, &MAXIMIZE, &TRENDING_UP, &TYPE, &DROPLET, &MINUS, &PIPETTE, &COPY, &CLOCK, &MOON, &SUNRISE, &SUNSET, &MIC_OFF, &HEADPHONE_OFF, &PHONE_OFF, &WIFI, &BLUETOOTH, &LOCK, &POWER, &BATTERY, &SEARCH, &ZAP, &SUN, &MIC, &LIST, &CHECK, &STICKY_NOTE, &TV, &TERMINAL, &CAMERA, &HEADPHONES, &MUSIC, &SETTINGS, &CLOUD, &CLOUD_RAIN, &CLOUD_SNOW, &CLOUD_LIGHTNING, &CLOUD_SUN, &TRASH, &CHEVRON_UP, &CHEVRON_RIGHT, &CALENDAR, &CHEVRON_LEFT, &CHEVRON_DOWN, &CLIPBOARD_PASTE, &INBOX, &DOWNLOAD, &FILE, &X, &PLUS, &EYE, &EYE_OFF, &GRIP, &MONITOR, &STAR, &STAR_FILLED, &PLAY, &PAUSE, &SKIP_BACK, &SKIP_FORWARD, &VOLUME, &VOLUME_X, &BELL, &CAPS_LOCK];
+
+/// The icon with this Lucide name.
+pub fn named(name: &str) -> Option<&'static Icon> {
+    ALL.iter().copied().find(|i| i.name == name)
+}
