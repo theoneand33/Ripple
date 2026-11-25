@@ -135,7 +135,7 @@ pub fn convert(text: &str, rates: Option<&HashMap<String, f64>>) -> Option<(f64,
 }
 
 /// The answer as the tape shows it: a sum's, or a conversion's with its unit.
-fn answer(text: &str, rates: Option<&HashMap<String, f64>>) -> Option<String> {
+pub fn answer(text: &str, rates: Option<&HashMap<String, f64>>) -> Option<String> {
     if let Some((v, unit)) = convert(text, rates) {
         let shown = if unit.len() == 3 && unit.chars().all(|c| c.is_ascii_uppercase()) { format!("{v:.2}") } else { format((v * 1e6).round() / 1e6) };
         return Some(format!("{shown} {unit}"));

@@ -122,6 +122,7 @@ fn island_spec() -> AppSpec<Island> {
                 s.finder.files = ["~/Documents/notes.md", "~/Projects/ripple-notes"].map(Into::into).into();
                 s.finder.field.replace_text("notes");
             }),
+            ("search-sum", |s| { s.mode = Mode::Large; s.tab = Tab::Search; s.finder.field.replace_text("(12+30)*1.5") }),
             ("workflows", |s| { s.mode = Mode::Large; s.tab = Tab::Workflows }),
             ("assistant", |s| { s.mode = Mode::Large; s.tab = Tab::Assistant; s.ai.asked = true; s.ai.answer = Some("**Rust** is a systems language.\n\n```rust\nfn main() {}\n```".into()) }),
             ("clipboard", |s| { s.mode = Mode::Large; s.tab = Tab::Clipboard; s.clipboard.push(tabs::Content::Text("Hello from Ripple".into())); }),
