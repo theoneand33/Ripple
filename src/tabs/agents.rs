@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use rune::{El, col, row, text};
 
-use super::{Scrolls, accent, button, card, chip, empty, tinted};
+use super::{Scrolls, accent, button, card, chip, chip_button, empty, tinted};
 use crate::agents::{self, Answer, Request, Session};
 use crate::config::Tab;
 use crate::island::Island;
@@ -125,8 +125,8 @@ fn request(s: &Island, r: &Request) -> El {
         for (j, choice) in q.options.iter().enumerate() {
             let on = picked.is_some_and(|p| p.contains(&choice.label));
             let (k, label, multi) = (key.clone(), choice.label.clone(), q.multi_select);
-            chips = chips.child(chip(s, &format!("choice-{key}-{i}-{j}"), &choice.label, accent::indigo(), on)
-                .role(if multi { "checkbox" } else { "radio" }).label(choice.label.as_str()).checked(on).focusable(true)
+            chips = chips.child(chip_button(s, &format!("choice-{key}-{i}-{j}"), &choice.label, accent::indigo(), on)
+                .role(if multi { "checkbox" } else { "radio" }).label(choice.label.as_str()).checked(on)
                 .on_press(move |s: &mut Island| s.agents_pick(&k, i, &label, multi)));
         }
         c = c.child(text(&q.question).font(s.cfg.font(12.0, 500.0)).color(fg).w_full().wrap_anywhere()).child(chips);

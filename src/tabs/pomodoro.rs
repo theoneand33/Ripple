@@ -4,7 +4,7 @@
 use rune::tok::TextStyle;
 use rune::{El, col, el, icon, row, text};
 
-use super::{accent, chip, ring, tinted, tool};
+use super::{accent, chip, chip_button, ring, tinted, tool};
 use crate::icons;
 use crate::island::Island;
 
@@ -184,7 +184,7 @@ fn shown(p: &Pomodoro) -> (&'static str, &'static rune::Icon, rune::Color, f32, 
 
 /// A chip that picks one of the tab's clocks.
 fn clock_chip(s: &Island, clock: Clock, label: &str, tint: rune::Color) -> El {
-    chip(s, &format!("clock-{label}"), label, tint, s.pomodoro.clock == clock).role("button").label(label).focusable(true)
+    chip_button(s, &format!("clock-{label}"), label, tint, s.pomodoro.clock == clock).role("button").label(label)
         .checked(s.pomodoro.clock == clock).on_press(move |s: &mut Island| s.pomodoro.clock = clock)
 }
 
@@ -198,8 +198,8 @@ fn timer_view(s: &Island) -> El {
     let tint = if t.rung { accent::red() } else { accent::teal() };
     let mut presets = row().key("timer-presets").gap(6.0);
     for m in [1.0, 5.0, 10.0, 15.0, 30.0] {
-        presets = presets.child(chip(s, &format!("timer-{m}"), &format!("{m}m"), tint, t.length == m * 60.0)
-            .role("button").label(format!("{m} minutes")).focusable(true)
+        presets = presets.child(chip_button(s, &format!("timer-{m}"), &format!("{m}m"), tint, t.length == m * 60.0)
+            .role("button").label(format!("{m} minutes"))
             .on_press(move |s: &mut Island| s.pomodoro.timer.set(m, crate::date::wall())));
     }
     row().key("timer").w_full().gap(18.0).center_y()

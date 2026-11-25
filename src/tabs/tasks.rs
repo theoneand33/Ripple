@@ -8,7 +8,7 @@
 use rune::time::LocalTime;
 use rune::{El, Transition, Tx, col, el, row, text};
 
-use super::{Scrolls, accent, button, checkbox, chip, empty, field, tool};
+use super::{Scrolls, accent, button, checkbox, chip_button, empty, field, tool};
 use crate::config::Item;
 use crate::date::{add_days, format_date};
 use crate::task::{Date, Every, Task, is_bangs, now_key};
@@ -112,7 +112,12 @@ pub struct Tasks {
     pub draft: TaskDraft,
     /// The minute task reminders were last checked, as `YYYY-MM-DDTHH:MM`; empty until the first.
     mark: String,
+    /// The task just ticked, by key, and when it goes: its box shows the tick until then.
+    ticked: Option<(u64, f64)>,
 }
+
+/// How long a ticked task shows its tick before it goes.
+const TICK_HOLD: f64 = 0.18;
 
 /// What the controls under the field hold: the next task's, or the edited task's.
 #[derive(Default)]
@@ -180,13 +185,40 @@ fn step_time((h, m): (u32, u32), by: i32) -> (u32, u32) {
 
 /// By key, not index: a sync may have removed a task above it since the list was drawn. A
 /// recurring task comes back as a new one, due next time; Nextcloud marks this one done.
-fn tick(s: &mut Island, key: u64) {
+/// A press on a task's box fills it; the task goes `TICK_HOLD` later, in `tick_due`.
+fn tick(s: &mut Island, key: u64, tx: &mut Tx) {
     // Done here, a rule only Nextcloud follows would end or come back wrong.
     let custom = s.cfg.tasks.iter().find(|t| t.key == key).is_some_and(|t| Task::parse(&t.text, s.today).every == Some(Every::Custom));
     if custom && s.cfg.nextcloud.enabled() {
         s.nextcloud[Kind::Tasks].error = Some("This task repeats by a rule only Nextcloud follows: tick it there".into());
         return;
     }
+    // A second tick lands the first at once.
+    match s.tasks.ticked.take() {
+        Some((held, at)) if held == key => { s.tasks.ticked = Some((held, at)); return }
+        Some((held, _)) => finish(s, held),
+        None => {}
+    }
+    let at = tx.clock() + TICK_HOLD;
+    s.tasks.ticked = Some((key, at));
+    tx.wake_at(at);
+}
+
+/// The next time a ticked task goes.
+pub(super) fn tick_deadline(s: &Island) -> Option<f64> { s.tasks.ticked.map(|t| t.1) }
+
+/// Removes the ticked task once its tick has shown. True if it did.
+pub(super) fn tick_due(s: &mut Island, now: f64, tx: &mut Tx) -> bool {
+    let Some((key, _)) = s.tasks.ticked.filter(|t| now >= t.1) else { return false };
+    s.tasks.ticked = None;
+    // A wake's commit lands at once: this one lets the row fade out, as the press would have.
+    tx.animated();
+    finish(s, key);
+    true
+}
+
+/// Ticks the task off: removes it, or puts its next repeat in its place.
+fn finish(s: &mut Island, key: u64) {
     if s.tasks.draft.editing == Some(key) { reset_draft(s) }
     let today = s.today;
     s.save(|c| {
@@ -261,8 +293,8 @@ pub fn view(s: &Island) -> El {
         if task.due.is_some() || task.every.is_some() { body = body.child(meta) }
         let mut line = row().key(format!("task-{key}")).w_full().px(12.0).py(8.0).gap(10.0).center_y()
             .radius(s.cfg.radius(16.0)).fill(super::card(fg))
-            .transition(Transition::opacity())
-            .child(checkbox(s, "done", &format!("Done: {}", task.title), false).on_press(move |s: &mut Island| tick(s, key)))
+            .transition(Transition::opacity().combined(Transition::scale(0.97)))
+            .child(checkbox(s, "done", &format!("Done: {}", task.title), s.tasks.ticked.is_some_and(|t| t.0 == key)).on_press_tx(move |s: &mut Island, tx| tick(s, key, tx)))
             .child(body);
         if editing { line = line.border(1.5, fg.alpha(0.6 * fg.a)) }
         if task.priority > 0 {
@@ -284,7 +316,7 @@ pub fn view(s: &Island) -> El {
 }
 
 fn toggle(s: &Island, key: &str, label: &str, tint: rune::Color, on: bool, press: impl Fn(&mut Island) + 'static) -> El {
-    chip(s, key, label, tint, on).role("button").label(label.to_string()).focusable(true).on_press(press)
+    chip_button(s, key, label, tint, on).role("button").label(label.to_string()).on_press(press)
 }
 
 /// A value with arrows either side, shown while it is set.
@@ -324,6 +356,21 @@ fn controls(s: &Island) -> El {
 #[cfg(test)]
 mod tests {
     use super::{Every, Task};
+
+    #[test]
+    fn a_ticked_task_shows_its_tick_then_goes() {
+        let cfg = crate::config::Config { tasks: vec![super::Item::new("a"), super::Item::new("b")], ..Default::default() };
+        let mut s = super::Island::new(crate::config::Store::memory(cfg), Vec::new());
+        let (a, b) = (s.cfg.tasks[0].key, s.cfg.tasks[1].key);
+        let mut tx = rune::Tx::default();
+        super::tick(&mut s, a, &mut tx);
+        assert_eq!(s.cfg.tasks.len(), 2, "it stays while its tick shows");
+        assert!(!super::tick_due(&mut s, tx.clock(), &mut tx), "not yet");
+        super::tick(&mut s, b, &mut tx);
+        assert_eq!(s.cfg.tasks.iter().map(|t| t.key).collect::<Vec<_>>(), [b], "a second tick lands the first");
+        assert!(super::tick_due(&mut s, tx.clock() + 1.0, &mut tx));
+        assert!(s.cfg.tasks.is_empty());
+    }
 
     #[test]
     fn a_title_says_when_a_task_is_due_in_words() {
@@ -413,7 +460,7 @@ mod tests {
         let nextcloud = Nextcloud { url: "https://cloud.example.com".into(), user: "me".into(), ..Nextcloud::default() };
         let mut s = Island::new(Store::memory(Config { tasks: vec![Item::new("Bins due:2026-01-01 every:custom")], nextcloud, ..Config::default() }), Vec::new());
         let key = s.cfg.tasks[0].key;
-        super::tick(&mut s, key);
+        super::tick(&mut s, key, &mut rune::Tx::default());
         assert_eq!(s.cfg.tasks.len(), 1);
         assert!(s.nextcloud[crate::nextcloud::Kind::Tasks].error.is_some());
     }
@@ -425,8 +472,8 @@ mod tests {
         let mut s = Island::new(Store::memory(Config { tasks: vec![Item::new("Water plants due:2026-01-01 every:week"), Item::new("Once")], ..Config::default() }), Vec::new());
         s.today = (2026, 1, 1);
         let (weekly, once) = (s.cfg.tasks[0].key, s.cfg.tasks[1].key);
-        super::tick(&mut s, weekly);
-        super::tick(&mut s, once);
+        super::finish(&mut s, weekly);
+        super::finish(&mut s, once);
         let texts: Vec<_> = s.cfg.tasks.iter().map(|t| t.text.as_str()).collect();
         assert_eq!(texts, ["Water plants due:2026-01-08 every:week"]);
     }

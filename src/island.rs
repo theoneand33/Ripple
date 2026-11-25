@@ -605,6 +605,18 @@ impl Island {
         self.timed.iter().map(|t| t.0).chain(self.game.as_ref().map(|_| Alert::Match)).min().or(caps.then_some(Alert::CapsLock))
     }
 
+    /// What the compact Island shows, coarsely: a change opens, swaps or closes its content.
+    fn face(&self) -> (Mode, Option<Alert>, bool, bool) { (self.mode, self.alert(), self.pomodoro.active() || self.download.is_some(), self.download_done.is_some()) }
+
+    /// Applies a poller's report. Rune lands a commit no input caused at once, so an alert the
+    /// report opens, swaps or ends animates here as the user's own change would.
+    fn report(&mut self, tx: &mut Tx, f: impl FnOnce(&mut Self, &mut Tx) -> bool) -> bool {
+        let before = self.face();
+        let changed = f(self, tx);
+        if self.face() != before { tx.animated() }
+        changed
+    }
+
     /// Until when `alert` shows; None when it isn't.
     fn shown_until(&self, alert: Alert) -> Option<f64> { self.timed.iter().find(|t| t.0 == alert).map(|t| t.1) }
 
@@ -1425,6 +1437,10 @@ impl Island {
 
     /// Runs before every frame: the clock, the timers, the tabs' own and the input region.
     pub fn poll(&mut self, now: f64, tx: &mut Tx) -> bool {
+        self.report(tx, |s, tx| s.poll_timers(now, tx))
+    }
+
+    fn poll_timers(&mut self, now: f64, tx: &mut Tx) -> bool {
         let mut changed = false;
         if now >= self.next_second {
             let before = (self.time.clone(), self.date.clone());
@@ -1561,11 +1577,11 @@ impl Island {
         let h = me.clone();
         every(2000, move || { let t = system::media(); h.update_if(move |s, tx| s.poll_track(t, tx)); });
         let h = me.clone();
-        every(10000, move || { let b = system::bluetooth_connected(); h.update_if(move |s, tx| s.set_bluetooth(b, tx)); });
+        every(10000, move || { let b = system::bluetooth_connected(); h.update_if(move |s, tx| s.report(tx, |s, tx| s.set_bluetooth(b, tx))); });
         let h = me.clone();
-        every(3000, move || { let c = system::camera_in_use(); h.update_if(move |s, tx| s.set_capture(Some(c), None, tx)); });
+        every(3000, move || { let c = system::camera_in_use(); h.update_if(move |s, tx| s.report(tx, |s, tx| s.set_capture(Some(c), None, tx))); });
         let h = me.clone();
-        every(3000, move || { let m = system::microphone_in_use(); h.update_if(move |s, tx| s.set_capture(None, Some(m), tx)); });
+        every(3000, move || { let m = system::microphone_in_use(); h.update_if(move |s, tx| s.report(tx, |s, tx| s.set_capture(None, Some(m), tx))); });
         let h = me.clone();
         std::thread::spawn(move || system::watch_drags(|active| h.update(move |s, _| s.desktop_drag(active))));
         let h = me.clone();
@@ -1577,12 +1593,12 @@ impl Island {
         let h = me.clone();
         std::thread::spawn(move || system::watch_levels(|v, b| h.update_if(move |s, tx| s.set_levels(v, b, tx))));
         let h = me.clone();
-        std::thread::spawn(move || crate::downloads::watch(|d| h.update_if(move |s, tx| s.set_download(d, tx))));
+        std::thread::spawn(move || crate::downloads::watch(|d| h.update_if(move |s, tx| s.report(tx, |s, tx| s.set_download(d, tx)))));
         let h = me.clone();
-        std::thread::spawn(move || crate::games::watch(|g| h.update_if(move |s, _| s.set_game(g))));
+        std::thread::spawn(move || crate::games::watch(|g| h.update_if(move |s, tx| s.report(tx, |s, _| s.set_game(g)))));
         self.discord_watch();
         let h = me.clone();
-        every(5000, move || { let b = system::battery(); h.update_if(move |s, tx| s.set_battery(b, tx)); });
+        every(5000, move || { let b = system::battery(); h.update_if(move |s, tx| s.report(tx, |s, tx| s.set_battery(b, tx))); });
         let h = me.clone();
         std::thread::spawn(move || {
             let mut monitor = system::Monitor::new();
@@ -1935,7 +1951,9 @@ fn download_ring(s: &Island, d: crate::downloads::Progress, size: f32) -> El {
     let (glyph, label) = if s.download_done.is_some() { (&icons::CHECK, "Download finished".to_string()) } else { (&icons::DOWNLOAD, format!("Downloading, {}", d.label())) };
     let color = download_color(s);
     el().role("img").label(label)
-        .child(tabs::ring(size, d.percent(), color, icon(glyph, size * 0.55).color(color)))
+        // Keyed by state, so the arrow crossfades into the tick; pinned, so the two overlap while it does.
+        .child(tabs::ring(size, d.percent(), color, el().key(if s.download_done.is_some() { "done" } else { "arrow" }).pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0)).center()
+            .transition(Transition::blur_replace()).child(icon(glyph, size * 0.55).color(color))))
 }
 
 /// Privacy icons at the compact Island's right end while the camera or microphone is in use,
@@ -2210,6 +2228,22 @@ mod tests {
         assert_eq!(s.alert(), Some(Alert::Battery));
         s.set_fullscreen(false);
         assert!(s.set_download(p, &mut tx), "shows once it's no longer quiet");
+    }
+
+    #[test]
+    fn a_report_that_opens_or_ends_an_alert_animates() {
+        // shortcut: Tx has no motion getter, so this reads its Debug; upgrade if Rune adds one.
+        let asked = |tx: &Tx| format!("{tx:?}").contains("asked_motion: true");
+        let mut s = island(Config::default());
+        let mut tx = Tx::default();
+        assert!(s.report(&mut tx, |s, tx| s.set_bluetooth(true, tx)));
+        assert!(asked(&tx), "the Island grows open for the alert");
+        let mut tx = Tx::default();
+        assert!(!s.report(&mut tx, |s, tx| s.set_bluetooth(true, tx)));
+        assert!(!asked(&tx), "nothing new, nothing moves");
+        let mut tx = Tx::default();
+        assert!(s.poll(1e9, &mut tx));
+        assert!(asked(&tx), "the alert ending closes the Island on its spring");
     }
 
     #[test]

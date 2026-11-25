@@ -225,11 +225,11 @@ pub fn each_second(s: &mut Island, now: f64) -> bool {
 /// Before every frame, from `Island::poll`.
 pub fn poll(s: &mut Island, now: f64, tx: &mut Tx) -> bool {
     if shows(s, Tab::Search) { s.search_poll() }
-    plugins::poll(s, tx) | s.clipboard_poll(now, tx)
+    plugins::poll(s, tx) | s.clipboard_poll(now, tx) | tasks::tick_due(s, now, tx)
 }
 
 /// The next time a tab needs a poll.
-pub fn deadline(s: &Island) -> Option<f64> { s.clipboard.copied.map(|c| c.1) }
+pub fn deadline(s: &Island) -> Option<f64> { [s.clipboard.copied.map(|c| c.1), tasks::tick_deadline(s)].into_iter().flatten().reduce(f64::min) }
 
 /// Picks up a settings change another window made, for the tab showing.
 pub fn reloaded(s: &mut Island, old: &Config) {
@@ -312,6 +312,13 @@ fn chip(s: &Island, key: &str, label: &str, color: Color, on: bool) -> El {
         .child(text(label).font(s.cfg.font(13.0, 700.0)).color(if on { color } else { fg.alpha(0.5 * fg.a) }))
 }
 
+/// A `chip` the user presses: it lightens under the pointer and dips when pressed. The caller gives its role.
+fn chip_button(s: &Island, key: &str, label: &str, color: Color, on: bool) -> El {
+    let fg = s.cfg.text();
+    chip(s, key, label, color, on).focusable(true)
+        .hover(if on { color.alpha(0.3) } else { fg.alpha(0.18 * fg.a) }).press(if on { color.alpha(0.38) } else { fg.alpha(0.26 * fg.a) }).press_scale(0.97)
+}
+
 /// A progress ring in one colour, its track the same colour faint, with `inner` in its middle.
 pub fn ring(size: f32, percent: f32, color: Color, inner: El) -> El {
     el().size(size, size).center().a11y_hidden()
@@ -327,7 +334,7 @@ fn pill(s: &Island, key: &str, label: &str) -> El {
     let fg = s.cfg.text();
     el().key(key).role("button").label(label).focusable(true)
         .h(28.0).px(12.0).center().radius(s.cfg.radius(14.0)).fill(fg.alpha(0.1 * fg.a))
-        .hover(fg.alpha(0.18 * fg.a)).press(fg.alpha(0.26 * fg.a))
+        .hover(fg.alpha(0.18 * fg.a)).press(fg.alpha(0.26 * fg.a)).press_scale(0.97)
         .child(text(label).font(s.cfg.font(13.0, 600.0)).color(fg).a11y_hidden())
 }
 
@@ -370,7 +377,7 @@ fn tool(s: &Island, key: &str, glyph: &'static rune::Icon, label: &str) -> El {
     let fg = s.cfg.text();
     el().key(key).role("button").label(label).focusable(true)
         .size(28.0, 28.0).center().radius(s.cfg.radius(14.0)).fill(fg.alpha(0.1 * fg.a))
-        .hover(fg.alpha(0.18 * fg.a)).press(fg.alpha(0.26 * fg.a))
+        .hover(fg.alpha(0.18 * fg.a)).press(fg.alpha(0.26 * fg.a)).press_scale(0.97)
         .child(icon(glyph, 15.0).color(fg).a11y_hidden())
 }
 
@@ -384,7 +391,7 @@ fn checkbox(s: &Island, key: &str, label: &str, checked: bool) -> El {
     let mut b = el().key(key).role("checkbox").label(label).checked(checked).focusable(true)
         .size(18.0, 18.0).center().radius(s.cfg.radius(6.0))
         .fill(if checked { fg } else { Color::TRANSPARENT }).border(1.5, fg.alpha(if checked { fg.a } else { 0.5 * fg.a }))
-        .hover(fg.alpha(0.15 * fg.a));
+        .hover(fg.alpha(0.15 * fg.a)).press(fg.alpha(0.25 * fg.a)).press_scale(0.97);
     if checked { b = b.child(icon(&icons::CHECK, 12.0).color(bg)) }
     b
 }
