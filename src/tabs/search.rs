@@ -109,9 +109,11 @@ impl Island {
     }
 }
 
-/// The Calculator's answer to a sum or conversion; None for a lone number, which needs no answer.
+/// The Calculator's answer to a sum or conversion; None for a lone number, date or phone number.
 fn sum_answer(q: &str, rates: Option<&std::collections::HashMap<String, f64>>) -> Option<String> {
     if q.parse::<f64>().is_ok() { return None }
+    // Dates and phone numbers (`2026-11-25`, `555-1234`) are searches, not subtractions; `10 - 20` still sums.
+    if q.chars().all(|c| c.is_ascii_digit() || c == '-' || c == '.') { return None }
     super::calculator::answer(q, rates)
 }
 
@@ -206,6 +208,8 @@ mod tests {
         assert_eq!(sum_answer("2+3*4", None).as_deref(), Some("14"));
         assert_eq!(sum_answer("1 km to m", None).as_deref(), Some("1000 m"));
         assert_eq!(sum_answer("42", None), None);
+        assert_eq!(sum_answer("2026-11-25", None), None);
+        assert_eq!(sum_answer("10 - 20", None).as_deref(), Some("-10"));
         assert_eq!(sum_answer("notes", None), None);
     }
 
