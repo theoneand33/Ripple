@@ -1,4 +1,4 @@
-//! Search, Spotlight-style: one field, results in order of apps, then files, then the web.
+//! Search, Spotlight-style: one field, results in order of a sum's answer, apps, files, then the web.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -31,14 +31,18 @@ pub struct Finder {
 }
 
 pub enum Hit<'a> {
+    /// The Calculator's answer to the query, as `= 42`.
+    Answer(String),
     App(&'a QuickApp),
     File(&'a Path),
     Web,
 }
 
 impl Island {
-    /// Finds the installed apps once, off the UI thread.
+    /// Finds the installed apps once and loads exchange rates, off the UI thread.
     pub fn search_load(&mut self) {
+        // A currency sum's answer needs the Calculator's rates.
+        self.calc_load();
         let Some(me) = self.me.clone() else { return };
         if self.finder.apps.is_some() || self.finder.finding_apps { return }
         self.finder.finding_apps = true;
@@ -72,7 +76,8 @@ impl Island {
         let q = self.finder.field.text.trim().to_lowercase();
         if q.is_empty() { return Vec::new() }
         let apps = self.finder.apps.iter().flatten().map(|a| (a.name.to_lowercase(), a));
-        let mut hits: Vec<Hit> = ranked(apps, &q).map(Hit::App).collect();
+        let mut hits: Vec<Hit> = sum_answer(self.finder.field.text.trim(), self.calc.rates.as_ref()).map(Hit::Answer).into_iter().collect();
+        hits.extend(ranked(apps, &q).map(Hit::App));
         hits.extend(self.finder.files.iter().map(|p| Hit::File(p)));
         hits.push(Hit::Web);
         hits
@@ -82,6 +87,7 @@ impl Island {
         let hits = self.search_hits();
         let Some(hit) = hits.get(self.finder.pick.min(hits.len().saturating_sub(1))) else { return };
         match hit {
+            Hit::Answer(a) => tx.copy(a.clone()),
             Hit::App(app) => { let launch = app.launch.clone(); std::thread::spawn(move || system::launch_app(&launch)); }
             Hit::File(path) => system::open_external(&file_url(path)),
             Hit::Web => system::open_external(&self.web_url()),
@@ -101,6 +107,14 @@ impl Island {
         else if lower.starts_with("http://") || lower.starts_with("https://") { query.to_string() }
         else { format!("https://{query}") }
     }
+}
+
+/// The Calculator's answer to a sum or conversion; None for a lone number, date or phone number.
+fn sum_answer(q: &str, rates: Option<&std::collections::HashMap<String, f64>>) -> Option<String> {
+    if q.parse::<f64>().is_ok() { return None }
+    // Dates and phone numbers (`2026-11-25`, `555-1234`) are searches, not subtractions; `10 - 20` still sums.
+    if q.chars().all(|c| c.is_ascii_digit() || c == '-' || c == '.') { return None }
+    super::calculator::answer(q, rates)
 }
 
 /// Names that start with the query first, then names that contain it, at most `PER_KIND`.
@@ -148,7 +162,7 @@ fn keys(s: &mut Island, ev: &KeyEvent, tx: &mut Tx) -> bool {
 pub fn view(s: &Island) -> El {
     let fg = s.cfg.text();
     let input = text_input(&s.finder.field, s.cfg.font(16.0, 400.0).lh(22.0)).key("browser-searchbar").label("Search").single_line().grow(1.0).min_w(0.0)
-        .color(fg).placeholder("Search apps, files and the web", fg.alpha(0.5 * fg.a))
+        .color(fg).placeholder("Search apps, files and the web, or do a sum", fg.alpha(0.5 * fg.a))
         // Any edit can change the results, so the first one is highlighted again.
         .on_edit(|s: &mut Island| { s.finder.pick = 0; &mut s.finder.field })
         .on_submit(Island::search_open)
@@ -164,6 +178,7 @@ pub fn view(s: &Island) -> El {
     let mut list = col().key("search-results").w_full().gap(2.0);
     for (i, hit) in hits.iter().enumerate() {
         let (glyph, name, detail) = match hit {
+            Hit::Answer(a) => (&icons::CALCULATOR, format!("= {a}"), "Copy answer".to_string()),
             Hit::App(app) => (&icons::MONITOR, app.name.clone(), "App".to_string()),
             Hit::File(path) => (&icons::FILE, path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
                 path.parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default()),
@@ -187,6 +202,16 @@ pub fn view(s: &Island) -> El {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sums_get_an_answer_but_words_and_lone_numbers_do_not() {
+        assert_eq!(sum_answer("2+3*4", None).as_deref(), Some("14"));
+        assert_eq!(sum_answer("1 km to m", None).as_deref(), Some("1000 m"));
+        assert_eq!(sum_answer("42", None), None);
+        assert_eq!(sum_answer("2026-11-25", None), None);
+        assert_eq!(sum_answer("10 - 20", None).as_deref(), Some("-10"));
+        assert_eq!(sum_answer("notes", None), None);
+    }
 
     #[test]
     fn prefix_matches_come_first_and_each_kind_is_capped() {
