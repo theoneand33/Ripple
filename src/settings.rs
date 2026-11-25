@@ -389,8 +389,10 @@ fn drop_index(from: usize, dy: f32, count: usize) -> usize {
     (from as f32 + (dy / TAB_PITCH).round()).clamp(0.0, count.saturating_sub(1) as f32) as usize
 }
 
+/// The rows a dragged row passes step aside on their springs, and the dropped row slides into
+/// its place; the dragged row itself follows the pointer exactly (`Anim::INSTANT` in the view).
 fn drag_tab(s: &mut Settings, from: usize, d: &mut Drag, tx: &mut Tx) {
-    tx.instant();
+    tx.animated();
     match d.phase {
         Phase::Down => s.dragging = None,
         Phase::Move => s.dragging = Some((from, d.dy)),
@@ -683,10 +685,18 @@ fn page(s: &Settings, k: &Kit, layer: &mut Vec<El>, page: Page) -> Vec<El> {
                             .fill(fg.alpha(0.03)).border(1.0, fg.alpha(if hidden { 0.05 } else { 0.08 }))
                             .cursor(Cursor::Grab)
                             .on_drag(move |s: &mut Settings, d: &mut Drag, tx| drag_tab(s, i, d, tx));
+                        // Settles without overshoot: a bounce would wobble a row past its slot.
+                        let row = row.motion(rune::Spring::new(0.35, 0.1));
                         match s.dragging {
                             // The dragged row follows the pointer over its neighbours.
-                            Some((from, dy)) if from == i => row.offset(0.0, dy).raise().opacity(0.6).fill(fg.alpha(0.1)),
-                            _ => row.opacity(if hidden { 0.45 } else { 1.0 }),
+                            Some((from, dy)) if from == i => row.offset(0.0, dy).offset_motion(rune::Anim::INSTANT).raise().opacity(0.6).fill(fg.alpha(0.1)),
+                            // A row the dragged one has passed steps into the slot it left.
+                            Some((from, dy)) => {
+                                let to = drop_index(from, dy, cfg.tab_order.len());
+                                let shift = if from < i && i <= to { -TAB_PITCH } else if to <= i && i < from { TAB_PITCH } else { 0.0 };
+                                row.offset(0.0, shift).opacity(if hidden { 0.45 } else { 1.0 })
+                            }
+                            None => row.opacity(if hidden { 0.45 } else { 1.0 }),
                         }
                     }
                         .child(icon(&icons::GRIP, 16.0).color(fg.alpha(0.3)))
