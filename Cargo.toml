@@ -34,7 +34,8 @@ libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
 # Discord: the pipe server's session, so the token goes only to a Discord in the user's own (src/discord.rs).
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Pipes", "Win32_System_RemoteDesktop"] }
+# Games: the shell hook that hears a game window flash, and its exe (src/games.rs).
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_System_LibraryLoader", "Win32_System_Pipes", "Win32_System_RemoteDesktop", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # The status-bar item and the Island's unconstrained frame (src/mac.rs).

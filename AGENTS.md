@@ -15,6 +15,7 @@ Ripple is a Dynamic Island-style bar for Windows, Linux, and macOS: one Rust bin
 | `src/net.rs` | Weather, the AI assistant stream, images by URL |
 | `src/stocks.rs` | Stock quotes (Yahoo Finance) and the Sure portfolio |
 | `src/downloads.rs` | Download progress from each OS, shown as a live activity |
+| `src/games.rs` | Match found: known games asking for attention (Windows shell hook, X11/XWayland), League's ready check |
 | `src/stremflix.rs` | Stremflix-rs's local API: Continue Watching and playback |
 | `src/nextcloud.rs` | Notes API, CalDAV, WebDAV, and the merge that keeps local edits. `tabs/sync.rs` starts syncs and applies their outcome |
 | `src/ics.rs` | iCalendar text: tasks and events to and from their one-line texts, in-place edits |

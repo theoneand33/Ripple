@@ -49,6 +49,8 @@ pub enum Mode {
 pub enum Alert {
     Volume,
     Brightness,
+    /// A game's match is waiting to be accepted; it shows until it is answered or gone.
+    Match,
     Charging,
     Battery,
     Bluetooth,
@@ -69,6 +71,7 @@ impl Alert {
             Alert::Camera => Some(accent::camera()),
             Alert::Microphone => Some(accent::mic()),
             Alert::Reminder => Some(accent::orange()),
+            Alert::Match => Some(accent::green()),
             Alert::Volume | Alert::Brightness | Alert::CapsLock => None,
         }
     }
@@ -83,6 +86,7 @@ impl Alert {
             Alert::Brightness => &icons::SUN,
             Alert::CapsLock => &icons::CAPS_LOCK,
             Alert::Reminder => &icons::BELL,
+            Alert::Match => &icons::GAMEPAD,
         }
     }
 
@@ -97,6 +101,7 @@ impl Alert {
             Alert::Brightness => "brightness",
             Alert::CapsLock => "caps-lock",
             Alert::Reminder => "reminder",
+            Alert::Match => "match",
         }
     }
 }
@@ -318,6 +323,10 @@ pub struct Island {
     brightness: Option<u8>,
     /// Caps Lock is on: its alert stays until it goes off.
     caps_lock: bool,
+    /// A multiplayer match waiting on the user (`games::watch`).
+    pub game: Option<crate::games::Match>,
+    /// The match the user just answered, ignored until the game stops reporting it.
+    answered: Option<crate::games::Match>,
     /// The focused app is full screen.
     fullscreen: bool,
     /// The alerts showing for a while, each until when; `alert` picks the first in `Alert` order.
@@ -467,6 +476,8 @@ impl Island {
             brightness: None,
             timed: Vec::new(),
             caps_lock: false,
+            game: None,
+            answered: None,
             fullscreen: false,
             reminder: String::new(),
             reminder_link: None,
@@ -591,7 +602,7 @@ impl Island {
     pub fn alert(&self) -> Option<Alert> {
         // Caps Lock is an alert when it is the only live activity; otherwise it takes a bubble.
         let caps = !self.shows_track() && self.activities() == [Bubble::CapsLock];
-        self.timed.iter().map(|t| t.0).min().or(caps.then_some(Alert::CapsLock))
+        self.timed.iter().map(|t| t.0).chain(self.game.as_ref().map(|_| Alert::Match)).min().or(caps.then_some(Alert::CapsLock))
     }
 
     /// Until when `alert` shows; None when it isn't.
@@ -631,6 +642,9 @@ impl Island {
     /// The alert showing is an event's, with a meeting to join.
     fn joinable(&self) -> bool { self.alert() == Some(Alert::Reminder) && self.reminder_link.is_some() }
 
+    /// The alert showing has a button: an event's Join or a match's Show or Accept.
+    fn has_button(&self) -> bool { self.joinable() || self.alert() == Some(Alert::Match) }
+
     /// The Island colour at the opacity set for the mode it is in.
     fn island_bg(&self) -> Color {
         let bg = self.cfg.bg();
@@ -651,6 +665,7 @@ impl Island {
             Alert::Microphone => "Microphone".into(),
             Alert::Volume | Alert::Brightness => String::new(),
             Alert::CapsLock => "Caps Lock".into(),
+            Alert::Match => "Match found".into(),
             // Fits the alert's width.
             Alert::Reminder => {
                 let title = self.reminder.as_str();
@@ -703,7 +718,7 @@ impl Island {
             Mode::Large if self.tab == Tab::Overview => tabs::overview_width(self),
             Mode::Large => large.0,
             _ if matches!(self.alert(), Some(Alert::Volume | Alert::Brightness)) && !notch => 100.0, // just the ring
-            _ if alerting => if notch { self.notch_glance_width() + if self.joinable() { 70.0 } else { 0.0 } } else if self.joinable() { 246.0 } else { 176.0 }, // fits icon + "Disconnected"
+            _ if alerting => if notch { self.notch_glance_width() + if self.has_button() { 70.0 } else { 0.0 } } else if self.has_button() { 246.0 } else { 176.0 }, // fits icon + "Disconnected"
             _ if track => self.now_playing_width(),
             _ if notch => if self.mode == Mode::Quick || self.cfg.show_info_idle || self.live().is_some() { self.notch_glance_width() } else { 210.0 },
             _ if let Some(live) = self.live() => (110.0 + estimate_width(&live, 15.0)).ceil().max(168.0), // "23:59" + ring + "24:59"
@@ -1262,6 +1277,27 @@ impl Island {
         self.download != download && { self.download = download; true }
     }
 
+    /// A match's alert shows from the moment a game reports it until it goes, even in quiet
+    /// hours: the user queued for it. One the user answered stays hidden while it is still reported.
+    pub fn set_game(&mut self, game: Option<crate::games::Match>) -> bool {
+        if game.is_none() { self.answered = None }
+        let game = game.filter(|g| self.answered.as_ref() != Some(g));
+        if game == self.game { return false }
+        let was = self.game.is_some();
+        self.game = game;
+        if self.game.is_some() && !was && self.mode != Mode::Large { self.set_mode(Mode::Quick) }
+        else if self.game.is_none() && self.mode == Mode::Quick && !self.hovered && self.alert().is_none() { self.set_mode(Mode::Still) }
+        true
+    }
+
+    /// The match alert's button: brings the game forward, or accepts League's match.
+    fn answer_match(&mut self) {
+        let Some(game) = self.game.take() else { return };
+        self.answered = Some(game.clone());
+        std::thread::spawn(move || crate::games::answer(&game));
+        if !self.large_open() { self.set_mode(Mode::Still) }
+    }
+
     /// Caps Lock's alert shows from the moment it goes on until it goes off; Large stays as it is.
     pub fn set_caps_lock(&mut self, on: bool) -> bool {
         if on == self.caps_lock { return false }
@@ -1542,6 +1578,8 @@ impl Island {
         std::thread::spawn(move || system::watch_levels(|v, b| h.update_if(move |s, tx| s.set_levels(v, b, tx))));
         let h = me.clone();
         std::thread::spawn(move || crate::downloads::watch(|d| h.update_if(move |s, tx| s.set_download(d, tx))));
+        let h = me.clone();
+        std::thread::spawn(move || crate::games::watch(|g| h.update_if(move |s, _| s.set_game(g))));
         self.discord_watch();
         let h = me.clone();
         every(5000, move || { let b = system::battery(); h.update_if(move |s, tx| s.set_battery(b, tx)); });
@@ -1854,10 +1892,10 @@ fn glance(s: &Island, fg: Color) -> El {
         Some(alert) if s.joinable() => row().key("label").gap(8.0).center_y()
             .child(text(s.alert_label(alert)).font(style).color(color))
             // The button shows the host: a shared event's link is someone else's, so the user sees where it goes.
-            .child(el().key("join").role("button").label(format!("Join {}", tabs::link_host(s.reminder_link.as_deref().unwrap_or("")))).focusable(true).h(26.0).px(12.0).center()
-                .radius(cfg.radius(13.0)).fill(accent::green()).hover(accent::green().alpha(0.8)).press_scale(0.96)
-                .child(text(tabs::link_host(s.reminder_link.as_deref().unwrap_or(""))).font(cfg.font(12.0, 700.0)).color(Color::BLACK).max_w(130.0).truncate().a11y_hidden())
-                .on_press(Island::join)),
+            .child(alert_button(cfg, "join", format!("Join {}", tabs::link_host(s.reminder_link.as_deref().unwrap_or(""))), tabs::link_host(s.reminder_link.as_deref().unwrap_or("")), Island::join)),
+        Some(Alert::Match) if let Some(game) = &s.game => row().key("label").gap(8.0).center_y()
+            .child(text(s.alert_label(Alert::Match)).font(style).color(color))
+            .child(alert_button(cfg, "answer", format!("{} {}", game.action(), game.game), game.action(), Island::answer_match)),
         Some(alert) => text(s.alert_label(alert)).key("label").font(style).color(color),
         // A running Pomodoro is a live activity: its ring and time left take the right side.
         None if s.pomodoro.active() => tabs::pomodoro_live(&s.pomodoro, style),
@@ -1879,6 +1917,14 @@ fn glance(s: &Island, fg: Color) -> El {
         return row.justify_center().child(left);
     }
     row.justify_between().child(left).child(right)
+}
+
+/// A green button at the alert's right end, labelled for screen readers with what it acts on.
+fn alert_button(cfg: &Config, key: &'static str, label: String, shown: &str, act: fn(&mut Island)) -> El {
+    el().key(key).role("button").label(label).focusable(true).h(26.0).px(12.0).center()
+        .radius(cfg.radius(13.0)).fill(accent::green()).hover(accent::green().alpha(0.8)).press_scale(0.96)
+        .child(text(shown).font(cfg.font(12.0, 700.0)).color(Color::BLACK).max_w(130.0).truncate().a11y_hidden())
+        .on_press(act)
 }
 
 /// Blue while downloading; once done, the text colour (white on the default Island, readable on a light theme).
@@ -2023,6 +2069,23 @@ mod tests {
 
     fn island(cfg: Config) -> Island {
         Island::new(Store::memory(cfg), Vec::new())
+    }
+
+    #[test]
+    fn a_match_alerts_until_answered_or_gone() {
+        use crate::games::{Match, Target};
+        // League with no client: answering only fails to reach it, touching no window.
+        let cs = Match { game: "League of Legends", target: Target::League(Default::default()) };
+        let mut s = island(Config { standby: false, quiet_hours: true, quiet_from: 0, quiet_to: 24, ..Config::default() });
+        assert!(s.set_game(Some(cs.clone())));
+        assert_eq!((s.alert(), s.mode, s.has_button()), (Some(Alert::Match), Mode::Quick, true), "shows even in quiet hours");
+        assert!(!s.set_game(Some(cs.clone())), "no change, no redraw");
+        s.answer_match();
+        assert_eq!((s.alert(), s.mode), (None, s.rest()));
+        assert!(!s.set_game(Some(cs.clone())), "answered: hidden while the game still reports it");
+        assert!(s.set_game(None) == false && s.set_game(Some(cs.clone())), "a new match after it went shows");
+        assert!(s.set_game(None));
+        assert_eq!((s.alert(), s.mode), (None, s.rest()));
     }
 
     #[test]
