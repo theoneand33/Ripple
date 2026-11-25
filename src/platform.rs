@@ -404,7 +404,7 @@ fn x11_active() -> Result<Option<u32>, Box<dyn std::error::Error>> {
 /// _NET_ACTIVE_WINDOW as a pager asks it (source 2), which window managers honour without
 /// focus-stealing checks.
 #[cfg(target_os = "linux")]
-fn x11_activate(window: u32) -> Result<(), Box<dyn std::error::Error>> {
+pub(crate) fn x11_activate(window: u32) -> Result<(), Box<dyn std::error::Error>> {
     use x11rb::connection::Connection;
     use x11rb::protocol::xproto::{ClientMessageEvent, ConnectionExt, EventMask};
     let (conn, screen) = x11rb::connect(None)?;
