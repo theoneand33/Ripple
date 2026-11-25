@@ -267,6 +267,16 @@ fn island_spec() -> AppSpec<Island> {
                 ].map(config::Item::new).into();
                 s.open_note(0);
             }),
+            ("notes-markdown", |s| {
+                s.mode = Mode::Large;
+                s.tab = Tab::Notes;
+                s.cfg.notes = vec![config::Item::new("Release plan\n# v1.0\nShip **live preview** and `cargo test`, *then* tag it.\n- [x] ~~Write notes~~\n- [ ] Read the [docs](https://example.com)\n> Quoted text\n## Next\nThe caret's line shows **its** source.")];
+                s.open_note(0);
+                // The caret on the third line, which shows its Markdown source.
+                let at = s.notes.editor.text.find("tag it.").unwrap_or(0);
+                s.notes.editor.set_caret(at);
+                s.notes.editor.focused = true;
+            }),
             ("notes-pinned-search", |s| {
                 s.mode = Mode::Large;
                 s.tab = Tab::Notes;
