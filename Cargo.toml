@@ -27,6 +27,8 @@ sysinfo = { version = "0.39", default-features = false, features = ["system", "d
 mlua = { version = "0.12", features = ["lua54", "vendored", "serde"] }
 # Shelf: compressing to and extracting from .zip.
 zip = { version = "9.8.0", default-features = false, features = ["deflate-flate2"] }
+# Notes' live Markdown preview (already built for rune-kit's Markdown).
+pulldown-cmark = { version = "0.13", default-features = false }
 
 [target.'cfg(unix)'.dependencies]
 # Discord: the user's id, so the token goes only to a Discord socket they own (src/discord.rs).

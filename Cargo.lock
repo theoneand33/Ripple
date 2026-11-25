@@ -2887,6 +2887,7 @@ dependencies = [
  "mlua",
  "objc2 0.6.5",
  "png 0.18.1",
+ "pulldown-cmark",
  "rune",
  "rune-kit",
  "serde",

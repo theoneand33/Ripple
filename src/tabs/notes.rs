@@ -1,7 +1,10 @@
 //! Notes: plain-text notes, each titled by its first line, saved as they are typed and synced
 //! with Nextcloud Notes when an account is set. Pinned notes list first; search filters the list.
+//! The editor previews Markdown live, as Obsidian does: styled, its markup hidden except on the line being edited.
 
-use rune::{Color, El, TextEdit, Transition, Tx, col, el, icon, row, text, text_input};
+use std::ops::Range;
+
+use rune::{Color, El, Link, Span, TextEdit, Transition, Tx, col, el, icon, row, text, text_input};
 
 use super::{Scrolls, Undo, empty, field, tool, undo_button};
 use crate::config::{Config, Item};
@@ -80,6 +83,14 @@ impl Island {
         }
     }
 
+    /// Ticks or unticks the `[ ]` checkbox starting at byte `at` of the open note.
+    fn toggle_task(&mut self, at: usize) {
+        let mark = match self.notes.editor.text.get(at..at + 3) { Some("[ ]") => "x", Some("[x]" | "[X]") => " ", _ => return };
+        self.notes.editor.set_selection(at + 1, at + 2);
+        self.notes.editor.insert(mark);
+        self.note_edited();
+    }
+
     fn note_edited(&mut self) {
         let (i, text) = (self.notes.index, self.notes.editor.text.clone());
         if self.cfg.notes.get(i).is_some_and(|n| n.text != text) {
@@ -99,6 +110,90 @@ fn open_first_match(s: &mut Island, _: &mut Tx) {
 fn note_heading(note: &str) -> (&str, String) {
     let mut lines = note.lines().map(str::trim).filter(|l| !l.is_empty());
     (lines.next().unwrap_or("New Note"), lines.collect::<Vec<_>>().join(" "))
+}
+
+/// How the editor paints Markdown: `spans` style it and hide its markup, `strikes` cross out ~~text~~,
+/// and `tasks` are the `[ ]` checkboxes (their range, and whether ticked) a click toggles.
+#[derive(Debug, Default, PartialEq)]
+struct Preview { spans: Vec<Span>, strikes: Vec<Range<usize>>, tasks: Vec<(Range<usize>, bool)> }
+
+/// Markdown in `text` styled in place. Its markup (`**`, `# `, `` ` ``, `[`…`](url)`) is hidden,
+/// except on the lines `reveal` (the selection, while editing) touches, which show their source.
+fn live_markdown(text: &str, reveal: Option<Range<usize>>, accent: Color, muted: Color, code: Color) -> Preview {
+    use pulldown_cmark::{Event, HeadingLevel, Options, Parser, TagEnd};
+    let mut out = Preview::default();
+    let mut hidden: Vec<Range<usize>> = Vec::new();
+    // Each open element: its whole range and the range its children cover.
+    let mut open: Vec<(Range<usize>, Option<usize>, usize)> = Vec::new();
+    for (event, r) in Parser::new_ext(text, Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS).into_offset_iter() {
+        if !matches!(event, Event::End(_)) && let Some((_, start, end)) = open.last_mut() {
+            start.get_or_insert(r.start);
+            *end = (*end).max(r.end);
+        }
+        match event {
+            Event::Start(_) => open.push((r, None, 0)),
+            Event::End(tag) => {
+                let Some((outer, start, end)) = open.pop() else { continue };
+                let inner = start.unwrap_or(outer.end)..end.max(start.unwrap_or(outer.end));
+                // Hide the markup around `inner`: never a line break (a setext heading's underline
+                // stays), nor all of an element with no text (`[](url)`), which would vanish.
+                let mut wrap = |out: &mut Preview, span: Option<Span>| {
+                    if let Some(span) = span { out.spans.push(span) }
+                    if inner.is_empty() { return }
+                    let tail = inner.end..outer.start + text[outer.clone()].trim_end().len();
+                    hidden.push(outer.start..inner.start);
+                    if !text[tail.clone()].contains('\n') { hidden.push(tail) }
+                };
+                match tag {
+                    TagEnd::Heading(level) => {
+                        let size = match level { HeadingLevel::H1 => 22.0, HeadingLevel::H2 => 19.0, HeadingLevel::H3 => 17.0, _ => 15.0 };
+                        wrap(&mut out, Some(Span::new(outer.start, outer.end).size(size).weight(700.0)));
+                    }
+                    TagEnd::Strong => wrap(&mut out, Some(Span::new(inner.start, inner.end).bold())),
+                    TagEnd::Emphasis => wrap(&mut out, Some(Span::new(inner.start, inner.end).italic())),
+                    TagEnd::Strikethrough => { out.strikes.push(inner.clone()); wrap(&mut out, None) }
+                    TagEnd::Link => wrap(&mut out, Some(Span::new(inner.start, inner.end).color(accent).underline(accent))),
+                    TagEnd::BlockQuote(_) => out.spans.push(Span::new(outer.start, outer.end).color(muted).italic()),
+                    TagEnd::Item => out.spans.push(Span::new(outer.start, inner.start).color(accent)),
+                    _ => {}
+                }
+            }
+            Event::Code(_) => {
+                let ticks = text[r.clone()].bytes().take_while(|b| *b == b'`').count();
+                out.spans.push(Span::new(r.start + ticks, r.end - ticks).mono().bg(code, 2.0));
+                hidden.extend([r.start..r.start + ticks, r.end - ticks..r.end]);
+            }
+            Event::TaskListMarker(done) => out.tasks.push((r, done)),
+            Event::Rule => out.spans.push(Span::new(r.start, r.end).color(muted)),
+            _ => {}
+        }
+    }
+    // The lines the selection touches, from the start of its first to the end of its last.
+    let shown = reveal.map(|r| {
+        let (a, b) = (r.start.min(text.len()), r.end.min(text.len()));
+        text[..a].rfind('\n').map_or(0, |i| i + 1)..text[b..].find('\n').map_or(text.len(), |i| b + i)
+    });
+    let revealed = |h: &Range<usize>| shown.as_ref().is_some_and(|l| h.start <= l.end && h.end >= l.start);
+    // A task on a revealed line is plain text: a click there places the caret, not ticks it.
+    let (shown_tasks, tasks): (Vec<_>, Vec<_>) = std::mem::take(&mut out.tasks).into_iter().partition(|(r, _)| revealed(r));
+    for (r, _) in shown_tasks { out.spans.push(Span::new(r.start, r.end).color(muted)) }
+    out.tasks = tasks;
+    for (r, done) in &out.tasks {
+        // A box: the brackets hidden, the mark between them on a rounded fill, the accent when ticked.
+        // The list marker before it too (`-`, `1.`), keeping the indent and any `>` before it.
+        let line = text[..r.start].rfind('\n').map_or(0, |i| i + 1);
+        let before = text[line..r.start].trim_end();
+        let bullet = line + before.rfind(|c: char| c.is_whitespace() || c == '>').map_or(0, |i| i + 1);
+        hidden.extend([bullet..r.start, r.start..r.start + 1, r.end - 1..r.end]);
+        let mark = Span::new(r.start + 1, r.end - 1).mono().bold();
+        out.spans.push(if *done { mark.bg(accent, 2.0).color(Color::WHITE) } else { mark.bg(muted.alpha(0.35 * muted.a), 2.0).color(Color::TRANSPARENT) });
+    }
+    for h in hidden {
+        if h.start >= h.end || revealed(&h) { continue }
+        // Hidden: taking next to no room and drawing nothing, its bytes still there to edit and copy.
+        out.spans.push(Span::new(h.start, h.end).size(0.01).color(Color::TRANSPARENT));
+    }
+    out
 }
 
 pub fn view(s: &Island) -> El {
@@ -147,11 +242,16 @@ pub fn view(s: &Island) -> El {
                 ),
         );
     }
-    let editor = text_input(&s.notes.editor, s.cfg.font(14.0, 400.0).lh(20.0)).key("note-editor").label("Note").w_full()
+    let ed = &s.notes.editor;
+    let preview = live_markdown(&ed.text, ed.focused.then(|| ed.anchor.min(ed.focus)..ed.anchor.max(ed.focus)), accent, muted, fg.alpha(0.1 * fg.a));
+    let editor = text_input(ed, s.cfg.font(14.0, 400.0).lh(20.0)).key("note-editor").label("Note").w_full()
+        .spans(preview.spans).strikes(preview.strikes.into_iter().map(|r| (r.start, r.end, None)))
+        .on_link(|s: &mut Island, id: &str, _: &mut Tx| if let Ok(at) = id.parse() { s.toggle_task(at) })
         .color(fg).placeholder("Title, then your note", fg.alpha(0.5 * fg.a))
         .on_edit(|s: &mut Island| &mut s.notes.editor)
         .on_submit(|s: &mut Island, _| { s.notes.editor.insert("\n"); s.note_edited() })
         .on_input_change(|s: &mut Island, _| s.note_edited());
+    let editor = preview.tasks.into_iter().fold(editor, |e, (r, done)| e.link(Link::new(r.clone(), r.start.to_string()).role("checkbox").label(if done { "Done" } else { "To do" })));
     root.child(
         row().key("notes-body").w_full().grow(1.0).min_h(0.0).gap(12.0)
             .child(col().key("note-side").w(160.0).h_full().gap(8.0)
@@ -170,7 +270,8 @@ pub fn view(s: &Island) -> El {
 
 #[cfg(test)]
 mod tests {
-    use super::note_heading;
+    use super::{live_markdown, note_heading};
+    use rune::Color;
     use crate::config::{Config, Store};
     use crate::island::Island;
 
@@ -178,6 +279,43 @@ mod tests {
     fn a_note_is_titled_by_its_first_line() {
         assert_eq!(note_heading("PR queue\n\nGitHub\n• PR #482"), ("PR queue", "GitHub • PR #482".to_string()));
         assert_eq!(note_heading("  \n"), ("New Note", String::new()));
+    }
+
+    #[test]
+    fn markdown_hides_its_markup_except_on_the_line_being_edited() {
+        fn hidden(text: &str, reveal: Option<std::ops::Range<usize>>) -> Vec<&str> { live_markdown(text, reveal, Color::WHITE, Color::WHITE, Color::WHITE).spans.iter()
+            .filter(|s| s.color == Some(Color::TRANSPARENT)).map(|s| &text[s.start as usize..s.end as usize]).collect() }
+        let note = "# Plan\nShip **this** and `that`\n[docs](https://x.y) ~~old~~";
+        assert_eq!(hidden(note, None), ["# ", "**", "**", "`", "`", "[", "](https://x.y)", "~~", "~~"]);
+        // The caret on line 2 shows that line's source; the others stay rendered.
+        assert_eq!(hidden(note, Some(12..12)), ["# ", "[", "](https://x.y)", "~~", "~~"]);
+        let p = live_markdown(note, None, Color::WHITE, Color::WHITE, Color::WHITE);
+        assert_eq!(p.strikes.iter().map(|r| &note[r.clone()]).collect::<Vec<_>>(), ["old"]);
+        assert!(p.spans.iter().any(|s| &note[s.start as usize..s.end as usize] == "this" && s.weight == Some(600.0)));
+    }
+
+    #[test]
+    fn markdown_edge_cases_keep_their_text() {
+        fn hidden(text: &str, reveal: Option<std::ops::Range<usize>>) -> Vec<&str> { live_markdown(text, reveal, Color::WHITE, Color::WHITE, Color::WHITE).spans.iter()
+            .filter(|s| s.color == Some(Color::TRANSPARENT)).map(|s| &text[s.start as usize..s.end as usize]).collect() }
+        assert!(hidden("Title\n---\nbody", None).is_empty(), "a setext underline and its line break stay");
+        assert!(hidden("see [](https://x.y)", None).is_empty(), "an empty link stays visible");
+        assert_eq!(hidden("ünï **bö** 🎉 `ç`", None), ["**", "**", "`", "`"]);
+        assert_eq!(hidden("> - [x] quoted\n1. [x] numbered", None), ["- ", "[", "]", "1. ", "[", "]"]);
+        // The task on the edited line is neither a box nor clickable.
+        let p = live_markdown("- [ ] a\n- [ ] b", Some(0..0), Color::WHITE, Color::WHITE, Color::WHITE);
+        assert_eq!(p.tasks, [(10..13, false)]);
+    }
+
+    #[test]
+    fn a_click_on_a_checkbox_ticks_it() {
+        let mut s = Island::new(Store::memory(Config { notes: vec![crate::config::Item::new("List\n- [ ] Milk\n- [x] Eggs")], ..Config::default() }), Vec::new());
+        let tasks = |s: &Island| live_markdown(&s.notes.editor.text, None, Color::WHITE, Color::WHITE, Color::WHITE).tasks;
+        assert_eq!(tasks(&s), [(7..10, false), (18..21, true)]);
+        s.toggle_task(7);
+        s.toggle_task(18);
+        s.toggle_task(0); // not a checkbox
+        assert_eq!(s.store.get().notes[0].text, "List\n- [x] Milk\n- [ ] Eggs");
     }
 
     #[test]
