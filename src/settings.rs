@@ -245,7 +245,7 @@ impl Settings {
 
     fn add_t3_device(&mut self) {
         if !self.t3_addable() { return }
-        let device = T3Device { name: self.t3_name.text.trim().into(), url: self.t3_url.text.trim().into(), token: self.t3_token.text.trim().into() };
+        let device = T3Device { name: self.t3_name.text.trim().into(), url: self.t3_url.text.trim().into(), token: self.t3_token.text.trim().into(), detected: false };
         self.save(|c| c.t3_devices.push(device));
         self.t3_name.clear();
         self.t3_url.clear();
@@ -582,7 +582,7 @@ fn section_of(s: &Settings, k: &Kit, layer: &mut Vec<El>, part: Section) -> El {
             let mut t3 = vec![text("T3 Code on this computer is added by itself; removing it here doesn't end its session, so revoke it in T3's Sharing & access. For another device, run `t3 auth session issue --token-only` there.").font(cfg.font(12.0, 400.0)).color(fg.alpha(0.6))];
             for (i, d) in cfg.t3_devices.iter().enumerate() {
                 t3.push(setting(s, d.label(), IconButton::new(&icons::TRASH).label(format!("Remove {}", d.label()))
-                    .on_press(move |s: &mut Settings| s.save(|c| { if i < c.t3_devices.len() && c.t3_devices.remove(i).name == crate::t3::LOCAL_NAME { c.t3_detected = true } })).build(k)));
+                    .on_press(move |s: &mut Settings| s.save(|c| { if i < c.t3_devices.len() && c.t3_devices.remove(i).detected { c.t3_detected = true } })).build(k)));
             }
             t3.push(TextInput::new(&s.t3_name).width(None).label("Device name").placeholder("Name (e.g. Laptop)").on_edit(|s: &mut Settings| &mut s.t3_name).build(k));
             t3.push(TextInput::new(&s.t3_url).width(None).label("Device URL").placeholder("http://127.0.0.1:3773").on_edit(|s: &mut Settings| &mut s.t3_url).build(k));

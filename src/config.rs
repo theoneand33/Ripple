@@ -313,6 +313,10 @@ pub struct T3Device {
     pub name: String,
     pub url: String,
     pub token: String,
+    /// Found on this machine by `t3::detect_local`: the one whose loopback peer is checked
+    /// where the OS can't say who owns a port, and whose removal turns detection off.
+    #[serde(default)]
+    pub detected: bool,
 }
 
 impl T3Device {
@@ -685,6 +689,8 @@ impl Config {
         for o in [&mut self.compact_opacity, &mut self.large_opacity] { *o = if o.is_finite() { o.clamp(10.0, 100.0) } else { 100.0 } }
         if !SEARCH_ENGINES.iter().any(|e| e.0 == self.search_engine) { self.search_engine = "google".into() }
         if !PROVIDERS.iter().any(|p| p.id == self.ai_provider) { self.ai_provider = PROVIDERS[0].id.into() }
+        // Saved before devices said they were detected: the detected one had this name.
+        for d in &mut self.t3_devices { d.detected |= d.name == crate::t3::LOCAL_NAME }
         self
     }
 
@@ -988,6 +994,12 @@ mod tests {
         assert!(import(r#"{"settings": []}"#).is_err());
         assert!(import(r#"{"settings": {"island_x": "50"}}"#).is_err(), "a wrong type refuses the whole file");
         assert_eq!(import(r#"{"settings": {"standby": false}}"#).map(|c| c.standby), Ok(false), "missing fields take defaults");
+    }
+
+    #[test]
+    fn a_t3_device_saved_before_the_detected_flag_is_known_by_its_name() {
+        let cfg = import(r#"{"settings": {"t3_devices": [{"name": "This computer", "url": "u", "token": "t"}, {"name": "Laptop", "url": "v", "token": "t"}]}}"#).unwrap();
+        assert_eq!(cfg.t3_devices.iter().map(|d| d.detected).collect::<Vec<_>>(), [true, false]);
     }
 
     #[test]

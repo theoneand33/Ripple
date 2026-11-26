@@ -377,7 +377,7 @@ fn island_spec() -> AppSpec<Island> {
             ("t3-device", |s| {
                 s.mode = Mode::Large;
                 s.tab = Tab::T3;
-                s.cfg.t3_devices = vec![config::T3Device { name: "Laptop".into(), url: "http://127.0.0.1:3773".into(), token: "t".into() }];
+                s.cfg.t3_devices = vec![config::T3Device { name: "Laptop".into(), url: "http://127.0.0.1:3773".into(), token: "t".into(), detected: false }];
                 s.t3.data = Some(t3::Loaded {
                     favorites: vec![t3::Favorite { instance_id: "claude".into(), model: "opus".into(), label: "Claude Opus".into() }],
                     runtime_mode: "full-access".into(),

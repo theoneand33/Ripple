@@ -169,7 +169,7 @@ fn verify_peer(device: &T3Device) -> Result<(), String> {
     {
         // shortcut: only the detected device is re-checked, against a public id; upgrade to a peer-owner check (lsof, GetExtendedTcpTable) per OS.
         let _ = port;
-        if device.name != LOCAL_NAME || local_answers(&base)? { Ok(()) } else { Err("Another program holds T3's port".into()) }
+        if !device.detected || local_answers(&base)? { Ok(()) } else { Err("Another program holds T3's port".into()) }
     }
 }
 
@@ -186,12 +186,17 @@ fn listeners_ours(tables: &[String], port: u16, uid: u32) -> Option<bool> {
     (!owners.is_empty()).then(|| owners.iter().all(|&o| o == uid || o == 0))
 }
 
-fn authed(device: &T3Device, method: &str, path: &str, body: Option<&Value>) -> Result<Value, String> {
+/// `request` for one carrying a credential, in its headers or body: only once `verify_peer` passes.
+fn send_credential(device: &T3Device, method: &str, url: &str, headers: &[(&str, &str)], body: Option<&str>) -> Result<Value, String> {
     verify_peer(device)?;
+    request(method, url, headers, body)
+}
+
+fn authed(device: &T3Device, method: &str, path: &str, body: Option<&Value>) -> Result<Value, String> {
     let auth = bearer(device);
     let mut headers = vec![("authorization", auth.as_str())];
     if body.is_some() { headers.push(("content-type", "application/json")) }
-    request(method, &(base(device) + path), &headers, body.map(Value::to_string).as_deref())
+    send_credential(device, method, &(base(device) + path), &headers, body.map(Value::to_string).as_deref())
 }
 
 /// One-shot Effect RPC call over T3's /ws endpoint.
@@ -282,9 +287,8 @@ impl Client {
         let client_id = client["client_id"].as_str().unwrap_or_default();
         let verifier = URL_SAFE_NO_PAD.encode(random_bytes::<32>()?);
         let state = URL_SAFE_NO_PAD.encode(random_bytes::<16>()?);
-        // The pairing code and, below, the code and verifier are credentials too: check the peer before each.
-        verify_peer(device)?;
-        let decided = request("POST", &format!("{origin}/oauth/mcp/decision"), &json_headers, Some(&json!({
+        // The pairing code and, below, the code and verifier are credentials too.
+        let decided = send_credential(device, "POST", &format!("{origin}/oauth/mcp/decision"), &json_headers, Some(&json!({
             "authorization": {
                 "response_type": "code",
                 "client_id": client_id,
@@ -303,8 +307,7 @@ impl Client {
         };
         let form: String = [("grant_type", "authorization_code"), ("code", &code), ("redirect_uri", REDIRECT_URI), ("client_id", client_id), ("code_verifier", &verifier), ("resource", &resource)]
             .iter().map(|(k, v)| format!("{k}={}", percent_encode(v))).collect::<Vec<_>>().join("&");
-        verify_peer(device)?;
-        let token = request("POST", &format!("{origin}/oauth/mcp/token"), &[("content-type", "application/x-www-form-urlencoded")], Some(&form))?;
+        let token = send_credential(device, "POST", &format!("{origin}/oauth/mcp/token"), &[("content-type", "application/x-www-form-urlencoded")], Some(&form))?;
         let access = token["access_token"].as_str().ok_or("T3 gave no MCP token")?.to_string();
         // T3's tokens last 30 days; assume that when the answer doesn't say.
         let expires_in = token["expires_in"].as_f64().unwrap_or(30.0 * 86_400.0);
@@ -411,7 +414,7 @@ impl Client {
     }
 }
 
-/// The name `detect_local` gives the device; removing it turns detection off.
+/// The name `detect_local` gives the device.
 pub const LOCAL_NAME: &str = "This computer";
 
 /// T3's data folder: `T3CODE_HOME`, else `~/.t3`.
@@ -473,7 +476,7 @@ pub fn detect_local() -> Option<T3Device> {
     #[cfg(windows)]
     let token = token.or_else(|| crate::system::output("t3.cmd", &args));
     let token = token.filter(|t| !t.is_empty() && !t.contains(char::is_whitespace))?;
-    Some(T3Device { name: LOCAL_NAME.into(), url, token })
+    Some(T3Device { name: LOCAL_NAME.into(), url, token, detected: true })
 }
 
 /// initialize, initialized, tools/call. `Ok(None)` means the token was refused (401).
@@ -682,7 +685,7 @@ mod tests {
     }
 
     fn device(base: &str) -> T3Device {
-        T3Device { name: "Laptop".into(), url: format!("{base}/"), token: "dev-token".into() }
+        T3Device { name: "Laptop".into(), url: format!("{base}/"), token: "dev-token".into(), detected: false }
     }
 
     #[test]

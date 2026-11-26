@@ -2618,7 +2618,7 @@ mod tests {
 
     #[test]
     fn the_dock_fits_the_canvas_with_every_tab_visible() {
-        let t3 = crate::config::T3Device { name: "t".into(), url: "u".into(), token: "t".into() };
+        let t3 = crate::config::T3Device { name: "t".into(), url: "u".into(), token: "t".into(), detected: false };
         let mut s = island(Config { hidden_tabs: Vec::new(), t3_devices: vec![t3], discord_id: "1".into(), discord_secret: "s".into(), ..Config::default() });
         s.mode = Mode::Large;
         assert_eq!(s.visible_tabs().len(), Tab::ALL.len());
