@@ -258,6 +258,18 @@ pub enum Undo {
     Shelf(Vec<std::path::PathBuf>),
 }
 
+impl Undo {
+    /// The tab whose panel offers it.
+    fn tab(&self) -> Tab {
+        match self {
+            Undo::Item(Kind::Notes, ..) => Tab::Notes,
+            Undo::Item(Kind::Tasks, ..) => Tab::Tasks,
+            Undo::Item(Kind::Events, ..) => Tab::Calendar,
+            Undo::Shelf(_) => Tab::Shelf,
+        }
+    }
+}
+
 impl Island {
     pub fn undo(&mut self) {
         match self.undo.take() {
@@ -358,9 +370,9 @@ fn pill(s: &Island, key: &str, label: &str) -> El {
         .child(text(label).font(s.cfg.font(13.0, 600.0)).color(fg).a11y_hidden())
 }
 
-/// Undo for the last delete, while the tab it happened on stays open.
-fn undo_button(s: &Island) -> Option<El> {
-    s.undo.is_some().then(|| pill(s, "undo", "Undo").on_press(Island::undo))
+/// Undo for the last delete, on the panel it happened on, while its tab stays open.
+fn undo_button(s: &Island, tab: Tab) -> Option<El> {
+    s.undo.as_ref().is_some_and(|u| u.tab() == tab).then(|| pill(s, "undo", "Undo").on_press(Island::undo))
 }
 
 /// Left and Right switch tabs even while typing, as the Electron app's window-wide key
@@ -414,4 +426,23 @@ fn checkbox(s: &Island, key: &str, label: &str, checked: bool) -> El {
         .hover(fg.alpha(0.15 * fg.a)).press(fg.alpha(0.25 * fg.a)).press_scale(0.97);
     if checked { b = b.child(icon(&icons::CHECK, 12.0).color(bg)) }
     b
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Store;
+
+    #[test]
+    fn undo_shows_only_on_the_panel_whose_item_went() {
+        let cfg = Config { events: vec![Item::new("2026-01-01 Standup")], notes: vec![Item::new("Old")], ..Config::default() };
+        let mut s = Island::new(Store::memory(cfg), Vec::new());
+        let key = s.cfg.events[0].key;
+        s.delete_item(Kind::Events, key);
+        assert!(s.cfg.events.is_empty());
+        assert!(undo_button(&s, Tab::Calendar).is_some());
+        assert!(undo_button(&s, Tab::Notes).is_none(), "an Overview with both panels offers it once");
+        s.undo();
+        assert_eq!(s.cfg.events.iter().map(|e| e.key).collect::<Vec<_>>(), [key], "back where it was");
+    }
 }

@@ -6,13 +6,13 @@
 
 use rune::{El, TextEdit, Transition, Tx, col, el, row, text};
 
-use super::{Scrolls, Undo, accent, button, empty, field, pill, tool, undo_button};
-use crate::config::Item;
+use super::{Scrolls, accent, button, empty, field, pill, tool, undo_button};
+use crate::config::{Item, Tab};
 use crate::icons;
 use crate::date::{days_in, format_date, shift_month, weekday};
 use crate::island::Island;
 use crate::ics::{event_day, feed_events, leading_time, meeting_link};
-use crate::nextcloud::{self, Kind};
+use crate::nextcloud::Kind;
 use crate::reminders::{Reminder, Source};
 
 #[derive(Default)]
@@ -99,18 +99,9 @@ fn add_event(s: &mut Island, _: &mut Tx) {
     if title.is_empty() { return }
     let (y, m, d) = s.calendar.day.unwrap_or(s.today);
     let text = format!("{y:04}-{m:02}-{d:02} {title}");
-    match s.calendar.editing.take() {
-        Some(key) => s.save(|c| edit_event(c, key, text)),
-        None => s.save(|c| c.events.push(Item::new(text))),
-    }
+    let editing = s.calendar.editing.take();
     s.calendar.event.clear();
-    s.nextcloud_sync(Kind::Events);
-}
-
-/// In place, keeping its Nextcloud link: the next sync writes the change over the event there.
-/// One gone since the edit began (deleted by a sync) is added afresh, so the edit isn't lost.
-fn edit_event(c: &mut crate::config::Config, key: u64, text: String) {
-    match c.events.iter_mut().find(|e| e.key == key) { Some(e) => e.text = text, None => c.events.push(Item::new(text)) }
+    s.save_item(Kind::Events, editing, text);
 }
 
 fn start_edit(s: &mut Island, key: u64) {
@@ -135,10 +126,7 @@ fn cancel_edit(s: &mut Island) {
 
 fn delete_event(s: &mut Island, key: u64) {
     if s.calendar.editing == Some(key) { cancel_edit(s) }
-    let mut gone = None;
-    s.save(|c| gone = nextcloud::remove(c, Kind::Events, key));
-    if let Some((i, item)) = gone { s.undo = Some(Undo::Item(Kind::Events, i, item)) }
-    s.nextcloud_sync(Kind::Events);
+    s.delete_item(Kind::Events, key);
 }
 
 /// Every event's text: the user's own, by key, then the ICS links', which have no key as they
@@ -253,7 +241,7 @@ pub fn view(s: &Island) -> El {
                     .child(text(crate::date::weekday_name(py_, pm_, pd_).to_uppercase()).font(s.cfg.font(15.0, 700.0)).color(fg.alpha(0.5 * fg.a)))
                     .child(text(crate::date::month_day(pm_, pd_)).font(s.cfg.font(15.0, 700.0)).color(fg))
             })
-            .children(undo_button(s))
+            .children(undo_button(s, Tab::Calendar))
             .children(editing.then(|| pill(s, "cancel-edit", "Cancel edit").on_press(cancel_edit))))
         .child(col().key("event-scroll").w_full().grow(1.0).min_h(0.0).scrolls().child(list))
         .child(

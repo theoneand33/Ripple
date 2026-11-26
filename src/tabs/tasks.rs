@@ -151,13 +151,9 @@ fn add_task(s: &mut Island, _: &mut Tx) {
     if d.every.is_some() { task.every = d.every }
     if task.title.is_empty() { return }
     let text = task.to_string();
-    match s.tasks.draft.editing {
-        // Gone since the edit began (done elsewhere, removed by a sync): saved as a new task, not lost.
-        Some(key) => s.save(|c| match c.tasks.iter_mut().find(|t| t.key == key) { Some(t) => t.text = text, None => c.tasks.push(Item::new(text)) }),
-        None => s.save(|c| c.tasks.push(Item::new(text))),
-    }
+    let editing = s.tasks.draft.editing;
     reset_draft(s);
-    s.nextcloud_sync(Kind::Tasks);
+    s.save_item(Kind::Tasks, editing, text);
 }
 
 /// As the tab opens: an edit left open is dropped, and the list syncs.

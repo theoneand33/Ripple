@@ -6,11 +6,11 @@ use std::ops::Range;
 
 use rune::{Color, El, Link, Span, TextEdit, Transition, Tx, col, el, icon, row, text, text_input};
 
-use super::{Scrolls, Undo, empty, field, tool, undo_button};
-use crate::config::{Config, Item};
+use super::{Scrolls, empty, field, tool, undo_button};
+use crate::config::{Config, Item, Tab};
 use crate::icons;
 use crate::island::Island;
-use crate::nextcloud::{self, Kind};
+use crate::nextcloud::Kind;
 
 pub struct Notes {
     pub editor: TextEdit,
@@ -66,11 +66,10 @@ impl Island {
     }
 
     fn delete_note(&mut self) {
-        let mut gone = None;
-        if let Some(key) = self.cfg.notes.get(self.notes.index).map(|n| n.key) { self.save(|c| { gone = nextcloud::remove(c, Kind::Notes, key); c.pinned_notes.retain(|k| *k != key) }) }
-        if let Some((i, item)) = gone { self.undo = Some(Undo::Item(Kind::Notes, i, item)) }
+        let Some(key) = self.cfg.notes.get(self.notes.index).map(|n| n.key) else { return };
+        self.save(|c| c.pinned_notes.retain(|k| *k != key));
+        self.delete_item(Kind::Notes, key);
         self.open_note(self.notes.index);
-        self.nextcloud_sync(Kind::Notes);
     }
 
     /// A note being typed saves once a second, and uploads once typing pauses.
@@ -224,7 +223,7 @@ pub fn view(s: &Island) -> El {
     if let Some(e) = &s.nextcloud[Kind::Notes].error {
         header = header.child(text(e).font(s.cfg.font(12.0, 400.0)).color(muted).shrink().min_w(0.0).truncate());
     }
-    if let Some(undo) = undo_button(s) { header = header.child(undo) }
+    if let Some(undo) = undo_button(s, Tab::Notes) { header = header.child(undo) }
     if let Some(open) = s.cfg.notes.get(s.notes.index) {
         let pinned = s.cfg.pinned_notes.contains(&open.key);
         let pin = tool(s, "pin-note", &icons::STAR, if pinned { "Unpin note" } else { "Pin note" }).checked(pinned).on_press(Island::toggle_pin);
