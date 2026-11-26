@@ -1159,10 +1159,14 @@ impl Island {
 
     pub fn reminders_withdraw(&mut self, source: Source) { self.reminders.withdraw(source) }
 
-    /// Once a second: what waits shows as one alert, unless Large is open, it's quiet, or a
-    /// reminder from elsewhere shows. Headless runs show none, so every machine renders the same.
+    /// Reminders wait: Large is open, or it's quiet. Headless runs show none, so every machine
+    /// renders the same.
+    fn holds_reminders(&self) -> bool { rune::is_headless() || self.large_open() || self.quiet() }
+
+    /// Once a second: what waits shows as one alert, unless reminders are held or one from
+    /// elsewhere shows.
     fn deliver(&mut self, now: f64) {
-        if rune::is_headless() || self.large_open() || self.quiet() { return }
+        if self.holds_reminders() { return }
         // One that ends this tick no longer shows: the poll after this second sweeps it.
         let on_screen = self.shown_until(Alert::Reminder).is_some_and(|until| now < until);
         if let Some(a) = self.reminders.next(on_screen) { self.remind_for(a.title, a.link, now + a.secs) }
@@ -1174,10 +1178,9 @@ impl Island {
         (self.cfg.quiet_fullscreen && self.fullscreen) || (self.cfg.quiet_hours && self.cfg.quiet_at(LocalTime::at(crate::date::now_ms()).hour))
     }
 
-    /// A reminder of the Island's own (water, breaks, rain) may show now: Large isn't open, it isn't
-    /// quiet, and none shows, which it would replace; one held back stays due until then.
-    /// Headless runs show none, so every machine renders the same.
-    fn may_remind(&self) -> bool { !rune::is_headless() && !self.large_open() && !self.reminding() && !self.quiet() }
+    /// A reminder of the Island's own (water, breaks, rain) may show now: none is held, and none
+    /// shows, which it would replace; one held back stays due until then.
+    fn may_remind(&self) -> bool { !self.holds_reminders() && !self.reminding() }
 
     /// Large is open by hand or under the pointer, not merely resting there (large_standby).
     pub(crate) fn large_open(&self) -> bool {
