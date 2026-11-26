@@ -149,6 +149,9 @@ impl Host {
         match self { Host::Window(h) => h.is_visible(), Host::Overlay(_, _, shown) => shown.load(Ordering::Relaxed) }
     }
 
+    /// A Wayland layer-shell overlay, which can sit over or under panels.
+    pub fn is_overlay(&self) -> bool { matches!(self, Host::Overlay(..)) }
+
     /// Shows the Island without taking focus.
     pub fn show(&self) {
         match self { Host::Window(h) => h.show(), Host::Overlay(h, _, shown) => { shown.store(true, Ordering::Relaxed); h.show() } }
@@ -178,8 +181,16 @@ impl Host {
         match self { Host::Window(h) => h.activate(token.unwrap_or_default()), Host::Overlay(..) => { self.show(); self.allow_keys() } }
     }
 
-    /// Registers the system-wide shortcut that opens Large Mode (`Island::hotkey`).
-    pub fn register_hotkey(&self, shortcut: Shortcut) -> Result<ShortcutId, ShortcutError> {
+    /// Makes `next` the system-wide shortcut that opens Large Mode (`Island::hotkey`): registered
+    /// before the old one goes, so a refused chord keeps the old.
+    pub fn set_hotkey(&self, next: Option<Shortcut>) -> Result<(), ShortcutError> {
+        let id = next.map(|k| self.register_hotkey(k)).transpose()?;
+        let me = self.clone();
+        self.update(move |s, _| if let Some(old) = std::mem::replace(&mut s.hotkey, id) { me.unregister_hotkey(old) });
+        Ok(())
+    }
+
+    fn register_hotkey(&self, shortcut: Shortcut) -> Result<ShortcutId, ShortcutError> {
         match self {
             Host::Window(h) => h.register_shortcut(shortcut, Island::hotkey),
             Host::Overlay(h, app, _) => {
@@ -192,7 +203,7 @@ impl Host {
         }
     }
 
-    pub fn unregister_hotkey(&self, id: ShortcutId) {
+    fn unregister_hotkey(&self, id: ShortcutId) {
         let done = match self { Host::Window(h) => h.unregister_shortcut(id), Host::Overlay(_, app, _) => app.unregister_shortcut(id) };
         if let Err(e) = done { eprintln!("Ripple: {e}") }
     }
@@ -1094,13 +1105,19 @@ impl Island {
         if old.hour12 != self.cfg.hour12 { self.set_clock() }
         if old.hide_from_capture != self.cfg.hide_from_capture && let Some(w) = self.passthrough.window() { platform::hide_from_capture(w, self.cfg.hide_from_capture) }
         if !old.lyrics && self.cfg.lyrics { self.fetch_lyrics() }
+        if old.auto_launch != self.cfg.auto_launch {
+            let on = self.cfg.auto_launch;
+            std::thread::spawn(move || system::set_auto_launch(on));
+        }
         if old.overlap_panels != self.cfg.overlap_panels && let Some(Host::Overlay(h, ..)) = &self.me { h.set_overlap_panels(self.cfg.overlap_panels) }
         tabs::reloaded(self, &old);
     }
 
-    /// Changes the settings from the Island itself (tasks, the T3 choices).
+    /// Changes the settings from the Island itself (tasks, the T3 choices); an open Settings
+    /// window shows the change.
     pub fn save(&mut self, f: impl FnOnce(&mut Config)) {
         self.cfg = self.store.update(f);
+        if let Some(settings) = &self.settings_app { settings.update(|s, _| s.refresh()) }
     }
 
     fn load_background(&mut self) {
@@ -1572,8 +1589,8 @@ impl Island {
         if self.cfg.auto_launch { std::thread::spawn(|| system::set_auto_launch(true)); }
         let chord = self.cfg.hotkey.trim();
         if !chord.is_empty() {
-            match chord.parse().and_then(|k| me.register_hotkey(k)) {
-                Ok(id) => self.hotkey = Some(id),
+            match chord.parse().and_then(|k| me.set_hotkey(Some(k))) {
+                Ok(()) => {}
                 Err(e) => {
                     eprintln!("Ripple: the shortcut {chord} is off: {e}");
                     // Settings shows it unset, so recording it again retries; the saved chord stays for the next launch.
