@@ -168,6 +168,7 @@ fn load_widget(s: &mut Island, widget: Widget) {
     match widget {
         Widget::Panel(tab) => load(s, tab),
         Widget::Contributions => s.contributions_load(),
+        Widget::Today | Widget::Day => s.calendar_feeds_load(),
         _ => {}
     }
 }

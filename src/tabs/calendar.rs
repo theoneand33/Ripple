@@ -33,7 +33,7 @@ pub struct Calendar {
 
 impl Island {
     /// Fetches the ICS links once every 30 minutes, or at once when they changed.
-    fn calendar_feeds_load(&mut self) {
+    pub(super) fn calendar_feeds_load(&mut self) {
         let now = crate::date::now_secs();
         let feeds = self.cfg.calendar_feeds.clone();
         if feeds == self.calendar.feeds_loaded.0 && now - self.calendar.feeds_loaded.1 < 1800 { return }
@@ -141,14 +141,20 @@ fn delete_event(s: &mut Island, key: u64) {
     s.nextcloud_sync(Kind::Events);
 }
 
-/// The picked day's events, by title, so timed ones (`HH:MM title`) run in order; a link's
-/// events have no key, as they can't be edited.
-fn day_events(s: &Island, day: (i32, u32, u32)) -> Vec<(Option<u64>, &str)> {
+/// Every event's text: the user's own, by key, then the ICS links', which have no key as they
+/// can't be edited.
+fn all_events(s: &Island) -> impl Iterator<Item = (Option<u64>, &str)> {
     let own = s.cfg.events.iter().map(|e| (Some(e.key), e.text.as_str()));
-    let feeds = s.calendar.feed_events.iter().map(|t| (None, t.as_str()));
-    let mut events: Vec<_> = own.chain(feeds).filter_map(|(key, text)| event_day(text).filter(|(d, _)| *d == day).map(|(_, title)| (key, title))).collect();
-    events.sort_by_key(|e| e.1);
-    events
+    own.chain(s.calendar.feed_events.iter().map(|t| (None, t.as_str())))
+}
+
+impl Island {
+    /// A day's events, own and the links', by title, so timed ones (`HH:MM title`) run in order.
+    pub fn events_on(&self, day: (i32, u32, u32)) -> Vec<(Option<u64>, &str)> {
+        let mut events: Vec<_> = all_events(self).filter_map(|(key, text)| event_day(text).filter(|(d, _)| *d == day).map(|(_, title)| (key, title))).collect();
+        events.sort_by_key(|e| e.1);
+        events
+    }
 }
 
 pub fn view(s: &Island) -> El {
@@ -179,7 +185,7 @@ pub fn view(s: &Island) -> El {
     // Six weeks always, so the Island keeps one height; days of the months around are dimmed.
     let first = weekday(year, month, 1) as i32;
     let picked = s.calendar.day.unwrap_or(s.today);
-    let busy_days: Vec<_> = s.cfg.events.iter().map(|e| e.text.as_str()).chain(s.calendar.feed_events.iter().map(String::as_str)).filter_map(|t| Some(event_day(t)?.0)).collect();
+    let busy_days: Vec<_> = all_events(s).filter_map(|(_, t)| Some(event_day(t)?.0)).collect();
     let (py, pm) = shift_month(year, month, -1);
     let (len, prev_len) = (days_in(year, month) as i32, days_in(py, pm) as i32);
     let mut grid = col().key(format!("calendar-grid-{year}-{month}")).role("group").label(format!("{} {year}", MONTHS[month as usize - 1]))
@@ -212,7 +218,7 @@ pub fn view(s: &Island) -> El {
     for e in [&s.nextcloud[Kind::Events].error, &s.calendar.feed_error].into_iter().flatten() {
         list = list.child(text(e).font(s.cfg.font(12.0, 400.0)).color(fg.alpha(0.55 * fg.a)).wrap_anywhere());
     }
-    let events = day_events(s, picked);
+    let events = s.events_on(picked);
     if events.is_empty() { list = list.child(empty(s, "No events")) }
     // Each event gets a colour of its own, a bar at its left edge, as Droppy's calendar does.
     let tints = [accent::indigo(), accent::orange(), accent::green(), accent::teal()];
