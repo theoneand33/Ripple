@@ -237,10 +237,11 @@ pub fn activate_pid(pid: i32) {
 
 // --- Download progress ---
 
-/// Calls `put` once a second with the share done (None: not known yet) of each download another
-/// app publishes for a file in `dir`: the NSProgress Finder draws on a downloading file.
+/// Calls `put` once a second with a report on each download another app publishes for a file
+/// in `dir`: the NSProgress Finder draws on a downloading file.
 /// Runs for good: call it on a thread of its own.
-pub fn watch_progress(dir: &std::path::Path, put: impl Fn(Vec<Option<f64>>)) {
+pub fn watch_progress(dir: &std::path::Path, put: impl Fn(Vec<crate::downloads::Report>)) {
+    use crate::downloads::Report;
     use block2::{Block, RcBlock};
     use std::sync::{Arc, Mutex};
     // Each published progress by address, with the block that drops it when it is unpublished.
@@ -284,9 +285,9 @@ pub fn watch_progress(dir: &std::path::Path, put: impl Fn(Vec<Option<f64>>)) {
             let ended: bool = msg_send![&**p, isFinished];
             let cancelled: bool = msg_send![&**p, isCancelled];
             let unknown: bool = msg_send![&**p, isIndeterminate];
-            // Finished reads as full until it is unpublished, so `downloads::watch` knows it wasn't cancelled.
-            if ended && !cancelled { return Some(Some(1.0)) }
-            (!ended && !cancelled).then(|| (!unknown).then(|| -> f64 { msg_send![&**p, fractionCompleted] }))
+            // Finished until it is unpublished, so `downloads::watch` knows it wasn't cancelled.
+            if ended && !cancelled { return Some(Report::Finished) }
+            (!ended && !cancelled).then(|| Report::Running((!unknown).then(|| -> f64 { msg_send![&**p, fractionCompleted] })))
         }).collect();
         put(fractions);
     }
