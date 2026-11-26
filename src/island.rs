@@ -11,7 +11,7 @@ use rune::{
     Phase, Shadow, Shortcut, ShortcutError, ShortcutId, Spring, SurfaceFit, Transition, Tx, Vec2, Waker, WheelEvent, WindowHandle, col, el, icon, row, text,
 };
 
-use crate::config::{Config, Store, Tab};
+use crate::config::{Config, FullscreenRule, Position, Store, Tab};
 use crate::net::Weather;
 use crate::platform::{self, Passthrough, Screen};
 use crate::system::{self, MediaCommand, Track};
@@ -230,14 +230,14 @@ impl Placement {
         let (align, x, top, y) = if cfg.notch_mode {
             (0, dw * 0.5, true, 0.0)
         } else {
-            match cfg.position_mode.as_str() {
-                "top-left" => (-1, 15.0, true, 15.0),
-                "top-right" => (1, dw - 15.0, true, 15.0),
-                "bottom-left" => (-1, 15.0, false, dh - 45.0),
-                "bottom-right" => (1, dw - 15.0, false, dh - 45.0),
-                "top-center" => (0, dw * 0.498, true, 20.0),
-                "bottom-center" => (0, dw * 0.498, false, dh - 45.0),
-                _ => (0, dw * cfg.island_x / 100.0, true, cfg.island_y / zoom),
+            match cfg.position_mode {
+                Position::TopLeft => (-1, 15.0, true, 15.0),
+                Position::TopRight => (1, dw - 15.0, true, 15.0),
+                Position::BottomLeft => (-1, 15.0, false, dh - 45.0),
+                Position::BottomRight => (1, dw - 15.0, false, dh - 45.0),
+                Position::TopCenter => (0, dw * 0.498, true, 20.0),
+                Position::BottomCenter => (0, dw * 0.498, false, dh - 45.0),
+                Position::Free => (0, dw * cfg.island_x / 100.0, true, cfg.island_y / zoom),
             }
         };
         // The window stays on the display; the Island moves inside it instead.
@@ -579,10 +579,10 @@ impl Island {
 
     /// Hide when inactive, unless an app is full screen and its rule says otherwise.
     pub fn hiding(&self) -> bool {
-        match self.fullscreen_rule() { "hidden" => true, "standby" | "still" => false, _ => self.cfg.hide_inactive }
+        match self.fullscreen_rule() { FullscreenRule::Hidden => true, FullscreenRule::Standby | FullscreenRule::Still => false, FullscreenRule::NoChange => self.cfg.hide_inactive }
     }
 
-    fn fullscreen_rule(&self) -> &str { if self.fullscreen { &self.cfg.fullscreen } else { "none" } }
+    fn fullscreen_rule(&self) -> FullscreenRule { if self.fullscreen { self.cfg.fullscreen } else { FullscreenRule::NoChange } }
 
     /// Hide when inactive: resting with no track or live activity to show.
     pub fn hidden(&self) -> bool { self.hiding() && self.mode == Mode::Still && !self.shows_track() && self.activities().is_empty() }
@@ -779,7 +779,7 @@ impl Island {
     pub fn rest(&self) -> Mode {
         // Standby is on by default, so the opt-in settings win over it or they could never apply.
         // Hiding wins over both, since it only works at Still. A full screen rule wins over all.
-        match self.fullscreen_rule() { "standby" => return Mode::Quick, "still" => return Mode::Still, _ => {} }
+        match self.fullscreen_rule() { FullscreenRule::Standby => return Mode::Quick, FullscreenRule::Still => return Mode::Still, FullscreenRule::NoChange | FullscreenRule::Hidden => {} }
         if self.hiding() { Mode::Still } else if self.cfg.large_standby { Mode::Large } else if self.cfg.standby { Mode::Quick } else { Mode::Still }
     }
 
@@ -1587,7 +1587,7 @@ impl Island {
         let h = me.clone();
         let store = self.store.clone();
         // No rule and no break reminders, no query: the default pays nothing.
-        every(1000, move || { let f = { let c = store.get(); (c.fullscreen != "none" || c.eye_breaks || c.hourly_breaks || c.quiet_fullscreen) && platform::fullscreen() }; h.update_if(move |s, _| s.set_fullscreen(f)); });
+        every(1000, move || { let f = { let c = store.get(); (c.fullscreen != FullscreenRule::NoChange || c.eye_breaks || c.hourly_breaks || c.quiet_fullscreen) && platform::fullscreen() }; h.update_if(move |s, _| s.set_fullscreen(f)); });
         let h = me.clone();
         every(250, move || { let on = system::caps_lock().unwrap_or(false); h.update_if(move |s, _| s.set_caps_lock(on)); });
         let h = me.clone();
@@ -1648,7 +1648,7 @@ impl Island {
         std::thread::spawn(move || loop {
             let cfg = store.get();
             // No location: clear the weather so no icon shows and no request is sent.
-            let w = if cfg.location.trim().is_empty() { Some(Weather::default()) } else { crate::net::weather(&cfg.location, &cfg.weather_unit) };
+            let w = if cfg.location.trim().is_empty() { Some(Weather::default()) } else { crate::net::weather(&cfg.location, cfg.weather_unit.id()) };
             match w {
                 Some(w) => { found = cfg.location.clone(); me.update_if(move |s, _| s.weather != w && { s.weather = w; true }) }
                 // A new place not found: the sun times are the old place's, so the themes stop following them.
@@ -2158,18 +2158,18 @@ mod tests {
 
     #[test]
     fn a_full_overview_fits_a_short_display() {
-        for mode in ["top-center", "bottom-center"] {
-            let mut s = island(Config { position_mode: mode.into(), ..Config::default() });
+        for mode in [Position::TopCenter, Position::BottomCenter] {
+            let mut s = island(Config { position_mode: mode, ..Config::default() });
             s.cfg.dashboard = crate::config::Widget::OWN.into_iter().map(|w| crate::config::Tile::new(w).sized(4, 6)).collect();
             s.placement = Placement::of(&s.cfg, (853.0, 533.0));
             s.mode = Mode::Large;
             s.set_tab(Tab::Overview);
             let ([_, iy, _, ih], [_, dy, _, dh]) = (s.rect(), s.dock_rect().unwrap());
             let (top, bottom) = (iy.min(dy), (iy + ih).max(dy + dh));
-            assert!(top >= 0.0 && bottom <= s.placement.visible_h, "{mode}: {top}..{bottom}");
+            assert!(top >= 0.0 && bottom <= s.placement.visible_h, "{mode:?}: {top}..{bottom}");
         }
         // No room at all below the Island: it keeps to the Overview's usual size, its tiles shrunk to fit.
-        let mut s = island(Config { position_mode: "free".into(), island_y: 500.0, ..Config::default() });
+        let mut s = island(Config { position_mode: Position::Free, island_y: 500.0, ..Config::default() });
         s.placement = Placement::of(&s.cfg, (960.0, 540.0));
         s.mode = Mode::Large;
         s.set_tab(Tab::Overview);
@@ -2180,10 +2180,10 @@ mod tests {
     #[test]
     fn a_scaled_island_keeps_its_window_on_the_display() {
         for scale in [80.0, 110.0, 130.0, 150.0, 170.0, 180.0] {
-            for mode in ["top-right", "bottom-right", "bottom-left", "free"] {
-                let p = Placement::of(&Config { island_scale: scale, position_mode: mode.into(), ..Config::default() }, (1920.0, 1080.0));
+            for mode in [Position::TopRight, Position::BottomRight, Position::BottomLeft, Position::Free] {
+                let p = Placement::of(&Config { island_scale: scale, position_mode: mode, ..Config::default() }, (1920.0, 1080.0));
                 let [x, y, w, h] = p.frame();
-                assert!(x >= 0.0 && y >= 0.0 && x + w <= 1920.01 && y + h <= 1080.01, "{scale}% {mode}: {:?}", p.frame());
+                assert!(x >= 0.0 && y >= 0.0 && x + w <= 1920.01 && y + h <= 1080.01, "{scale}% {mode:?}: {:?}", p.frame());
                 assert!(w > 1918.0, "{scale}%: spans the display, {w}");
             }
         }
@@ -2295,7 +2295,7 @@ mod tests {
         s.set_fullscreen(true);
         s.set_fullscreen(false);
         assert!(s.large_open(), "a full screen app with no rule leaves a Large opened by hand alone");
-        s.cfg.fullscreen = "standby".into();
+        s.cfg.fullscreen = FullscreenRule::Standby;
         s.set_fullscreen(true);
         assert!(s.mode == Mode::Large && s.large_open(), "nor does one with a rule");
         s.remind("Look away 20s".into(), 0.0);
@@ -2306,24 +2306,24 @@ mod tests {
     #[test]
     fn the_window_stays_on_the_display_and_the_island_keeps_its_place() {
         let display = (1920.0, 1080.0);
-        let at = |mode: &str| {
-            let p = Placement::of(&Config { position_mode: mode.into(), ..Config::default() }, display);
+        let at = |mode: Position| {
+            let p = Placement::of(&Config { position_mode: mode, ..Config::default() }, display);
             let [x, y, w, h] = p.rect((140.0, 40.0));
             // The Island's rect on the display.
             (p.window.0 + x, p.window.1 + y, w, h, p.window)
         };
-        assert_eq!(at("top-left"), (15.0, 15.0, 140.0, 40.0, (0.0, 0.0)));
-        let (x, y, w, _, window) = at("top-right");
+        assert_eq!(at(Position::TopLeft), (15.0, 15.0, 140.0, 40.0, (0.0, 0.0)));
+        let (x, y, w, _, window) = at(Position::TopRight);
         assert_eq!((x + w, y, window.0), (1905.0, 15.0, 0.0));
-        let (x, y, _, h, window) = at("bottom-left");
+        let (x, y, _, h, window) = at(Position::BottomLeft);
         assert_eq!((x, y + h, window.1), (15.0, 1035.0, 1035.0 + 30.0 - CANVAS.1));
         // An Island `max_w` wide stays in its window and on the display, whatever its anchor.
-        for mode in ["top-left", "top-right", "top-center", "free"] {
-            let p = Placement::of(&Config { position_mode: mode.into(), ..Config::default() }, display);
+        for mode in [Position::TopLeft, Position::TopRight, Position::TopCenter, Position::Free] {
+            let p = Placement::of(&Config { position_mode: mode, ..Config::default() }, display);
             let [x, _, w, _] = p.rect((p.max_w(), 40.0));
-            assert!(x >= 0.0 && x + w <= p.visible_w, "{mode}: {x}..{}", x + w);
+            assert!(x >= 0.0 && x + w <= p.visible_w, "{mode:?}: {x}..{}", x + w);
         }
-        let (x, _, w, _, _) = at("free");
+        let (x, _, w, _, _) = at(Position::Free);
         assert_eq!(x + w / 2.0, 960.0);
         let notch = Placement::of(&Config { notch_mode: true, ..Config::default() }, display);
         assert_eq!((notch.window.1, notch.rect((210.0, 34.0))[1]), (0.0, 0.0));
@@ -2341,14 +2341,14 @@ mod tests {
 
     #[test]
     fn a_full_screen_app_applies_its_rule_to_a_resting_island() {
-        let full = |rule: &str, cfg: Config| { let mut s = island(Config { fullscreen: rule.into(), ..cfg }); s.set_fullscreen(true); s };
-        assert_eq!(full("none", Config::default()).mode, Mode::Quick);
-        assert_eq!(full("still", Config::default()).mode, Mode::Still);
-        assert_eq!(full("standby", Config { standby: false, ..Config::default() }).mode, Mode::Quick);
+        let full = |rule: FullscreenRule, cfg: Config| { let mut s = island(Config { fullscreen: rule, ..cfg }); s.set_fullscreen(true); s };
+        assert_eq!(full(FullscreenRule::NoChange, Config::default()).mode, Mode::Quick);
+        assert_eq!(full(FullscreenRule::Still, Config::default()).mode, Mode::Still);
+        assert_eq!(full(FullscreenRule::Standby, Config { standby: false, ..Config::default() }).mode, Mode::Quick);
         // The rule beats Hide when inactive, so the Island neither hides nor draws as hidden.
-        let s = full("standby", Config { hide_inactive: true, ..Config::default() });
+        let s = full(FullscreenRule::Standby, Config { hide_inactive: true, ..Config::default() });
         assert!(s.mode == Mode::Quick && !s.hiding());
-        let mut s = full("hidden", Config::default());
+        let mut s = full(FullscreenRule::Hidden, Config::default());
         assert!(s.mode == Mode::Still && s.hidden());
         s.set_fullscreen(false);
         assert!(s.mode == Mode::Quick && !s.hidden());
@@ -2488,7 +2488,7 @@ mod tests {
         assert!(s.bubbles().is_empty());
 
         // Against the left edge, both go right.
-        let mut s = island(Config { position_mode: "top-left".into(), ..Config::default() });
+        let mut s = island(Config { position_mode: Position::TopLeft, ..Config::default() });
         s.set_caps_lock(true);
         s.set_track(Some(Track { name: "Song".into(), playing: true, ..Default::default() }), &mut tx);
         s.pomodoro.ends = Some(crate::date::wall() + 60.0);
@@ -2605,7 +2605,7 @@ mod tests {
         s.mode = Mode::Large;
         let ([_, iy, _, ih], [_, dy, _, dh]) = (s.rect(), s.dock_rect().unwrap());
         assert_eq!(dy, iy + ih);
-        s.placement = Placement::of(&Config { position_mode: "bottom-center".into(), ..Config::default() }, (1920.0, 1080.0));
+        s.placement = Placement::of(&Config { position_mode: Position::BottomCenter, ..Config::default() }, (1920.0, 1080.0));
         let ([_, iy, _, _], [_, dy, _, dh2]) = (s.rect(), s.dock_rect().unwrap());
         assert_eq!((dy + dh2, dh2), (iy, dh));
     }

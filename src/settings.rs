@@ -5,7 +5,7 @@ use std::cell::RefCell;
 use rune::{Color, Cursor, Cx, Drag, El, FileDialogOptions, FileDialogResult, Phase, ScrollSpec, Shortcut, ShortcutError, TextEdit, Tx, col, el, icon, row, text};
 use rune_kit::{Button, ButtonVariant, IconButton, Kit, RadioGroup, RadioItem, Select, ShortcutRecorder, ShortcutRecorderState, Switch, TextArea, TextInput};
 
-use crate::config::{Config, POSITIONS, PROVIDERS, QuickApp, SEARCH_ENGINES, Store, T3Device, THEMES, Tab, Workflow};
+use crate::config::{Config, FullscreenRule, Position, WeatherUnit, PROVIDERS, QuickApp, SEARCH_ENGINES, Store, T3Device, THEMES, Tab, Workflow};
 use crate::icons;
 use crate::island::Host;
 use crate::platform::Screen;
@@ -297,6 +297,20 @@ fn choice(s: &Settings, k: &Kit, layer: &mut Vec<El>, key: &'static str, label: 
         .build(k, layer)
 }
 
+/// A `choice` over a fixed set of values.
+fn pick<T: Copy + PartialEq + 'static>(s: &Settings, k: &Kit, layer: &mut Vec<El>, key: &'static str, label: &str, all: &[T], current: T, name: fn(T) -> &'static str, set: fn(&mut Config, T)) -> El {
+    let labels: Vec<&str> = all.iter().map(|v| name(*v)).collect();
+    let all = all.to_vec();
+    Select::new(key, &labels).label(label).width(190.0)
+        .current(Some(name(current)))
+        .open(s.open == Some(key)).on_toggle(toggle_open(key)).on_close(close)
+        .on_choose(move |s: &mut Settings, label: &str, _: &mut Tx| {
+            s.open = None;
+            if let Some(&value) = all.iter().find(|v| name(**v) == label) { s.save(|c| set(c, value)) }
+        })
+        .build(k, layer)
+}
+
 fn switch(k: &Kit, label: &str, on: bool, flip: fn(&mut Config)) -> El {
     Switch::new(on).label(label).hide_label().on_toggle(move |s: &mut Settings| s.save(flip)).build(k)
 }
@@ -437,7 +451,7 @@ fn panel(s: &Settings, k: &Kit, layer: &mut Vec<El>, tab: Tab) -> Vec<El> {
             sections.push(section(s, "weather", "Weather", vec![
                 setting(s, "Location", TextInput::new(&s.location).label("Location").placeholder("City, ST, Country").width(Some(200.0))
                     .binds(|s| &mut s.location, |c, v| c.location = v.into()).build(k)),
-                setting(s, "Unit", choice(s, k, layer, "unit", "Unit", &[("f", "Fahrenheit (°F)"), ("c", "Celsius (°C)")], &cfg.weather_unit, |c, v| c.weather_unit = v.into())),
+                setting(s, "Unit", pick(s, k, layer, "unit", "Unit", &WeatherUnit::ALL, cfg.weather_unit, WeatherUnit::label, |c, v| c.weather_unit = v)),
                 toggle(s, k, "Alert before rain or snow", cfg.rain_alerts, |c| c.rain_alerts = !c.rain_alerts),
             ]));
             if tab == Tab::Overview {
@@ -740,12 +754,12 @@ fn page(s: &Settings, k: &Kit, layer: &mut Vec<El>, page: Page) -> Vec<El> {
                 // Auto size only sizes around a physical notch.
                 if !cfg.notch_mini { style.insert(2, toggle(s, k, "Auto size", cfg.notch_auto_size, |c| c.notch_auto_size = !c.notch_auto_size)) }
             }
-            let position = POSITIONS.iter()
-                .fold(RadioGroup::new().label("Position"), |group, &(value, label)| {
-                    group.item(RadioItem::new(label, cfg.position_mode == value).on_select(move |s: &mut Settings| s.save(|c| c.position_mode = value.into())))
+            let position = Position::ALL.into_iter()
+                .fold(RadioGroup::new().label("Position"), |group, value| {
+                    group.item(RadioItem::new(value.label(), cfg.position_mode == value).on_select(move |s: &mut Settings| s.save(|c| c.position_mode = value)))
                 });
             style.push(col().key("position").w_full().gap(8.0).padding(14.0).radius(16.0).fill(fg.alpha(0.03)).border(1.0, fg.alpha(0.08)).child(position.build(k)));
-            if cfg.position_mode == "free" {
+            if cfg.position_mode == Position::Free {
                 style.push(setting(s, &format!("Position X ({:.1}%)", cfg.island_x), slider(s, "island-x", "Position X", (0.0, 100.0, 0.1), |c| c.island_x, |c, v| c.island_x = v)).key("island-x-row"));
                 style.push(setting(s, &format!("Position Y ({}px)", cfg.island_y.round()), slider(s, "island-y", "Position Y", (0.0, 500.0, 1.0), |c| c.island_y, |c, v| c.island_y = v)).key("island-y-row"));
             }
@@ -778,9 +792,8 @@ fn page(s: &Settings, k: &Kit, layer: &mut Vec<El>, page: Page) -> Vec<El> {
                 toggle(s, k, "Low battery alerts", cfg.battery_alerts, |c| c.battery_alerts = !c.battery_alerts),
                 toggle(s, k, "Standby mode", cfg.standby, |c| c.standby = !c.standby),
                 toggle(s, k, "Large standby mode", cfg.large_standby, |c| c.large_standby = !c.large_standby),
-                setting(s, "When an app is full screen", choice(s, k, layer, "fullscreen", "When an app is full screen",
-                    &[("none", "No change"), ("standby", "Standby mode"), ("hidden", "Hidden mode"), ("still", "Standby mode off")],
-                    &cfg.fullscreen, |c, v| c.fullscreen = v.into())),
+                setting(s, "When an app is full screen", pick(s, k, layer, "fullscreen", "When an app is full screen",
+                    &FullscreenRule::ALL, cfg.fullscreen, FullscreenRule::label, |c, v| c.fullscreen = v)),
                 toggle(s, k, "Show info when idle", cfg.show_info_idle, |c| c.show_info_idle = !c.show_info_idle),
             ]));
             let hour = |h: u32| if cfg.hour12 { format!("{}{}", (h + 11) % 12 + 1, if h % 24 < 12 { " AM" } else { " PM" }) } else { format!("{:02}:00", h % 24) };
