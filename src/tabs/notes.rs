@@ -125,7 +125,10 @@ fn live_markdown(text: &str, reveal: Option<Range<usize>>, accent: Color, muted:
     let mut hidden: Vec<Range<usize>> = Vec::new();
     // Each open element: its whole range and the range its children cover.
     let mut open: Vec<(Range<usize>, Option<usize>, usize)> = Vec::new();
-    for (event, r) in Parser::new_ext(text, Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS).into_offset_iter() {
+    // The current table's cells, so the pipes and the `---` row between them can be muted.
+    let mut cells: Vec<Range<usize>> = Vec::new();
+    let mut tables: Vec<Range<usize>> = Vec::new();
+    for (event, r) in Parser::new_ext(text, Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS | Options::ENABLE_TABLES).into_offset_iter() {
         if !matches!(event, Event::End(_)) && let Some((_, start, end)) = open.last_mut() {
             start.get_or_insert(r.start);
             *end = (*end).max(r.end);
@@ -155,6 +158,18 @@ fn live_markdown(text: &str, reveal: Option<Range<usize>>, accent: Color, muted:
                     TagEnd::Link => wrap(&mut out, Some(Span::new(inner.start, inner.end).color(accent).underline(accent))),
                     TagEnd::BlockQuote(_) => out.spans.push(Span::new(outer.start, outer.end).color(muted).italic()),
                     TagEnd::Item => out.spans.push(Span::new(outer.start, inner.start).color(accent)),
+                    TagEnd::TableCell => cells.push(outer),
+                    TagEnd::TableHead => out.spans.push(Span::new(outer.start, outer.end).bold()),
+                    // Monospaced, so a table whose pipes line up in its source shows as columns.
+                    TagEnd::Table => {
+                        out.spans.push(Span::new(outer.start, outer.end).mono());
+                        tables.push(outer.clone());
+                        let mut at = outer.start;
+                        for c in cells.drain(..).chain([outer.end..outer.end]) {
+                            if c.start > at { out.spans.push(Span::new(at, c.start).color(muted)) }
+                            at = c.end;
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -190,6 +205,8 @@ fn live_markdown(text: &str, reveal: Option<Range<usize>>, accent: Color, muted:
     }
     for h in hidden {
         if h.start >= h.end || revealed(&h) { continue }
+        // In a table, markup is muted, not hidden: hiding it would shift the columns after it.
+        if tables.iter().any(|t| t.start <= h.start && h.end <= t.end) { out.spans.push(Span::new(h.start, h.end).color(muted)); continue }
         // Hidden: taking next to no room and drawing nothing, its bytes still there to edit and copy.
         out.spans.push(Span::new(h.start, h.end).size(0.01).color(Color::TRANSPARENT));
     }
@@ -305,6 +322,17 @@ mod tests {
         // The task on the edited line is neither a box nor clickable.
         let p = live_markdown("- [ ] a\n- [ ] b", Some(0..0), Color::WHITE, Color::WHITE, Color::WHITE);
         assert_eq!(p.tasks, [(10..13, false)]);
+    }
+
+    #[test]
+    fn a_table_mutes_its_pipes_and_bolds_its_header() {
+        let note = "| A | **B** |\n|---|:-:|\n| 1 | 2 |\n\nafter";
+        let p = live_markdown(note, None, Color::WHITE, Color::BLACK, Color::WHITE);
+        let styled = |f: &dyn Fn(&rune::Span) -> bool| { let mut v: Vec<_> = p.spans.iter().filter(|s| f(s)).collect(); v.sort_by_key(|s| s.start); v }.into_iter().map(|s| &note[s.start as usize..s.end as usize]).collect::<Vec<_>>();
+        assert_eq!(styled(&|s| s.color == Some(Color::BLACK)).concat().replace(char::is_whitespace, ""), "||****||---|:-:||||");
+        assert!(styled(&|s| s.weight == Some(600.0)).iter().any(|t| t.contains("| A |")), "the header row is bold");
+        assert!(!styled(&|s| s.color == Some(Color::BLACK)).concat().contains("after"));
+        assert!(styled(&|s| s.color == Some(Color::TRANSPARENT)).is_empty(), "nothing in a table is hidden, so its columns stay put");
     }
 
     #[test]
