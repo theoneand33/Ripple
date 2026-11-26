@@ -250,7 +250,16 @@ fn island_spec() -> AppSpec<Island> {
             ("timer-done", |s| { s.pomodoro.timer.rung = true; s.pomodoro.timer.left = 0.0 }),
             ("stopwatch-live", |s| { s.pomodoro.stopwatch.elapsed = 3723.0; s.pomodoro.stopwatch.since = Some(crate::date::wall() - 3723.0) }),
             ("pomodoro-live", |s| { let now = crate::date::wall(); s.pomodoro.ends = Some(now + 15.0 * 60.0 + 23.0); s.pomodoro.tick(now); }),
-            ("match", |s| { s.set_game(Some(games::Match { game: "Counter-Strike 2", target: games::Target::Window(0) })); }),
+            ("match", |s| {
+                // A window that isn't there: the scene only draws the alert.
+                #[cfg(target_os = "linux")]
+                let window = platform::WindowId::X11(0);
+                #[cfg(windows)]
+                let window = platform::WindowId::Hwnd(0);
+                #[cfg(target_os = "macos")]
+                let window = platform::WindowId::App(0);
+                s.set_game(Some(games::Match { game: "Counter-Strike 2", target: games::Target::Window(window) }));
+            }),
             ("match-league", |s| { s.set_game(Some(games::Match { game: "League of Legends", target: games::Target::League(Default::default()) })); }),
             ("download", |s| { s.set_download(Some(downloads::Progress { fraction: Some(0.42), count: 1, done: false }), &mut rune::Tx::default()); }),
             ("download-done", |s| { let mut tx = rune::Tx::default(); s.set_download(Some(downloads::Progress { fraction: Some(0.9), count: 1, done: false }), &mut tx); s.set_download(Some(downloads::Progress { fraction: Some(1.0), count: 1, done: true }), &mut tx); }),

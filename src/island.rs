@@ -406,7 +406,7 @@ pub struct Island {
     /// The Island's window has keyboard focus.
     focused: bool,
     /// The window that had focus when the pointer reached the Island; it gets focus back on close.
-    prior: Option<u64>,
+    prior: Option<platform::WindowId>,
     weather_kick: Option<Sender<()>>,
     /// The registered shortcut that opens Large Mode.
     pub hotkey: Option<ShortcutId>,
