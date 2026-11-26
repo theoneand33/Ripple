@@ -43,6 +43,11 @@ fn clock_label(secs: f64) -> String {
     if s >= 3600 { format!("{}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60) } else { format!("{}:{:02}", s / 60, s % 60) }
 }
 
+/// Pauses a countdown ending at `ends`, keeping what is `left`, or runs it on from `left`.
+fn run_or_pause(ends: &mut Option<f64>, left: &mut f64, now: f64) {
+    *ends = match *ends { Some(at) => { *left = (at - now).max(0.0); None } None => Some(now + *left) };
+}
+
 /// A countdown of `length` seconds. Once it runs out it has `rung` until reset or seen.
 pub struct Timer {
     pub length: f64,
@@ -62,7 +67,7 @@ impl Timer {
 
     pub fn toggle(&mut self, now: f64) {
         if self.left <= 0.0 { self.reset() }
-        self.ends = match self.ends { Some(ends) => { self.left = (ends - now).max(0.0); None } None => Some(now + self.left) };
+        run_or_pause(&mut self.ends, &mut self.left, now);
     }
 
     /// Picks a length; a running timer starts over on it.
@@ -115,9 +120,7 @@ impl Pomodoro {
     pub fn active(&self) -> bool { self.running() || self.timer.ends.is_some() || self.timer.rung || self.stopwatch.since.is_some() }
 
     /// The time the live activity shows.
-    pub fn live_label(&self) -> String {
-        if self.running() { self.label() } else if self.timer.ends.is_some() || self.timer.rung { self.timer.label() } else { self.stopwatch.label() }
-    }
+    pub fn live_label(&self) -> String { shown(self).time }
 
     /// Ticks every clock; false while none runs.
     pub fn tick_all(&mut self, now: f64) -> bool { self.tick(now) | self.timer.tick(now) | self.stopwatch.tick(now) }
@@ -127,15 +130,10 @@ impl Pomodoro {
     /// Elapsed share of the phase, for the ring.
     pub fn percent(&self) -> u8 { ((1.0 - self.left / self.length()) * 100.0).clamp(0.0, 100.0) as u8 }
 
-    pub fn label(&self) -> String {
-        let s = self.left.ceil() as u64;
-        format!("{}:{:02}", s / 60, s % 60)
-    }
+    pub fn label(&self) -> String { clock_label(self.left.ceil()) }
 
-    pub fn toggle(&mut self, now: f64) {
-        // Pausing keeps the time since the last tick off the clock.
-        self.ends = match self.ends { Some(ends) => { self.left = (ends - now).max(0.0); None } None => Some(now + self.left) };
-    }
+    /// Pausing keeps the time since the last tick off the clock.
+    pub fn toggle(&mut self, now: f64) { run_or_pause(&mut self.ends, &mut self.left, now) }
 
     pub fn reset(&mut self) { *self = Pomodoro { rounds: self.rounds, ..Pomodoro::default() } }
 
@@ -164,21 +162,33 @@ fn color(focus: bool) -> rune::Color { if focus { accent::orange() } else { acce
 /// The compact Island's live activity: the Pomodoro, else the timer, else the stopwatch, as a
 /// ring and its time.
 pub fn live(p: &Pomodoro, style: TextStyle) -> El {
-    let (key, glyph, tint, percent, label) = shown(p);
-    row().key(key).role("img").label(label).gap(6.0).center_y()
-        .child(ring(18.0, percent, tint, icon(glyph, 10.0).color(tint)))
-        .child(text(p.live_label()).font(style.features("'tnum' 1")).color(tint).a11y_hidden())
+    let c = shown(p);
+    row().key(c.key).role("img").label(c.spoken).gap(6.0).center_y()
+        .child(ring(18.0, c.percent, c.tint, icon(c.glyph, 10.0).color(c.tint)))
+        .child(text(c.time).font(style.features("'tnum' 1")).color(c.tint).a11y_hidden())
 }
 
-/// The clock the Island shows: the Pomodoro, else the timer, else the stopwatch, as its key,
-/// icon, colour, ring percent and spoken label.
-fn shown(p: &Pomodoro) -> (&'static str, &'static rune::Icon, rune::Color, f32, String) {
+/// The clock the compact Island shows.
+struct Shown {
+    key: &'static str,
+    glyph: &'static rune::Icon,
+    tint: rune::Color,
+    percent: f32,
+    time: String,
+    spoken: String,
+}
+
+/// The Pomodoro, else the timer, else the stopwatch.
+fn shown(p: &Pomodoro) -> Shown {
     if p.running() {
-        ("pomodoro", if p.focus { &icons::TIMER } else { &icons::COFFEE }, color(p.focus), f32::from(p.percent()), format!("{}, {} left", if p.focus { "Focus" } else { "Break" }, p.label()))
+        let time = p.label();
+        Shown { key: "pomodoro", glyph: if p.focus { &icons::TIMER } else { &icons::COFFEE }, tint: color(p.focus), percent: f32::from(p.percent()), spoken: format!("{}, {time} left", if p.focus { "Focus" } else { "Break" }), time }
     } else if p.timer.ends.is_some() || p.timer.rung {
-        ("timer", &icons::TIMER, if p.timer.rung { accent::red() } else { accent::teal() }, p.timer.percent(), if p.timer.rung { "Timer done".into() } else { format!("Timer, {} left", p.timer.label()) })
+        let time = p.timer.label();
+        Shown { key: "timer", glyph: &icons::TIMER, tint: if p.timer.rung { accent::red() } else { accent::teal() }, percent: p.timer.percent(), spoken: if p.timer.rung { "Timer done".into() } else { format!("Timer, {time} left") }, time }
     } else {
-        ("stopwatch", &icons::TIMER, accent::indigo(), p.stopwatch.percent(), format!("Stopwatch, {}", p.stopwatch.label()))
+        let time = p.stopwatch.label();
+        Shown { key: "stopwatch", glyph: &icons::TIMER, tint: accent::indigo(), percent: p.stopwatch.percent(), spoken: format!("Stopwatch, {time}"), time }
     }
 }
 
@@ -223,8 +233,8 @@ fn stopwatch_view(s: &Island) -> El {
 
 /// The ring alone, for the bubble beside the compact Island while music has the Island.
 pub fn bubble(p: &Pomodoro, size: f32) -> El {
-    let (_, glyph, tint, percent, label) = shown(p);
-    el().role("img").label(label).child(ring(size, percent, tint, icon(glyph, size / 2.0).color(tint)))
+    let c = shown(p);
+    el().role("img").label(c.spoken).child(ring(size, c.percent, c.tint, icon(c.glyph, size / 2.0).color(c.tint)))
 }
 
 pub fn view(s: &Island) -> El {
