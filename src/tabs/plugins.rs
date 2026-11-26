@@ -14,7 +14,7 @@ pub fn poll(s: &mut Island, tx: &mut Tx) -> bool {
             Effect::Run { id, argv } => if let Some(me) = &s.me {
                 me.spawn(move || crate::plugins::run(&argv), move |s, out| s.plugins.finish(&path, id, out));
             },
-            Effect::Notify { text } => s.offer(crate::reminders::Reminder { source: crate::reminders::Source::Script, title: text, link: None }),
+            Effect::Notify { text } => s.offer(crate::reminders::Reminder { source: crate::reminders::Source::Script, id: String::new(), title: text, link: None }),
             Effect::Open { target } => crate::system::open_external(&target),
             Effect::Copy { text } => tx.copy(text),
         }

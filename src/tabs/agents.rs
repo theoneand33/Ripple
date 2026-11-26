@@ -38,17 +38,17 @@ impl Island {
         let fresh = requests.iter().find(|r| !self.agents.requests.iter().any(|o| o.key == r.key)).map(|r| r.key.clone());
         self.agents.picks.retain(|(key, _), _| requests.iter().any(|r| &r.key == key));
         (self.agents.sessions, self.agents.requests) = (sessions, requests);
-        // Every request answered: an alert still waiting (quiet hours) has nothing left to show.
-        if self.agents.requests.is_empty() { self.reminders_withdraw(Source::Agent) }
         // Open, Large already shows the request.
         if let Some(r) = fresh.and_then(|k| self.agents.requests.iter().find(|r| r.key == k).cloned()) && !self.large_open() {
             let agent = self.agents.sessions.iter().find(|s| s.key == r.session).map_or("An agent", |s| agents::name(&s.agent)).to_string();
-            self.set_tab(Tab::Agents);
-            self.offer(Reminder { source: Source::Agent, title: format!("{agent} needs you"), link: None });
+            self.offer(Reminder { source: Source::Agent, id: r.key, title: format!("{agent} needs you"), link: None });
             return true
         }
         changed
     }
+
+    /// Whether the request `key` still waits for an answer.
+    pub fn agents_asking(&self, key: &str) -> bool { self.agents.requests.iter().any(|r| r.key == key) }
 
     fn agents_answer(&mut self, key: &str, answer: Answer) {
         let Some(dir) = self.store.dir().map(|d| agents::folder(&d)) else { return };

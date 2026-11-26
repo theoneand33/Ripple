@@ -1,6 +1,9 @@
 //! Reminders the Island holds until it may show them: while Large is open, through quiet
 //! hours, and while a reminder from elsewhere shows. Everything waiting shows as one alert,
-//! and more that arrive while it shows join it.
+//! and more that arrive while it shows join it. Before it shows, each is asked whether it
+//! still stands: a task since done, or an answered agent, no longer reminds.
+
+use crate::config::Tab;
 
 /// Who asked for a reminder; several from one source share its wording.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -21,11 +24,16 @@ impl Source {
             Source::Script => format!("{n} alerts"),
         }
     }
+
+    /// The tab Large opens on for a reminder from this source.
+    fn tab(self) -> Option<Tab> { (self == Source::Agent).then_some(Tab::Agents) }
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Reminder {
     pub source: Source,
+    /// What the source knows it by, to tell whether it still stands.
+    pub id: String,
     pub title: String,
     /// A meeting to join from the alert.
     pub link: Option<String>,
@@ -37,6 +45,16 @@ pub struct Alert {
     pub title: String,
     pub link: Option<String>,
     pub secs: f64,
+    /// The tab Large opens on, should the user open it.
+    pub tab: Option<Tab>,
+}
+
+impl Alert {
+    pub fn new(title: String, link: Option<String>) -> Alert {
+        // An event's alert stays long enough for its Join button to be reached.
+        let secs = if link.is_some() { 30.0 } else { 6.0 };
+        Alert { title, link, secs, tab: None }
+    }
 }
 
 #[derive(Default)]
@@ -49,8 +67,8 @@ pub struct Reminders {
 impl Reminders {
     pub fn offer(&mut self, reminder: Reminder) { self.waiting.push(reminder) }
 
-    /// Forgets the waiting reminders from `source`: what they were about is gone.
-    pub fn withdraw(&mut self, source: Source) { self.waiting.retain(|r| r.source != source) }
+    /// Forgets the waiting reminders that no longer stand.
+    pub fn retain(&mut self, stands: impl Fn(&Reminder) -> bool) { self.waiting.retain(stands) }
 
     /// The alert to show now for everything waiting, given whether a reminder is on screen:
     /// this queue's merges with the new ones, another's is left to end first.
@@ -65,9 +83,7 @@ impl Reminders {
             _ => format!("{} alerts", batch.len()),
         };
         let link = batch.iter().find_map(|r| r.link.clone());
-        // An event's alert stays long enough for its Join button to be reached.
-        let secs = if link.is_some() { 30.0 } else { 6.0 };
-        Some(Alert { title, link, secs })
+        Some(Alert { tab: batch.iter().find_map(|r| r.source.tab()), ..Alert::new(title, link) })
     }
 
     /// The reminder on screen ended, or another took its place.
@@ -78,7 +94,7 @@ impl Reminders {
 mod tests {
     use super::*;
 
-    fn r(source: Source, title: &str) -> Reminder { Reminder { source, title: title.into(), link: None } }
+    fn r(source: Source, title: &str) -> Reminder { Reminder { source, id: title.into(), title: title.into(), link: None } }
 
     #[test]
     fn waiting_reminders_share_one_alert_worded_by_their_source() {
@@ -105,8 +121,10 @@ mod tests {
         assert_eq!(q.next(true).map(|a| (a.title, a.secs)), Some(("3 alerts".into(), 6.0)), "mixed sources");
         q.ended();
         q.offer(r(Source::Agent, "Codex needs you"));
+        q.offer(r(Source::Task, "Water plants"));
         assert_eq!(q.next(true), None, "a break reminder shows: wait for it");
-        q.withdraw(Source::Agent);
-        assert_eq!(q.next(false), None, "withdrawn");
+        q.retain(|r| r.source != Source::Task);
+        let a = q.next(false).unwrap();
+        assert_eq!((a.title.as_str(), a.tab), ("Codex needs you", Some(Tab::Agents)), "the task no longer stands");
     }
 }

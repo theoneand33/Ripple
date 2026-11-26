@@ -56,7 +56,8 @@ impl Island {
 
 const MONTHS: [&str; 12] = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 
-/// Minutes after its start that an event can still alert, for one Ripple wasn't running for.
+/// Minutes after its start that an event can still alert: one Ripple wasn't running for, or
+/// whose alert waited.
 const EVENT_GRACE: i64 = 15;
 
 /// The timed events to alert now (`now` and `lead` in minutes, since 1970 on this clock): those
@@ -79,8 +80,7 @@ impl Island {
     pub fn event_alerts(&mut self) {
         let lead = i64::from(self.cfg.event_alert_minutes);
         if lead == 0 { return }
-        let t = rune::time::LocalTime::at(crate::date::now_ms());
-        let minute = crate::date::days_from_civil(t.year, t.month, t.day) * 1440 + i64::from(t.hour * 60 + t.minute);
+        let minute = this_minute();
         let due = due_events(&self.cfg.events, minute, lead, &self.cfg.alerted_events);
         if due.is_empty() { return }
         self.save(|c| {
@@ -88,9 +88,21 @@ impl Island {
             c.alerted_events.retain(|id| id.split(' ').next().and_then(|m| m.parse::<i64>().ok()).is_some_and(|m| m >= minute - 1440));
             c.alerted_events.extend(due.iter().map(|d| d.0.clone()));
         });
-        // Held, not dropped, while the alert can't show: by then the event may be past its alert window.
-        for (_, title, link) in due { self.offer(Reminder { source: Source::Event, title, link }) }
+        for (id, title, link) in due { self.offer(Reminder { source: Source::Event, id, title, link }) }
     }
+
+    /// Whether the event a reminder `id` names may still alert: there, and not over
+    /// `EVENT_GRACE` minutes past its start.
+    pub fn event_due(&self, id: &str) -> bool {
+        let lead = i64::from(self.cfg.event_alert_minutes);
+        due_events(&self.cfg.events, this_minute(), lead, &[]).iter().any(|d| d.0 == id)
+    }
+}
+
+/// Minutes since 1970 on this clock.
+fn this_minute() -> i64 {
+    let t = rune::time::LocalTime::at(crate::date::now_ms());
+    crate::date::days_from_civil(t.year, t.month, t.day) * 1440 + i64::from(t.hour * 60 + t.minute)
 }
 
 /// Adds the typed event on the picked day, or saves the one being edited there.

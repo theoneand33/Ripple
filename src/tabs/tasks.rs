@@ -242,9 +242,6 @@ impl Island {
     /// Once a minute: a reminder for the tasks that fell due and haven't had one, including those
     /// that fell due while Ripple wasn't running.
     pub fn task_reminders(&mut self) {
-        // A headless capture draws its scene's tasks; recording them as reminded would save
-        // the stored settings over the scene.
-        if rune::is_headless() { return }
         let mark = now_key();
         if std::mem::replace(&mut self.tasks.mark, mark.clone()) == mark { return }
         let due = due_reminders(&self.cfg.tasks, &self.cfg.reminded_tasks, &mark, self.today);
@@ -255,7 +252,12 @@ impl Island {
             c.reminded_tasks.retain(|id| live.iter().any(|k| id.starts_with(k)));
             c.reminded_tasks.extend(due.iter().map(|d| d.0.clone()));
         });
-        for (_, title) in due { self.offer(Reminder { source: Source::Task, title, link: None }) }
+        for (id, title) in due { self.offer(Reminder { source: Source::Task, id, title, link: None }) }
+    }
+
+    /// Whether the task a reminder `id` names is still due: not done, moved or gone since.
+    pub fn task_due(&self, id: &str) -> bool {
+        due_reminders(&self.cfg.tasks, &[], &now_key(), self.today).iter().any(|d| d.0 == id)
     }
 }
 

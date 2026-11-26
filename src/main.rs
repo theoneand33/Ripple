@@ -161,7 +161,7 @@ fn island_spec() -> AppSpec<Island> {
                 s.tasks.field.replace_text("Ship v0.5");
             }),
             ("reminder", |s| s.remind("Ship v0.5 release notes".into(), 0.0)),
-            ("event-alert", |s| s.remind_event("Standup".into(), Some("https://meet.example.com/abc".into()), 0.0)),
+            ("event-alert", |s| s.show_reminder(reminders::Alert::new("Standup".into(), Some("https://meet.example.com/abc".into())), 0.0)),
             ("notify", |s| s.remind("Build passed".into(), 0.0)),
             ("rain-alert", |s| { s.weather.precip = Some((date::now_secs() + 3000, false)); s.remind(s.precip_label(), 0.0) }),
             ("break-reminder", |s| s.remind("Look away 20s".into(), 0.0)),
