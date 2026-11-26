@@ -67,8 +67,11 @@ pub struct Reminders {
 impl Reminders {
     pub fn offer(&mut self, reminder: Reminder) { self.waiting.push(reminder) }
 
-    /// Forgets the waiting reminders that no longer stand.
-    pub fn retain(&mut self, stands: impl Fn(&Reminder) -> bool) { self.waiting.retain(stands) }
+    /// Forgets the reminders that no longer stand, so a batch that grows counts only those left.
+    pub fn retain(&mut self, stands: impl Fn(&Reminder) -> bool) {
+        self.waiting.retain(&stands);
+        self.showing.retain(&stands);
+    }
 
     /// The alert to show now for everything waiting, given whether a reminder is on screen:
     /// this queue's merges with the new ones, another's is left to end first.

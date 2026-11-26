@@ -92,10 +92,9 @@ impl Island {
     }
 
     /// Whether the event a reminder `id` names may still alert: there, and not over
-    /// `EVENT_GRACE` minutes past its start.
+    /// `EVENT_GRACE` minutes past its start, whatever the lead is now.
     pub fn event_due(&self, id: &str) -> bool {
-        let lead = i64::from(self.cfg.event_alert_minutes);
-        due_events(&self.cfg.events, this_minute(), lead, &[]).iter().any(|d| d.0 == id)
+        due_events(&self.cfg.events, this_minute(), i64::MAX / 2, &[]).iter().any(|d| d.0 == id)
     }
 }
 
