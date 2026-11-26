@@ -202,7 +202,10 @@ fn rates_from(base: &str) -> Option<std::collections::HashMap<String, f64>> {
 }
 
 /// The newest release's tag on GitHub ("v0.7.0"); None when GitHub can't say.
-pub fn latest_release() -> Option<String> { latest_release_from("https://api.github.com/repos/theoneand33/Ripple") }
+/// Ripple on GitHub: its releases, its docs, and who calls an AI service.
+pub const REPO: &str = "theoneand33/Ripple";
+
+pub fn latest_release() -> Option<String> { latest_release_from(&format!("https://api.github.com/repos/{REPO}")) }
 
 fn latest_release_from(repo: &str) -> Option<String> {
     let data = get_json(agent().get(format!("{repo}/releases/latest")).header("Accept", "application/vnd.github+json"))?;
@@ -230,7 +233,7 @@ pub fn ask_ai(base: &str, model: &str, api_key: &str, question: &str, mut on_del
     let mut request = agent
         .post(format!("{base}/chat/completions"))
         .header("content-type", "application/json")
-        .header("http-referer", "https://github.com/TopMyster/Ripple")
+        .header("http-referer", format!("https://github.com/{REPO}"))
         .header("x-title", "Ripple");
     if !api_key.is_empty() {
         request = request.header("authorization", format!("Bearer {api_key}"));

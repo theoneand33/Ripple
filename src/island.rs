@@ -1506,7 +1506,7 @@ impl Island {
         changed |= due(&mut self.paused_until);
         if due(&mut self.download_done) { self.download = None; changed = true }
         if due(&mut self.intro_at) {
-            system::open_external("https://github.com/TopMyster/Ripple/blob/main/instructions.md");
+            system::open_external(&format!("https://github.com/{}/blob/main/instructions.md", crate::net::REPO));
             self.save(|c| c.new_user = false);
         }
         self.schedule(tx);
