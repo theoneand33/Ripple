@@ -6,8 +6,9 @@ use std::path::Path;
 
 /// The longest text kept; an alert shows far less.
 const LIMIT: usize = 500;
-/// Older alerts are dropped unseen: they were queued while Ripple was closed.
-const STALE_MS: i64 = 5 * 60 * 1000;
+/// Older alerts are dropped unseen: they were queued while Ripple was closed, or waited
+/// through quiet hours or an open Large, and are news no more.
+pub const STALE_MS: i64 = 5 * 60 * 1000;
 
 /// Queues `text` for the running Island.
 pub fn queue(dir: &Path, text: &str) -> std::io::Result<()> {

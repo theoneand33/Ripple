@@ -1186,7 +1186,8 @@ impl Island {
             Source::Task => self.task_due(&r.id),
             Source::Event => self.event_due(&r.id),
             Source::Agent => self.agents_asking(&r.id),
-            Source::Script => true,
+            // Its id is when it was offered.
+            Source::Script => r.id.parse::<i64>().is_ok_and(|ms| crate::date::now_ms() - ms <= crate::notify::STALE_MS),
         }
     }
 
@@ -1254,7 +1255,12 @@ impl Island {
     /// Once a second: the alerts `ripple notify` queued, to show like any reminder.
     fn notifications(&mut self) {
         let Some(dir) = self.store.dir() else { return };
-        for title in crate::notify::take(&dir) { self.offer(Reminder { source: Source::Script, id: String::new(), title, link: None }) }
+        for title in crate::notify::take(&dir) { self.script_alert(title) }
+    }
+
+    /// A script's or a plugin's alert, or Ripple's own news: it goes stale like a queued one.
+    pub fn script_alert(&mut self, title: String) {
+        self.offer(Reminder { source: Source::Script, id: crate::date::now_ms().to_string(), title, link: None })
     }
 
     fn set_battery(&mut self, battery: Option<(u8, bool)>, tx: &mut Tx) -> bool {
@@ -1672,8 +1678,10 @@ impl Island {
             // A failed request tries again next hour.
             if cfg.update_check && cfg.update_day != today && let Some(tag) = crate::net::latest_release() {
                 h.update(move |s, _| {
+                    // Not while held, as the alert would go stale: next hour.
+                    if s.holds_reminders() { return }
                     s.save(|c| c.update_day = today);
-                    if crate::net::newer(&tag, env!("CARGO_PKG_VERSION")) { s.offer(Reminder { source: Source::Script, id: String::new(), title: format!("Ripple {tag} is out"), link: None }) }
+                    if crate::net::newer(&tag, env!("CARGO_PKG_VERSION")) { s.script_alert(format!("Ripple {tag} is out")) }
                 });
             }
             std::thread::sleep(std::time::Duration::from_secs(3600));
@@ -2130,10 +2138,11 @@ mod tests {
 
     #[test]
     fn an_offered_reminder_waits_for_quiet_hours_and_large_to_end() {
-        let task = |t: &str| Reminder { source: Source::Script, id: String::new(), title: t.into(), link: None };
         let mut s = island(Config { standby: false, quiet_hours: true, quiet_from: 0, quiet_to: 24, ..Config::default() });
-        s.offer(task("Ship it"));
-        s.offer(task("Water plants"));
+        s.script_alert("Build passed".into());
+        s.script_alert("Deploy done".into());
+        // Offered at 1970: stale by the time it may show.
+        s.offer(Reminder { source: Source::Script, id: "0".into(), title: "Old news".into(), link: None });
         s.poll(1.0, &mut Tx::default());
         assert!(!s.reminding(), "quiet");
         s.cfg.quiet_hours = false;
