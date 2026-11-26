@@ -69,7 +69,8 @@ impl Island {
             for i in &mut items { i.remote = None }
             pending.clear();
         }
-        me.spawn(move || sync(&nc, kind, &items, &pending), move |s, out| s.nextcloud_synced(kind, &account, fresh, out));
+        let today = self.today;
+        me.spawn(move || sync(&nc, kind, &items, &pending, today), move |s, out| s.nextcloud_synced(kind, &account, fresh, out));
     }
 
     fn nextcloud_synced(&mut self, kind: Kind, account: &str, fresh: bool, out: Outcome) {

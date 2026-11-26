@@ -189,12 +189,13 @@ fn failed(status: u16) -> String {
 }
 
 /// Uploads what changed here, then reads back everything Nextcloud has.
-pub fn sync(nc: &Nextcloud, kind: Kind, items: &[Item], pending: &[String]) -> Outcome {
+/// `today` reads relative due dates in task texts.
+pub fn sync(nc: &Nextcloud, kind: Kind, items: &[Item], pending: &[String], today: (i32, u32, u32)) -> Outcome {
     let c = Client::new(nc);
     let mut out = Outcome::default();
     let result = match kind {
         Kind::Notes => sync_notes(&c, items, pending, &mut out),
-        Kind::Tasks => sync_tasks(&c, &nc.list, items, pending, &mut out),
+        Kind::Tasks => sync_tasks(&c, &nc.list, items, pending, today, &mut out),
         Kind::Events => sync_events(&c, &nc.calendar, items, pending, &mut out),
     };
     out.error = result.err();
@@ -278,7 +279,7 @@ const OPEN_TASKS: &str = r#"<?xml version="1.0"?><c:calendar-query xmlns:d="DAV:
 const XML: (&str, &str) = ("content-type", "application/xml; charset=utf-8");
 const ICS: (&str, &str) = ("content-type", "text/calendar; charset=utf-8");
 
-fn sync_tasks(c: &Client, list: &str, items: &[Item], pending: &[String], out: &mut Outcome) -> Result<(), String> {
+fn sync_tasks(c: &Client, list: &str, items: &[Item], pending: &[String], today: (i32, u32, u32), out: &mut Outcome) -> Result<(), String> {
     let calendar = find_list(c, list, "VTODO", out)?;
     let stamp = utc_stamp(0);
     for href in pending {
@@ -295,9 +296,9 @@ fn sync_tasks(c: &Client, list: &str, items: &[Item], pending: &[String], out: &
         }
         out.cleared.push(href.clone());
     }
-    upload_edits(c, items, out, edited_task)?;
+    upload_edits(c, items, out, |ics, text| edited_task(ics, text, today))?;
     let listed = list_objects(c, &calendar, OPEN_TASKS, open_task)?;
-    upload_new(c, items, &listed, out, |uid, text| Some(new_task(uid, text, &stamp)))?;
+    upload_new(c, items, &listed, out, |uid, text| Some(new_task(uid, text, &stamp, today)))?;
     out.server = Some(list_objects(c, &calendar, OPEN_TASKS, open_task)?);
     Ok(())
 }
@@ -752,7 +753,7 @@ mod tests {
         });
         let nc = Nextcloud { url: base, user: "me".into(), password: "pw".into(), ..Nextcloud::default() };
         let items = [item("2026-11-21 Review, moved", 2, Some(("/remote.php/dav/calendars/me/personal/a.ics", "\"1\"", "2026-11-20 Review")))];
-        let out = sync(&nc, Kind::Events, &items, &[]);
+        let out = sync(&nc, Kind::Events, &items, &[], (2026, 1, 1));
         assert_eq!(out.error, None);
         assert_eq!(out.pushed, [(2, remote("/remote.php/dav/calendars/me/personal/a.ics", "\"2\"", "2026-11-21 Review, moved"))]);
         let seen = seen.lock().unwrap();
@@ -762,7 +763,7 @@ mod tests {
         assert!(!seen.iter().any(|r| r.0 == "DELETE"));
         drop(seen);
         let old = [item("2001-01-01 Review", 2, Some(("/remote.php/dav/calendars/me/personal/a.ics", "\"1\"", "2026-11-20 Review")))];
-        let out = sync(&nc, Kind::Events, &old, &[]);
+        let out = sync(&nc, Kind::Events, &old, &[], (2026, 1, 1));
         assert_eq!(out.error.as_deref(), Some("An event moved over a year back stays in Ripple only"));
         assert!(out.server.is_some() && out.pushed.is_empty(), "the rest of the sync still counts");
     }
@@ -784,7 +785,7 @@ mod tests {
         });
         let nc = Nextcloud { url: base, user: "me".into(), password: "pw".into(), ..Nextcloud::default() };
         let items = [item("2026-11-19 Launch", 0xcd, None), item("2026-11-20 Review", 2, None), item("2001-01-01 Long ago", 3, None)];
-        let out = sync(&nc, Kind::Events, &items, &["/remote.php/dav/calendars/me/personal/old.ics".into()]);
+        let out = sync(&nc, Kind::Events, &items, &["/remote.php/dav/calendars/me/personal/old.ics".into()], (2026, 1, 1));
         assert_eq!(out.error, None);
         assert_eq!(out.cleared, ["/remote.php/dav/calendars/me/personal/old.ics"]);
         assert_eq!(out.pushed, [
@@ -888,16 +889,16 @@ mod tests {
         let nc = Nextcloud { url: format!("{base}/nc/"), user: "me".into(), password: "pw".into(), ..Nextcloud::default() };
         // Item 6 matches note 1, unclaimed: it takes that note rather than uploading a copy.
         let items = [item("Mine", 7, Some(("3", "old", "Before"))), item("Local", 8, None), item("  ", 9, None), item("Server", 6, None)];
-        let out = sync(&nc, Kind::Notes, &items, &["2".into()]);
+        let out = sync(&nc, Kind::Notes, &items, &["2".into()], (2026, 1, 1));
         assert_eq!(out.error, None);
         assert_eq!(out.cleared, ["2"]);
         assert_eq!(out.pushed, [(7, remote("12", "p", "Mine")), (8, remote("13", "p", "Local")), (6, remote("1", "e1", "Server"))], "the conflicting edit became a new note");
         assert_eq!(out.server.unwrap().iter().map(|n| n.text.as_str()).collect::<Vec<_>>(), ["Theirs", "Server", "Mine", "Local"]);
         // A failure partway keeps what was uploaded, so the next sync doesn't upload it twice.
-        let partial = sync(&nc, Kind::Notes, &[item("Uploads", 1, None), item("Fails", 2, Some(("99", "e", "old")))], &[]);
+        let partial = sync(&nc, Kind::Notes, &[item("Uploads", 1, None), item("Fails", 2, Some(("99", "e", "old")))], &[], (2026, 1, 1));
         assert_eq!((partial.pushed.len(), partial.server, partial.error.as_deref()), (1, None, Some("Nextcloud answered 500")));
         let wrong = Nextcloud { password: "no".into(), ..nc };
-        assert_eq!(sync(&wrong, Kind::Notes, &[], &[]).error.as_deref(), Some("Nextcloud refused the user or app password"));
+        assert_eq!(sync(&wrong, Kind::Notes, &[], &[], (2026, 1, 1)).error.as_deref(), Some("Nextcloud refused the user or app password"));
     }
 
     #[test]
@@ -918,7 +919,7 @@ mod tests {
         // "Water & plants" is already there, unclaimed: it takes that task rather than uploading a copy.
         let items = [item("New one", 0xab, None), item("Synced", 2, Some(("/remote.php/dav/calendars/me%40x/todo/b.ics", "\"1\"", "Synced"))), item("Water & plants", 3, None)];
         // An href on another host is dropped, never sent the password.
-        let out = sync(&nc, Kind::Tasks, &items, &["/remote.php/dav/calendars/me%40x/todo/done.ics".into(), "https://evil.example/x.ics".into()]);
+        let out = sync(&nc, Kind::Tasks, &items, &["/remote.php/dav/calendars/me%40x/todo/done.ics".into(), "https://evil.example/x.ics".into()], (2026, 1, 1));
         assert_eq!(out.error, None);
         assert_eq!(out.cleared, ["/remote.php/dav/calendars/me%40x/todo/done.ics", "https://evil.example/x.ics"]);
         assert_eq!(out.pushed, [
