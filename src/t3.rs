@@ -17,7 +17,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 use crate::config::T3Device;
-use crate::net::{percent_decode, percent_encode};
+use crate::url::{origin as origin_of, percent_decode, percent_encode};
 
 /// T3's runtime mode when its settings name none.
 const DEFAULT_RUNTIME: &str = "full-access";
@@ -89,11 +89,6 @@ fn base(device: &T3Device) -> String {
 
 fn bearer(device: &T3Device) -> String {
     format!("Bearer {}", device.token.trim())
-}
-
-fn origin_of(url: &str) -> &str {
-    let after_scheme = url.find("://").map_or(0, |i| i + 3);
-    &url[..url[after_scheme..].find('/').map_or(url.len(), |i| after_scheme + i)]
 }
 
 fn path_of(url: &str) -> &str {

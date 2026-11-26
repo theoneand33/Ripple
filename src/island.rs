@@ -361,6 +361,7 @@ pub struct Island {
     /// Until when a finished download shows its tick.
     download_done: Option<f64>,
     pub calc: tabs::Calculator,
+    pub rates: crate::calc::Rates,
     pub shelf: tabs::Shelf,
     pub tasks: tabs::Tasks,
     pub habits: tabs::Habits,
@@ -497,6 +498,7 @@ impl Island {
             download: None,
             download_done: None,
             calc: tabs::Calculator::default(),
+            rates: Default::default(),
             shelf: tabs::Shelf::default(),
             tasks: tabs::Tasks::default(),
             habits: tabs::Habits::default(),
@@ -1913,7 +1915,7 @@ fn glance(s: &Island, fg: Color) -> El {
         Some(alert) if s.joinable() => row().key("label").gap(8.0).center_y()
             .child(text(s.alert_label(alert)).font(style).color(color))
             // The button shows the host: a shared event's link is someone else's, so the user sees where it goes.
-            .child(alert_button(cfg, "join", format!("Join {}", tabs::link_host(s.reminder_link.as_deref().unwrap_or(""))), tabs::link_host(s.reminder_link.as_deref().unwrap_or("")), Island::join)),
+            .child(alert_button(cfg, "join", format!("Join {}", crate::ics::link_host(s.reminder_link.as_deref().unwrap_or(""))), crate::ics::link_host(s.reminder_link.as_deref().unwrap_or("")), Island::join)),
         Some(Alert::Match) if let Some(game) = &s.game => row().key("label").gap(8.0).center_y()
             .child(text(s.alert_label(Alert::Match)).font(style).color(color))
             .child(alert_button(cfg, "answer", format!("{} {}", game.action(), game.game), game.action(), Island::answer_match)),

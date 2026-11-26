@@ -6,7 +6,7 @@
 use std::collections::VecDeque;
 use std::io::{Read, Write};
 
-use serde::{Deserialize, Serialize};
+use crate::config::DiscordToken as Token;
 use serde_json::{Value, json};
 
 const SCOPES: [&str; 3] = ["rpc", "rpc.voice.read", "rpc.voice.write"];
@@ -22,13 +22,6 @@ pub struct App {
     pub secret: String,
 }
 
-/// An OAuth token for the app, renewed with `refresh` before `expires` (Unix ms).
-#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
-pub struct Token {
-    pub access: String,
-    pub refresh: String,
-    pub expires: i64,
-}
 
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct Member {

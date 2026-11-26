@@ -315,6 +315,21 @@ pub fn leading_time(title: &str) -> (Option<(u32, u32)>, &str) {
     match time { Some((t, rest)) => (Some(t), rest), None => (None, title) }
 }
 
+/// The first `https://` link in an event's title, and the title without it. An `http://` link
+/// stays in the title and gets no Join button.
+pub fn meeting_link(title: &str) -> (Option<String>, String) {
+    let link = title.split_whitespace().find(|w| w.starts_with("https://"));
+    let rest = title.split_whitespace().filter(|w| Some(*w) != link).collect::<Vec<_>>().join(" ");
+    (link.map(str::to_string), rest)
+}
+
+/// A link's host, for the Join button's label: `https://user@host:443/path` gives `host:443`.
+pub fn link_host(link: &str) -> &str {
+    // Browsers read `\` as `/` in an https link, so it ends the host too.
+    let authority = link.split_once("://").map_or(link, |l| l.1).split(['/', '\\', '?', '#']).next().unwrap_or("");
+    authority.rsplit('@').next().unwrap_or(authority)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -397,5 +412,14 @@ mod tests {
         assert_eq!((duration("P1DT2H30M"), duration("PT30M"), duration("P2W"), duration("1H")), (Some(1590), Some(30), Some(20_160), None));
         assert_eq!(ics_time("20261119T1500"), Some(((2026, 11, 19), Some((15, 0)))));
         assert_eq!((ics_time("2026111"), ics_time("20261119X")), (None, None));
+    }
+
+    #[test]
+    fn a_meeting_link_comes_out_of_the_title_and_shows_its_host() {
+        assert_eq!(meeting_link("Lunch"), (None, "Lunch".into()));
+        assert_eq!(meeting_link("Sync https://meet.example.com/x now"), (Some("https://meet.example.com/x".into()), "Sync now".into()));
+        assert_eq!(link_host("https://meet.example.com/abc?x=1"), "meet.example.com");
+        assert_eq!(link_host("https://meet.example.com@evil.example"), "evil.example");
+        assert_eq!(link_host("https://evil.example\\@trusted.example"), "evil.example", "a backslash ends the host, as browsers read it");
     }
 }

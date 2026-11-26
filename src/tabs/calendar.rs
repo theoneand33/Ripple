@@ -11,7 +11,7 @@ use crate::config::Item;
 use crate::icons;
 use crate::date::{days_in, format_date, shift_month, weekday};
 use crate::island::Island;
-use crate::ics::{event_day, feed_events, leading_time};
+use crate::ics::{event_day, feed_events, leading_time, meeting_link};
 use crate::nextcloud::{self, Kind};
 use crate::reminders::{Reminder, Source};
 
@@ -55,21 +55,6 @@ impl Island {
 }
 
 const MONTHS: [&str; 12] = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
-
-/// The first `https://` link in an event's title, and the title without it. An `http://` link
-/// stays in the title and gets no Join button.
-fn meeting_link(title: &str) -> (Option<String>, String) {
-    let link = title.split_whitespace().find(|w| w.starts_with("https://"));
-    let rest = title.split_whitespace().filter(|w| Some(*w) != link).collect::<Vec<_>>().join(" ");
-    (link.map(str::to_string), rest)
-}
-
-/// A link's host, for the Join button's label: `https://user@host:443/path` gives `host:443`.
-pub fn link_host(link: &str) -> &str {
-    // Browsers read `\` as `/` in an https link, so it ends the host too.
-    let authority = link.split_once("://").map_or(link, |l| l.1).split(['/', '\\', '?', '#']).next().unwrap_or("");
-    authority.rsplit('@').next().unwrap_or(authority)
-}
 
 /// Minutes after its start that an event can still alert, for one Ripple wasn't running for.
 const EVENT_GRACE: i64 = 15;
@@ -296,14 +281,10 @@ mod tests {
         assert_eq!(held.len(), 2, "held while Large was open");
         assert_eq!(&held[0].0, id);
         assert!(super::due_events(&events, start + 16, 10, &[]).is_empty(), "past");
-        assert_eq!(super::meeting_link("Lunch"), (None, "Lunch".into()));
         let next = super::due_events(&events, start + 1440, 0, &[]);
         assert_eq!((next[0].1.as_str(), next[0].2.as_deref()), ("Meeting", Some("https://meet.example.com/x")), "a link-only title");
         let http = super::due_events(&events, start + 1440 + 30, 0, &[]);
         assert_eq!((http[0].1.as_str(), http[0].2.as_deref()), ("Sync http://meet.example.com/y", None), "no Join for http");
-        assert_eq!(super::link_host("https://meet.example.com/abc?x=1"), "meet.example.com");
-        assert_eq!(super::link_host("https://meet.example.com@evil.example"), "evil.example");
-        assert_eq!(super::link_host("https://evil.example\\@trusted.example"), "evil.example", "a backslash ends the host, as browsers read it");
     }
 
     #[test]

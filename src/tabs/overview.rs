@@ -618,7 +618,7 @@ fn graph(s: &Island, key: &str, name: &str, user: &str, data: Option<&Result<Gra
         Some(Ok(days)) => days,
     };
     let active: Vec<i64> = days.iter().map(|d| d.0).collect();
-    let streak = super::habits::streak(&active, today);
+    let streak = crate::date::streak(&active, today);
     let flame = if streak > 0 { accent::orange() } else { fg.alpha(0.35 * fg.a) };
     let head = head.child(row().key("streak").role("img").label(format!("{streak} day streak")).gap(3.0).center_y()
         .child(icon(&icons::FLAME, 13.0).color(flame).a11y_hidden())

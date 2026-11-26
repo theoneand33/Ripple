@@ -9,7 +9,6 @@ use rune::tok::{Family, TextStyle};
 use rune_kit::{Kit, PaletteSeed};
 use serde::{Deserialize, Deserializer, Serialize};
 
-pub const APP_ID: &str = "Ripple";
 
 /// Declares `Tab` and `Tab::ALL` from one list, in the default order.
 macro_rules! tabs {
@@ -277,6 +276,14 @@ choice! {
         Fahrenheit = "f", "Fahrenheit (°F)";
         Celsius = "c", "Celsius (°C)";
     }
+}
+
+/// An OAuth token for the user's Discord app, renewed with `refresh` before `expires` (Unix ms).
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+pub struct DiscordToken {
+    pub access: String,
+    pub refresh: String,
+    pub expires: i64,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -551,7 +558,7 @@ pub struct Config {
     pub discord_id: String,
     pub discord_secret: String,
     /// Discord: the token the app was granted, renewed as it nears expiry.
-    pub discord_token: Option<crate::discord::Token>,
+    pub discord_token: Option<DiscordToken>,
 }
 
 impl Default for Config {
@@ -834,7 +841,7 @@ pub struct Store(Arc<Mutex<Inner>>);
 impl Store {
     /// Headless runs (snapshots, tests) keep nothing on disk.
     pub fn open() -> Store {
-        let prefs = if rune::is_headless() { Prefs::memory() } else { Prefs::open(APP_ID) };
+        let prefs = if rune::is_headless() { Prefs::memory() } else { Prefs::open(crate::paths::APP_ID) };
         Store(Arc::new(Mutex::new(Inner { cfg: saved(&prefs).normalized(), prefs })))
     }
 

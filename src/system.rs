@@ -1154,7 +1154,7 @@ pub(crate) fn openable(url: &str) -> bool {
     // The name the OS opens: decoded as the file-URL handler decodes it, without its query,
     // fragment or trailing slash (a macOS bundle is a folder), and without the trailing dots
     // and spaces Windows drops (`x.exe.` is `x.exe`).
-    let path = crate::net::percent_decode(path.split(['?', '#']).next().unwrap_or_default());
+    let path = crate::url::percent_decode(path.split(['?', '#']).next().unwrap_or_default());
     let path = path.trim_end_matches(['/', '\\', '.', ' ']);
     !path.is_empty() && !runs_as_program(path)
 }
@@ -1353,7 +1353,7 @@ fn baloo_paths(out: &str) -> Vec<std::path::PathBuf> {
 /// `localsearch search` prints a heading, then indented `file://` URIs.
 #[cfg_attr(not(any(target_os = "linux", test)), allow(dead_code))]
 fn tracker_paths(out: &str) -> Vec<std::path::PathBuf> {
-    out.lines().filter_map(|l| l.trim().strip_prefix("file://")).map(|p| crate::net::percent_decode(p).into()).collect()
+    out.lines().filter_map(|l| l.trim().strip_prefix("file://")).map(|p| crate::url::percent_decode(p).into()).collect()
 }
 
 #[cfg(target_os = "macos")]

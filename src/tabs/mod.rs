@@ -30,7 +30,7 @@ mod workflows;
 pub use agents::Agents;
 pub use assistant::Assistant;
 pub use calculator::Calculator;
-pub use calendar::{link_host, Calendar};
+pub use calendar::Calendar;
 pub use clipboard::{Clipboard, Content};
 pub use overview::{Contributions, Dashboard, height as overview_height, width as overview_width};
 pub use clocks::Clocks;
@@ -195,7 +195,7 @@ fn load(s: &mut Island, tab: Tab) {
         Tab::T3 => s.t3_load(),
         Tab::Stremflix => s.stremflix_load(),
         Tab::Limits => s.limits_load(),
-        Tab::Calculator => s.calc_load(),
+        Tab::Calculator => s.rates_load(),
         Tab::Stocks => s.stocks_load(),
         Tab::Clocks => s.clocks_load(),
         Tab::Controls => s.controls_load(),
@@ -239,6 +239,16 @@ pub fn reloaded(s: &mut Island, old: &Config) {
         (s.stocks.portfolio, s.stocks.generation, s.stocks.reload_in) = (None, s.stocks.generation + 1, Some(2));
     }
     if old.github_user != s.cfg.github_user || old.leetcode_user != s.cfg.leetcode_user { s.contributions.reload_in = Some(2) }
+}
+
+impl Island {
+    /// Loads exchange rates for Calculator, Search and Stocks, unless they are under a day old.
+    pub fn rates_load(&mut self) {
+        if self.rates.asked || self.rates.fresh() { return }
+        let Some(me) = self.me.clone() else { return };
+        self.rates.asked = true;
+        me.spawn(crate::net::rates, |s, rates| { s.rates.asked = false; s.rates.got(rates) });
+    }
 }
 
 /// What a delete took: a note or an event and where it sat, or the cleared Shelf.
@@ -324,6 +334,15 @@ pub fn ring(size: f32, percent: f32, color: Color, inner: El) -> El {
     el().size(size, size).center().a11y_hidden()
         .child(icon(icons::ring(percent.clamp(0.0, 100.0).round() as u8), size).color(color).pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0)))
         .child(inner)
+}
+
+/// A ring lit clockwise from the top up to `percent`: green, orange, then red as load rises.
+fn gauge(s: &Island, percent: f32, high_good: bool) -> El {
+    let fg = s.cfg.text();
+    let p = percent.clamp(0.0, 100.0);
+    let load = if high_good { 100.0 - p } else { p };
+    let lit = if load < 60.0 { accent::green() } else if load < 85.0 { accent::orange() } else { accent::red() };
+    ring(44.0, p, lit, text(format!("{p:.0}%")).font(s.cfg.font(10.0, 700.0).features("'tnum' 1")).color(fg))
 }
 
 /// The fill of a list row: a raised grey card, no outline.

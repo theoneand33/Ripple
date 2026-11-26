@@ -4,6 +4,7 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod agents;
+mod calc;
 mod command;
 mod config;
 mod date;
@@ -31,6 +32,7 @@ mod system;
 mod t3;
 mod task;
 mod tabs;
+mod url;
 #[cfg(test)]
 mod testserver;
 

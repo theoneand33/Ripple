@@ -83,6 +83,12 @@ pub fn days_from_civil(y: i32, m: u32, d: u32) -> i64 {
     era * 146_097 + yoe * 365 + yoe / 4 - yoe / 100 + doy - 719_468
 }
 
+/// Days in a row done, up to today; a day not yet done today doesn't break it.
+pub fn streak(done: &[i64], today: i64) -> u32 {
+    let start = if done.contains(&today) { today } else { today - 1 };
+    (0..).take_while(|i| done.contains(&(start - i))).count() as u32
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -116,5 +122,15 @@ mod tests {
         assert_eq!(days_from_civil(1970, 1, 1), 0);
         let t = rune::time::LocalTime::at_offset(days_from_civil(2024, 2, 29) * 86_400_000, 0);
         assert_eq!((t.year, t.month, t.day), (2024, 2, 29));
+    }
+
+    #[test]
+    fn streaks_count_back_from_today_or_yesterday() {
+        assert_eq!(streak(&[], 10), 0);
+        assert_eq!(streak(&[8, 9, 10], 10), 3);
+        // Today not done yet keeps yesterday's run.
+        assert_eq!(streak(&[7, 8, 9], 10), 3);
+        assert_eq!(streak(&[5, 7, 8], 10), 0);
+        assert_eq!(streak(&[4, 6, 7, 8, 9, 10], 10), 5);
     }
 }

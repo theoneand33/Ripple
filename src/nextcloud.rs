@@ -10,7 +10,7 @@ use base64::Engine;
 use serde_json::{Value, json};
 
 use crate::config::{Config, Item, Nextcloud, Remote};
-use crate::net::{percent_decode, percent_encode};
+use crate::url::{percent_decode, percent_encode};
 use crate::ics::{completed, edited_event, edited_task, event, event_day, new_event, new_task, open_task};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -141,8 +141,7 @@ impl Client {
     fn new(nc: &Nextcloud) -> Client {
         let base = nc.url.trim().trim_end_matches('/');
         let base = if base.contains("://") { base.to_string() } else { format!("https://{base}") };
-        let host = base.find("://").map_or(0, |i| i + 3);
-        let origin = base[host..].find('/').map_or(base.clone(), |end| base[..host + end].to_string());
+        let origin = crate::url::origin(&base).to_string();
         let auth = base64::engine::general_purpose::STANDARD.encode(format!("{}:{}", nc.user.trim(), nc.password));
         let agent = crate::net::config()
             .timeout_global(Some(Duration::from_secs(30)))
