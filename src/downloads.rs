@@ -138,9 +138,8 @@ fn merge(reported: &[Option<f64>], partial: usize) -> Option<Progress> {
 fn launcher_entries(reports: &Reports) {
     // Apps whose bar is visible; unlike reports, this never goes stale, so a download that pauses past `STALE` comes back with its next progress.
     let mut shown = std::collections::HashSet::new();
-    let mut busctl = std::process::Command::new("busctl");
-    busctl.args(["--user", "monitor", "--json=short", "--match", "type='signal',interface='com.canonical.Unity.LauncherEntry',member='Update'"]);
-    crate::system::follow_lines(&mut busctl, false, |line| {
+    let args = ["--user", "monitor", "--json=short", "--match", "type='signal',interface='com.canonical.Unity.LauncherEntry',member='Update'"];
+    crate::system::follow_lines("busctl", &args, false, |line| {
         if let Some(update) = parse_launcher(line) { apply(&mut lock(reports), &mut shown, update, Instant::now()) }
     })
 }
