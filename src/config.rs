@@ -104,47 +104,49 @@ fn known_tab<'de, D: Deserializer<'de>>(d: D) -> Result<Tab, D::Error> {
     Ok(Tab::try_from(u8::deserialize(d)?).unwrap_or(Config::default().default_tab))
 }
 
-/// What an Overview tile shows: a widget made for the dashboard, or a tab's own panel.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum Widget {
-    Clock,
-    Media,
-    Weather,
-    Battery,
-    /// Today's events and the tasks left.
-    Today,
-    /// Glasses of water drunk today, against a goal.
-    Water,
-    /// GitHub and LeetCode contribution graphs, with streaks.
-    Contributions,
-    /// A quote, a new one each day.
-    Quote,
-    /// Today as one timeline: the share gone, and its timed events and due tasks.
-    Day,
-    /// The Discord voice channel the user is in: who is there and who is speaking.
-    Voice,
-    Panel(Tab),
+/// Declares `Widget`, its names and `Widget::OWN` from one list, in the order the Overview's
+/// edit drawer offers them.
+macro_rules! widgets {
+    ($($(#[$doc:meta])* $widget:ident = $name:literal),* $(,)?) => {
+        /// What an Overview tile shows: a widget made for the dashboard, or a tab's own panel.
+        #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+        #[serde(rename_all = "kebab-case")]
+        pub enum Widget {
+            $($(#[$doc])* $widget,)*
+            Panel(Tab),
+        }
+
+        impl Widget {
+            /// The widgets made for the dashboard, panels aside.
+            pub const OWN: [Widget; [$($name),*].len()] = [$(Widget::$widget),*];
+
+            pub fn name(self) -> &'static str {
+                match self {
+                    $(Widget::$widget => $name,)*
+                    Widget::Panel(tab) => tab.name(),
+                }
+            }
+        }
+    };
 }
 
-impl Widget {
-    pub const OWN: [Widget; 10] = [Widget::Clock, Widget::Media, Widget::Weather, Widget::Battery, Widget::Today, Widget::Day, Widget::Quote, Widget::Water, Widget::Contributions, Widget::Voice];
-
-    pub fn name(self) -> &'static str {
-        match self {
-            Widget::Clock => "Clock",
-            Widget::Media => "Now Playing",
-            Widget::Weather => "Weather",
-            Widget::Battery => "Battery",
-            Widget::Today => "Today",
-            Widget::Water => "Water",
-            Widget::Contributions => "Contributions",
-            Widget::Quote => "Quote of the Day",
-            Widget::Day => "Day Progress",
-            Widget::Voice => "Discord Voice",
-            Widget::Panel(tab) => tab.name(),
-        }
-    }
+widgets! {
+    Clock = "Clock",
+    Media = "Now Playing",
+    Weather = "Weather",
+    Battery = "Battery",
+    /// Today's events and the tasks left.
+    Today = "Today",
+    /// Today as one timeline: the share gone, and its timed events and due tasks.
+    Day = "Day Progress",
+    /// A quote, a new one each day.
+    Quote = "Quote of the Day",
+    /// Glasses of water drunk today, against a goal.
+    Water = "Water",
+    /// GitHub and LeetCode contribution graphs, with streaks.
+    Contributions = "Contributions",
+    /// The Discord voice channel the user is in: who is there and who is speaking.
+    Voice = "Discord Voice",
 }
 
 /// One Overview tile: its widget and its size in grid cells.
