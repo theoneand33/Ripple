@@ -277,6 +277,12 @@ fn island_spec() -> AppSpec<Island> {
                 s.notes.editor.set_caret(at);
                 s.notes.editor.focused = true;
             }),
+            ("notes-table", |s| {
+                s.mode = Mode::Large;
+                s.tab = Tab::Notes;
+                s.cfg.notes = vec![config::Item::new("Release owners\n| Step  | **Owner** | Due   |\n|-------|-----------|-------|\n| Build | CI        | Mon   |\n| Tag   | *me*      | Tue   |\n| Ship  | `bot`     | Wed   |\n\nPipes that line up show as columns.")];
+                s.open_note(0);
+            }),
             ("notes-pinned-search", |s| {
                 s.mode = Mode::Large;
                 s.tab = Tab::Notes;
