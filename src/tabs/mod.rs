@@ -214,8 +214,8 @@ fn load(s: &mut Island, tab: Tab) {
 pub fn each_second(s: &mut Island, now: f64) -> bool {
     let plugins = shows(s, Tab::Plugins) && s.plugins.tick();
     s.notes_tick();
-    s.task_reminders(now);
-    s.event_alerts(now);
+    s.task_reminders();
+    s.event_alerts();
     let agents = s.agents_poll(now);
     if waited(&mut s.stocks.reload_in) && shows(s, Tab::Stocks) { s.stocks_load() }
     if waited(&mut s.contributions.reload_in) && shows_widget(s, Widget::Contributions) { s.contributions_load() }

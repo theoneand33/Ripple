@@ -9,6 +9,7 @@ use rune::time::LocalTime;
 use rune::{El, Transition, Tx, col, el, row, text};
 
 use super::{Scrolls, accent, button, checkbox, chip_button, empty, field, tool};
+use crate::reminders::{Reminder, Source};
 use crate::config::Item;
 use crate::date::{add_days, format_date};
 use crate::task::{Date, Every, Task, is_bangs, now_key};
@@ -243,21 +244,19 @@ fn due_reminders(tasks: &[Item], reminded: &[String], now: &str, today: Date) ->
 
 impl Island {
     /// Once a minute: a reminder for the tasks that fell due and haven't had one, including those
-    /// that fell due while Ripple wasn't running. Several at once share one reminder.
-    pub fn task_reminders(&mut self, now: f64) {
-        if !self.can_remind() { return }
+    /// that fell due while Ripple wasn't running.
+    pub fn task_reminders(&mut self) {
         let mark = now_key();
         if std::mem::replace(&mut self.tasks.mark, mark.clone()) == mark { return }
         let due = due_reminders(&self.cfg.tasks, &self.cfg.reminded_tasks, &mark, self.today);
         if due.is_empty() { return }
-        let title = if due.len() == 1 { due[0].1.clone() } else { format!("{} tasks due", due.len()) };
         self.save(|c| {
             // Ids of tasks gone or moved since are dropped.
             let live: Vec<String> = c.tasks.iter().map(|i| format!("{}@", i.key)).collect();
             c.reminded_tasks.retain(|id| live.iter().any(|k| id.starts_with(k)));
-            c.reminded_tasks.extend(due.into_iter().map(|d| d.0));
+            c.reminded_tasks.extend(due.iter().map(|d| d.0.clone()));
         });
-        self.remind(title, now);
+        for (_, title) in due { self.offer(Reminder { source: Source::Task, title, link: None }) }
     }
 }
 

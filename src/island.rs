@@ -17,6 +17,7 @@ use crate::platform::{self, Passthrough, Screen};
 use crate::system::{self, MediaCommand, Track};
 use crate::tabs::{self, accent};
 use crate::icons;
+use crate::reminders::{Reminder, Reminders, Source};
 
 /// The Island's smallest window, in points: the largest Island at its hover scale, its tab dock, plus their shadows.
 /// The window spans the display's width when that's wider, so a widened Overview grows to it.
@@ -334,8 +335,8 @@ pub struct Island {
     reminder: String,
     /// The reminder's meeting link, for its Join button.
     reminder_link: Option<String>,
-    /// The reminder showing is `ripple notify`'s, standing for this many alerts.
-    notified: Option<usize>,
+    /// Reminders waiting for the Island to show them.
+    reminders: Reminders,
     /// The hour of rain or snow already alerted (Unix seconds).
     rain_alerted: Option<i64>,
     /// Seconds until each break reminder (eye, hourly), counted only while no app is full screen.
@@ -481,7 +482,7 @@ impl Island {
             fullscreen: false,
             reminder: String::new(),
             reminder_link: None,
-            notified: None,
+            reminders: Reminders::default(),
             water_mark: None,
             rain_alerted: None,
             break_left: [None; 2],
@@ -1122,23 +1123,42 @@ impl Island {
 
     // --- What the pollers report ---
 
-    pub fn remind(&mut self, title: String, now: f64) { self.remind_for(title, None, now + 6.0) }
+    /// Shows `title` now, in place of any reminder showing.
+    pub fn remind(&mut self, title: String, now: f64) {
+        self.reminders.ended();
+        self.remind_for(title, None, now + 6.0)
+    }
 
     fn remind_for(&mut self, title: String, link: Option<String>, until: f64) {
         self.show_alert(Alert::Reminder, until, &[]);
-        (self.reminder, self.reminder_link, self.notified) = (title, link, None);
+        (self.reminder, self.reminder_link) = (title, link);
         if !self.large_open() { self.set_mode(Mode::Quick) }
     }
 
-    /// Non-urgent alerts (water, breaks, rain, events, downloads, agents, `ripple notify`) wait:
-    /// it's quiet hours, or an app is full screen and that is set to quiet too. Low battery shows.
+    /// Holds a reminder until the Island may show it (`deliver`).
+    pub fn offer(&mut self, reminder: Reminder) { self.reminders.offer(reminder) }
+
+    pub fn reminders_withdraw(&mut self, source: Source) { self.reminders.withdraw(source) }
+
+    /// Once a second: what waits shows as one alert, unless Large is open, it's quiet, or a
+    /// reminder from elsewhere shows. Headless runs show none, so every machine renders the same.
+    fn deliver(&mut self, now: f64) {
+        if rune::is_headless() || self.large_open() || self.quiet() { return }
+        // One that ends this tick no longer shows: the poll after this second sweeps it.
+        let on_screen = self.shown_until(Alert::Reminder).is_some_and(|until| now < until);
+        if let Some(a) = self.reminders.next(on_screen) { self.remind_for(a.title, a.link, now + a.secs) }
+    }
+
+    /// Non-urgent alerts (water, breaks, rain, and everything `offer`ed) wait: it's quiet hours,
+    /// or an app is full screen and that is set to quiet too. Downloads don't show. Low battery shows.
     pub fn quiet(&self) -> bool {
         (self.cfg.quiet_fullscreen && self.fullscreen) || (self.cfg.quiet_hours && self.cfg.quiet_at(LocalTime::at(crate::date::now_ms()).hour))
     }
 
-    /// A reminder may show now: Large isn't open and none shows, which it would replace; one
-    /// held back stays due until then. Headless runs show none, so every machine renders the same.
-    pub fn can_remind(&self) -> bool { !rune::is_headless() && !self.large_open() && !self.reminding() }
+    /// A reminder of the Island's own (water, breaks, rain) may show now: Large isn't open, it isn't
+    /// quiet, and none shows, which it would replace; one held back stays due until then.
+    /// Headless runs show none, so every machine renders the same.
+    fn may_remind(&self) -> bool { !rune::is_headless() && !self.large_open() && !self.reminding() && !self.quiet() }
 
     /// Large is open by hand or under the pointer, not merely resting there (large_standby).
     pub(crate) fn large_open(&self) -> bool {
@@ -1150,7 +1170,7 @@ impl Island {
     fn break_reminders(&mut self, now: f64) {
         let elapsed = now - std::mem::replace(&mut self.break_tick, now);
         let on = [self.cfg.eye_breaks, self.cfg.hourly_breaks];
-        let paused = self.fullscreen || !self.can_remind() || self.quiet();
+        let paused = self.fullscreen || !self.may_remind();
         if let Some(i) = count_breaks(&mut self.break_left, on, elapsed, paused) {
             self.remind(["Look away 20s", "Take a break"][i].into(), now);
         }
@@ -1159,7 +1179,7 @@ impl Island {
     /// On the hour within the set hours, while the Water widget is on the Overview and today's
     /// glasses are short of the goal.
     pub fn water_reminders(&mut self, now: f64) {
-        if !self.can_remind() || self.quiet() { return }
+        if !self.may_remind() { return }
         let t = LocalTime::at(crate::date::now_ms());
         let mark = (crate::date::days_from_civil(t.year, t.month, t.day), t.hour);
         // Track the hour even while reminders are off, so turning them on or adding the widget mid-hour stays quiet.
@@ -1178,7 +1198,7 @@ impl Island {
     fn rain_alert(&mut self, now: f64) {
         // `rain_alerted` stays through a pause in the rain: `rain_due` lets only rain 3 hours away from it alert again.
         let Some((at, _)) = self.weather.precip else { return };
-        if !self.cfg.rain_alerts || !self.can_remind() || self.quiet() { return }
+        if !self.cfg.rain_alerts || !self.may_remind() { return }
         if !rain_due(at, crate::date::now_secs(), self.rain_alerted) { return }
         self.rain_alerted = Some(at);
         self.remind(self.precip_label(), now);
@@ -1186,6 +1206,7 @@ impl Island {
 
     /// An event's alert: 30 seconds, so its Join button can be reached.
     pub fn remind_event(&mut self, title: String, link: Option<String>, now: f64) {
+        self.reminders.ended();
         self.remind_for(title, link, now + 30.0);
     }
 
@@ -1196,20 +1217,10 @@ impl Island {
         self.set_mode(Mode::Still);
     }
 
-    /// Once a second: alerts that `ripple notify` queued; several at once, or while one shows, share one.
-    pub fn notifications(&mut self, now: f64) {
+    /// Once a second: the alerts `ripple notify` queued, to show like any reminder.
+    fn notifications(&mut self) {
         let Some(dir) = self.store.dir() else { return };
-        // An open Large draws no alerts: they stay queued until the Island is compact (`take` drops ones over 5 minutes old).
-        // Resting in Large (Large standby) isn't open: `remind` shows the alert compact.
-        if self.large_open() || self.quiet() { return }
-        // An alert of ours showing counts as the alerts it merged; another reminder isn't replaced, so they wait.
-        // One that ends this tick no longer shows: the poll after this second sweeps it.
-        let showing = self.shown_until(Alert::Reminder).is_some_and(|until| now < until);
-        let shown = match self.notified { _ if !showing => 0, Some(n) => n, None => return };
-        if let Some((text, n)) = crate::notify::merge(shown, crate::notify::take(&dir)) {
-            self.remind(text, now);
-            self.notified = Some(n);
-        }
+        for title in crate::notify::take(&dir) { self.offer(Reminder { source: Source::Script, title, link: None }) }
     }
 
     fn set_battery(&mut self, battery: Option<(u8, bool)>, tx: &mut Tx) -> bool {
@@ -1449,7 +1460,8 @@ impl Island {
             self.next_second = now + 1.0;
             tx.wake_at(self.next_second);
             changed |= tabs::each_second(self, now);
-            self.notifications(now);
+            self.notifications();
+            self.deliver(now);
             self.water_reminders(now);
             self.rain_alert(now);
             self.break_reminders(now);
@@ -1469,7 +1481,7 @@ impl Island {
                 // Leaves Large alone, as `set_levels` did.
                 Alert::Volume | Alert::Brightness => self.mode != Mode::Large,
                 Alert::Camera | Alert::Microphone => { self.next_capture(tx); !self.capturing() }
-                Alert::Reminder => { (self.reminder_link, self.notified) = (None, None); true }
+                Alert::Reminder => { self.reminder_link = None; self.reminders.ended(); true }
                 _ => true,
             };
         }
@@ -1618,7 +1630,7 @@ impl Island {
             }
         });
 
-        // Once a day, through `ripple notify`'s queue: it waits for a closed Large like any alert.
+        // Once a day: it waits for a closed Large like any reminder.
         let (h, store) = (me.clone(), self.store.clone());
         std::thread::spawn(move || loop {
             let (cfg, t) = (store.get(), LocalTime::at(crate::date::now_ms()));
@@ -1626,15 +1638,8 @@ impl Island {
             // A failed request tries again next hour.
             if cfg.update_check && cfg.update_day != today && let Some(tag) = crate::net::latest_release() {
                 h.update(move |s, _| {
-                    // Not while quiet, as the queue drops an alert that waits over 5 minutes: next hour.
-                    if s.quiet() { return }
                     s.save(|c| c.update_day = today);
-                    if crate::net::newer(&tag, env!("CARGO_PKG_VERSION"))
-                        && let Some(dir) = s.store.dir()
-                        && let Err(e) = crate::notify::queue(&dir, &format!("Ripple {tag} is out"))
-                    {
-                        eprintln!("Ripple: {e}");
-                    }
+                    if crate::net::newer(&tag, env!("CARGO_PKG_VERSION")) { s.offer(Reminder { source: Source::Script, title: format!("Ripple {tag} is out"), link: None }) }
                 });
             }
             std::thread::sleep(std::time::Duration::from_secs(3600));
@@ -2087,6 +2092,23 @@ mod tests {
 
     fn island(cfg: Config) -> Island {
         Island::new(Store::memory(cfg), Vec::new())
+    }
+
+    #[test]
+    fn an_offered_reminder_waits_for_quiet_hours_and_large_to_end() {
+        let task = |t: &str| Reminder { source: Source::Task, title: t.into(), link: None };
+        let mut s = island(Config { standby: false, quiet_hours: true, quiet_from: 0, quiet_to: 24, ..Config::default() });
+        s.offer(task("Ship it"));
+        s.offer(task("Water plants"));
+        s.poll(1.0, &mut Tx::default());
+        assert!(!s.reminding(), "quiet");
+        s.cfg.quiet_hours = false;
+        s.set_mode(Mode::Large);
+        s.poll(2.0, &mut Tx::default());
+        assert!(!s.reminding(), "Large is open");
+        s.set_mode(Mode::Still);
+        s.poll(3.0, &mut Tx::default());
+        assert_eq!((s.alert(), s.reminder.as_str()), (Some(Alert::Reminder), "2 tasks due"));
     }
 
     #[test]

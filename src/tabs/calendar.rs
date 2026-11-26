@@ -13,6 +13,7 @@ use crate::date::{days_in, format_date, shift_month, weekday};
 use crate::island::Island;
 use crate::ics::{event_day, feed_events, leading_time};
 use crate::nextcloud::{self, Kind};
+use crate::reminders::{Reminder, Source};
 
 #[derive(Default)]
 pub struct Calendar {
@@ -28,8 +29,6 @@ pub struct Calendar {
     pub feed_error: Option<String>,
     /// The links last fetched, and when (Unix seconds).
     feeds_loaded: (Vec<String>, i64),
-    /// An event alert due in quiet hours, (title, meeting link, how many it stands for): it shows once they end.
-    held: Option<(String, Option<String>, usize)>,
 }
 
 impl Island {
@@ -72,7 +71,7 @@ pub fn link_host(link: &str) -> &str {
     authority.rsplit('@').next().unwrap_or(authority)
 }
 
-/// Minutes after its start that an event can still alert, for one held while Large was open.
+/// Minutes after its start that an event can still alert, for one Ripple wasn't running for.
 const EVENT_GRACE: i64 = 15;
 
 /// The timed events to alert now (`now` and `lead` in minutes, since 1970 on this clock): those
@@ -92,32 +91,20 @@ pub fn due_events(events: &[Item], now: i64, lead: i64, alerted: &[String]) -> V
 
 impl Island {
     /// Once a second: an alert for the next timed event, `event_alert_minutes` before it.
-    /// Large draws no alerts, and a showing reminder isn't replaced, so one waits for both.
-    pub fn event_alerts(&mut self, now: f64) {
+    pub fn event_alerts(&mut self) {
         let lead = i64::from(self.cfg.event_alert_minutes);
-        if lead == 0 || !self.can_remind() { return }
-        let quiet = self.quiet();
-        if !quiet && let Some((title, link, _)) = self.calendar.held.take() { return self.remind_event(title, link, now) }
+        if lead == 0 { return }
         let t = rune::time::LocalTime::at(crate::date::now_ms());
         let minute = crate::date::days_from_civil(t.year, t.month, t.day) * 1440 + i64::from(t.hour * 60 + t.minute);
         let due = due_events(&self.cfg.events, minute, lead, &self.cfg.alerted_events);
         if due.is_empty() { return }
-        // Several at once share one alert, with the first meeting link.
-        let title = if due.len() == 1 { due[0].1.clone() } else { format!("{} events", due.len()) };
-        let link = due.iter().find_map(|d| d.2.clone());
-        let n = due.len();
         self.save(|c| {
             // Ids start with the event's start minute; those over a day old can't alert again.
             c.alerted_events.retain(|id| id.split(' ').next().and_then(|m| m.parse::<i64>().ok()).is_some_and(|m| m >= minute - 1440));
-            c.alerted_events.extend(due.into_iter().map(|d| d.0));
+            c.alerted_events.extend(due.iter().map(|d| d.0.clone()));
         });
-        // Held, not dropped: by the time quiet hours end the event may be past its alert window.
-        if !quiet { return self.remind_event(title, link, now) }
-        // Several held in one quiet spell share one alert, as a batch does.
-        self.calendar.held = Some(match self.calendar.held.take() {
-            Some((_, held_link, m)) => (format!("{} events", m + n), held_link.or(link), m + n),
-            None => (title, link, n),
-        });
+        // Held, not dropped, while the alert can't show: by then the event may be past its alert window.
+        for (_, title, link) in due { self.offer(Reminder { source: Source::Event, title, link }) }
     }
 }
 

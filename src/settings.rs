@@ -798,7 +798,7 @@ fn page(s: &Settings, k: &Kit, layer: &mut Vec<El>, page: Page) -> Vec<El> {
             ]));
             let hour = |h: u32| if cfg.hour12 { format!("{}{}", (h + 11) % 12 + 1, if h % 24 < 12 { " AM" } else { " PM" }) } else { format!("{:02}:00", h % 24) };
             let mut quiet = vec![
-                text("Water, break, rain, event and agent alerts wait until it ends; downloads don't show, and a script's alert waits up to 5 minutes. Low battery still shows.").font(cfg.font(12.0, 400.0)).color(fg.alpha(0.6)).wrap(),
+                text("Water, break, rain, task, event, agent and script alerts wait until it ends; downloads don't show. Low battery still shows.").font(cfg.font(12.0, 400.0)).color(fg.alpha(0.6)).wrap(),
                 toggle(s, k, "Quiet hours", cfg.quiet_hours, |c| c.quiet_hours = !c.quiet_hours),
             ];
             if cfg.quiet_hours {

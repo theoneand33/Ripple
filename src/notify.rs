@@ -37,16 +37,6 @@ pub fn take(dir: &Path) -> Vec<String> {
     }).collect()
 }
 
-/// The one alert to show for `texts` while `shown` alerts are on screen, and how many it now
-/// stands for: a lone text as it is, else "N alerts". None when nothing new arrived.
-pub fn merge(shown: usize, texts: Vec<String>) -> Option<(String, usize)> {
-    match (shown + texts.len(), texts.len()) {
-        (_, 0) => None,
-        (1, _) => texts.into_iter().next().map(|t| (t, 1)),
-        (n, _) => Some((format!("{n} alerts"), n)),
-    }
-}
-
 pub fn cli(args: &[String]) -> i32 {
     let text = args.join(" ");
     if text.trim().is_empty() { eprintln!("Usage: ripple notify \"text\""); return 2 }
@@ -63,7 +53,6 @@ mod tests {
     fn queued_texts_are_taken_once_in_order() {
         let dir = std::env::temp_dir().join(format!("ripple-notify-{}", std::process::id()));
         super::queue(&dir, "Build passed").unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(5));
         super::queue(&dir, &"x".repeat(900)).unwrap();
         std::fs::write(dir.join("notify/half.tmp"), "not yet").unwrap();
         std::fs::write(dir.join("notify/1000-1.txt"), "From before launch").unwrap();
@@ -77,17 +66,5 @@ mod tests {
         assert_eq!(texts.len(), 2);
         assert_eq!((texts[0].as_str(), texts[1].len()), ("Build passed", 500));
         assert!(again.is_empty(), "taken once");
-    }
-
-    #[test]
-    fn alerts_arriving_while_one_shows_merge() {
-        let t = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        let m = |shown, v: &[&str]| super::merge(shown, t(v));
-        assert_eq!(m(0, &[]), None);
-        assert_eq!(m(1, &[]), None);
-        assert_eq!(m(0, &["3 alerts"]), Some(("3 alerts".into(), 1)), "a text is a text, whatever it says");
-        assert_eq!(m(0, &["a", "b"]), Some(("2 alerts".into(), 2)));
-        assert_eq!(m(1, &["Deploy done"]), Some(("2 alerts".into(), 2)));
-        assert_eq!(m(2, &["c", "d"]), Some(("4 alerts".into(), 4)));
     }
 }

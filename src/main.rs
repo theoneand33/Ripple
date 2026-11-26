@@ -23,6 +23,7 @@ mod paths;
 mod pick;
 mod platform;
 mod plugins;
+mod reminders;
 mod settings;
 mod stocks;
 mod stremflix;
