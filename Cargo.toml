@@ -21,6 +21,8 @@ base64 = "0.22"
 getrandom = "0.3"
 # The tray icon's pixels.
 png = "0.18"
+# Lucide icons as const SVG strings (src/icons.rs).
+lucide-static-svg = "1.80"
 # The System tab's CPU, memory, disk and network figures.
 sysinfo = { version = "0.39", default-features = false, features = ["system", "disk", "network"] }
 # Lua plugins on the Plugins tab (src/plugins.rs).
