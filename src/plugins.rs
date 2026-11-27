@@ -87,6 +87,22 @@ pub enum Node {
     Spacer,
 }
 
+/// What a plugin's `live(state)` returned: a live activity on the compact Island.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct Activity {
+    /// A Lucide icon name.
+    pub icon: String,
+    pub label: String,
+    /// An accent name or `#rrggbb`, as the plugin gave it; `tint` is its colour.
+    pub color: Option<String>,
+    #[serde(skip)]
+    pub tint: Option<rune::Color>,
+    /// Drawn as a ring around the icon, 0 to 1.
+    pub progress: Option<f32>,
+    /// What a screen reader hears for it.
+    pub spoken: String,
+}
+
 /// What a plugin asked the Island to do; the Island takes them after each call.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
@@ -113,6 +129,8 @@ pub struct Plugin {
     /// The table the file returned; None when it failed to load.
     spec: Option<Table>,
     pub view: Option<Node>,
+    /// What `live(state)` last returned; None when the plugin has no live activity.
+    pub live: Option<Activity>,
     /// The first error; it stays until the file is loaded again.
     pub error: Option<String>,
     handlers: Vec<Function>,
@@ -126,7 +144,7 @@ impl Plugin {
     /// `store` is the file a `persist = true` plugin saves its state to; None saves nothing.
     pub fn load(path: PathBuf, modified: Option<SystemTime>, source: &str, store: Option<PathBuf>) -> Plugin {
         let name = path.file_stem().map_or("plugin".into(), |s| s.to_string_lossy().into_owned());
-        let mut p = Plugin { name, path, modified, lua: Lua::new(), spec: None, view: None, error: None, handlers: Vec::new(), finish: None, inputs: HashMap::new(), saved: None };
+        let mut p = Plugin { name, path, modified, lua: Lua::new(), spec: None, view: None, live: None, error: None, handlers: Vec::new(), finish: None, inputs: HashMap::new(), saved: None };
         let deadline = Instant::now() + BUDGET;
         let spec = guarded(&p.lua, deadline, || {
             p.lua.set_memory_limit(64 << 20)?;
@@ -195,8 +213,10 @@ impl Plugin {
         self.lua.app_data_mut::<Vec<Effect>>().map(|mut v| std::mem::take(&mut *v)).unwrap_or_default()
     }
 
+    /// Records the first error and ends the live activity: a broken plugin can't keep it current.
     fn fail(&mut self, e: mlua::Error) {
         eprintln!("Ripple: plugin {}: {e}", self.name);
+        self.live = None;
         self.error.get_or_insert(e.to_string());
     }
 
@@ -216,16 +236,22 @@ impl Plugin {
         let queued = self.lua.app_data_ref::<Vec<Effect>>().map_or(0, |v| v.len());
         let view = guarded(&self.lua, deadline, || {
             let view: Function = spec.get("view").map_err(|_| mlua::Error::runtime("the plugin's table has no view function"))?;
-            node(&view.call::<Value>(spec.get::<Value>("state")?)?, &mut handlers, 0, &mut 0)
+            let state = spec.get::<Value>("state")?;
+            let node = node(&view.call::<Value>(state.clone())?, &mut handlers, 0, &mut 0)?;
+            let live = match spec.get::<Option<Function>>("live")? {
+                Some(live) => activity(&live.call::<Value>(state)?, &self.name)?,
+                None => None,
+            };
+            Ok((node, live))
         });
-        // The view runs after every tick and callback, so a job started there would start the next one forever.
+        // The view and `live` run after every tick and callback, so a job started there would start the next one forever.
         // Dropped whether or not the view then failed.
         let called = self.lua.app_data_mut::<Vec<Effect>>().is_some_and(|mut e| { let more = e.len() > queued; e.truncate(queued); more });
-        let view = view.and_then(|v| if called { Err(mlua::Error::runtime("view can't call ripple.*; call it from tick or a handler")) } else { Ok(v) });
+        let view = view.and_then(|v| if called { Err(mlua::Error::runtime("view and live can't call ripple.*; call it from tick or a handler")) } else { Ok(v) });
         match view {
-            Ok(view) => {
+            Ok((view, live)) => {
                 self.sync_inputs(&view);
-                (self.view, self.handlers) = (Some(view), handlers);
+                (self.view, self.live, self.handlers) = (Some(view), live, handlers);
             }
             Err(e) => self.fail(e),
         }
@@ -329,18 +355,51 @@ impl Plugin {
         true
     }
 
-    /// Once a second while the panel shows: `tick(state)`, then the view again. True if it changed.
+    /// Once a second: `tick(state)`, then the view and live activity again. True if they changed.
     pub fn tick(&mut self) -> bool {
-        let before = (self.view.clone(), self.error.clone());
+        let before = (self.view.clone(), self.live.clone(), self.error.clone());
         let deadline = Instant::now() + BUDGET;
         self.call("tick", deadline);
         self.render(deadline);
-        before != (self.view.clone(), self.error.clone())
+        before != (self.view.clone(), self.live.clone(), self.error.clone())
+    }
+
+    /// It defines `live`, so it ticks while its panel is hidden too: that is how an activity updates and ends.
+    /// One with an error waits for its reload, so a broken plugin can't spend its budget every second unseen.
+    fn ticks_unseen(&self) -> bool {
+        self.error.is_none() && self.spec.as_ref().is_some_and(|s| matches!(s.get::<Value>("live"), Ok(Value::Function(_))))
     }
 }
 
 fn effect(lua: &Lua, e: Effect) {
     if let Some(mut v) = lua.app_data_mut::<Vec<Effect>>() { v.push(e) }
+}
+
+/// The colours a live activity may name, besides `#rrggbb`.
+fn accent(name: &str) -> Option<rune::Color> {
+    use crate::tabs::accent::*;
+    Some(match name { "blue" => blue(), "green" => green(), "orange" => orange(), "red" => red(), "indigo" => indigo(), "teal" => teal(), "pink" => pink(), _ => return None })
+}
+
+/// `live(state)`'s answer: nil for none, or a table with an icon and a label.
+fn activity(v: &Value, name: &str) -> mlua::Result<Option<Activity>> {
+    let t = match v {
+        Value::Nil | Value::Boolean(false) => return Ok(None),
+        Value::Table(t) => t,
+        other => return Err(mlua::Error::runtime(format!("live returns nil or a table, not a {}", other.type_name()))),
+    };
+    let icon: String = t.get::<Option<String>>("icon")?.ok_or_else(|| mlua::Error::runtime("live's table has no icon"))?;
+    if crate::icons::named(&icon).is_none() { return Err(mlua::Error::runtime(format!("unknown icon {icon:?}"))) }
+    let label = t.get::<Option<String>>("label")?.unwrap_or_default();
+    let color = t.get::<Option<String>>("color")?;
+    let tint = match &color {
+        Some(c) => Some(accent(c).or_else(|| c.starts_with('#').then(|| rune::color::hex(c)).flatten())
+            .ok_or_else(|| mlua::Error::runtime(format!("unknown colour {c:?}: use blue, green, orange, red, indigo, teal, pink or #rrggbb")))?),
+        None => None,
+    };
+    let progress = match t.get::<Option<f32>>("progress")? { Some(_) => Some(num(t, "progress", 0.0, 0.0, 1.0)?), None => None };
+    let spoken = t.get::<Option<String>>("spoken")?.unwrap_or_else(|| if label.is_empty() { name.to_string() } else { format!("{name}: {label}") });
+    Ok(Some(Activity { icon, label, color, tint, progress, spoken }))
 }
 
 /// Calls `f` on `n` and every node under it.
@@ -472,8 +531,10 @@ impl Plugins {
         if let Some(p) = self.list.get_mut(self.open) { p.press(action) }
     }
 
-    pub fn tick(&mut self) -> bool {
-        self.list.get_mut(self.open).is_some_and(Plugin::tick)
+    /// Once a second: the open plugin while its `panel` shows, and every plugin with a live activity. True if any changed.
+    pub fn tick(&mut self, panel: bool) -> bool {
+        let open = self.open;
+        self.list.iter_mut().enumerate().filter(|(i, p)| (panel && *i == open) || p.ticks_unseen()).fold(false, |changed, (_, p)| p.tick() | changed)
     }
 
     pub fn submit(&mut self, key: &str) {
@@ -543,7 +604,7 @@ pub fn test_cli(args: &[String]) -> i32 {
         }
         effects.extend(p.take_effects());
     }
-    let out = serde_json::json!({ "name": p.name, "error": p.error, "view": p.view, "effects": effects });
+    let out = serde_json::json!({ "name": p.name, "error": p.error, "view": p.view, "live": p.live, "effects": effects });
     println!("{}", serde_json::to_string_pretty(&out).unwrap_or_default());
     if p.error.is_some() { 1 } else { 0 }
 }
@@ -667,7 +728,7 @@ mod tests {
         assert_eq!(children[0], Node::Text { text: "hi".into(), size: 14.0, weight: 400.0, dim: false }, "a job calls back once");
         assert!(plugin(r#"ripple.run(""); return { view = function() return "" end }"#).error.unwrap().contains("no command"));
         let mut v = plugin(r#"return { view = function() ripple.run("echo"); return "" end }"#);
-        assert!(v.error.clone().unwrap().contains("view can't call") && v.take_effects().is_empty(), "a job started from view would chain forever");
+        assert!(v.error.clone().unwrap().contains("view and live can't call") && v.take_effects().is_empty(), "a job started from view would chain forever");
         let mut c = plugin(r#"return { view = function() return ui.button("go", function() for _ = 1, 9 do ripple.run("echo") end end) end }"#);
         c.press_key("go");
         let ids: Vec<u64> = c.take_effects().into_iter().filter_map(|e| if let Effect::Run { id, .. } = e { Some(id) } else { None }).collect();
@@ -717,6 +778,35 @@ mod tests {
         f.submit("q");
         f.tick();
         assert_eq!(f.inputs["q"].edit.text, "milk");
+    }
+
+    #[test]
+    fn live_activities_follow_the_state() {
+        let mut p = plugin(include_str!("../plugins/example.lua"));
+        assert_eq!(p.live, None, "a timer at rest isn't live");
+        assert!(p.press_key("start"));
+        let live = p.live.clone().expect("a running timer is live");
+        assert_eq!((live.icon.as_str(), live.color.as_deref()), ("timer", Some("orange")));
+        assert!(live.label.starts_with("2") && live.tint.is_some() && live.progress.is_some_and(|p| p < 0.01), "{live:?}");
+        assert!(p.press_key("start"));
+        assert_eq!(p.live, None, "a pause ends it");
+
+        let src = |live: &str| format!("return {{ state = {{ n = 0 }}, tick = function(s) s.n = s.n + 1 end, live = {live}, view = function() return '' end }}");
+        let mut q = plugin(&src(r##"function(s) return { icon = "bell", label = tostring(s.n), color = "#ff0000", progress = 2 } end"##));
+        assert_eq!(q.error, None);
+        assert_eq!(q.live.as_ref().map(|l| (l.spoken.as_str(), l.progress)), Some(("test: 0", Some(1.0))), "spoken defaults to name: label; progress is clamped");
+        let mut list = Plugins { list: vec![plugin("return { view = function() return '' end }"), q], ..Default::default() };
+        assert!(list.tick(false), "a plugin with a live activity ticks while its panel is hidden");
+        assert_eq!(list.list[1].live.as_ref().map(|l| l.label.as_str()), Some("1"));
+        let mut broken = plugin(&src(r#"function(s) if s.n > 0 then error("boom") end return { icon = "bell" } end"#));
+        let mut list = Plugins { list: vec![broken], ..Default::default() };
+        list.tick(false);
+        broken = list.list.pop().unwrap();
+        assert!(broken.error.is_some() && broken.live.is_none(), "an error ends the activity");
+        assert!(!broken.ticks_unseen(), "and stops the unseen ticks until a reload");
+        for bad in [r#"function() return { label = "x" } end"#, r#"function() return { icon = "nope" } end"#, r#"function() return { icon = "bell", color = "mauve" } end"#, "function() return 1 end", r#"function() ripple.notify("x") end"#] {
+            assert!(plugin(&src(bad)).error.is_some(), "{bad}");
+        }
     }
 
     #[test]

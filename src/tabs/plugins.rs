@@ -2,7 +2,7 @@
 
 use rune::{El, Tx, col, edit_access, el, icon, row, text};
 
-use super::{Scrolls, checkbox, empty, field};
+use super::{Live, Scrolls, checkbox, clip, empty, field};
 use crate::island::Island;
 use crate::plugins::{Effect, Node};
 
@@ -20,6 +20,12 @@ pub fn poll(s: &mut Island, tx: &mut Tx) -> bool {
         }
     }
     changed
+}
+
+/// Plugin `i`'s live activity, in the text colour unless it names one.
+pub fn live(s: &Island, i: usize) -> Option<Live> {
+    let a = s.plugins.list.get(i)?.live.as_ref()?;
+    Some(Live { key: "plugin-live", glyph: crate::icons::named(&a.icon)?, tint: a.tint.unwrap_or(s.cfg.text()), label: clip(&a.label, 16), spoken: a.spoken.clone(), progress: a.progress })
 }
 
 pub fn view(s: &Island) -> El {

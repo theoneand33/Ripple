@@ -91,7 +91,7 @@ pub fn live(s: &Island) -> Option<Live> {
         else { ("call", &icons::HEADPHONES, accent::indigo()) };
     let state = if v.deaf { ", deafened" } else if v.mute { ", muted" } else { "" };
     let spoken = format!("In {} on Discord{state}{}", channel.name, speaking.map_or(String::new(), |m| format!(", {} speaking", m.name)));
-    Some(Live { key, glyph, tint, label: clip(speaking.map_or(&channel.name, |m| &m.name), 12), spoken })
+    Some(Live { key, glyph, tint, label: clip(speaking.map_or(&channel.name, |m| &m.name), 12), spoken, progress: None })
 }
 
 /// A member's picture in a circle, ringed green while they speak.

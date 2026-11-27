@@ -364,6 +364,18 @@ fn island_spec() -> AppSpec<Island> {
                 p.press_key("item-1");
                 s.plugins.list = vec![p];
             }),
+            ("plugin-live", |s| {
+                let mut p = plugins::Plugin::load("example.lua".into(), None, include_str!("../plugins/example.lua"), None);
+                p.press_key("start");
+                s.plugins.list = vec![p];
+            }),
+            ("plugin-live-bubble", |s| {
+                let mut tx = rune::Tx::default();
+                s.set_track(Some(system::Track { name: "Song".into(), artist: "Artist".into(), playing: true, ..Default::default() }), &mut tx);
+                let mut p = plugins::Plugin::load("example.lua".into(), None, include_str!("../plugins/example.lua"), None);
+                p.press_key("start");
+                s.plugins.list = vec![p];
+            }),
             ("plugins-empty", |s| { s.mode = Mode::Large; s.tab = Tab::Plugins; s.plugins = Default::default() }),
             ("shelf-drop", |s| { s.mode = Mode::Large; s.tab = Tab::Shelf; s.shelf.dropping = true }),
             ("shelf", |s| { s.mode = Mode::Large; s.tab = Tab::Shelf; s.cfg.shelf = vec!["/home/me/Report final.pdf".into(), "/home/me/photo.png".into()] }),

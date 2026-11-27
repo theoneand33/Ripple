@@ -116,13 +116,15 @@ pub enum Bubble {
     Call,
     /// Coding agents working, or one waiting on the user.
     Agents,
+    /// The plugin at this index in `Plugins::list`, by its `live` function.
+    Plugin(usize),
     CapsLock,
 }
 
 impl Bubble {
     /// The tab a press opens, when the activity has one.
     fn tab(self) -> Option<Tab> {
-        match self { Bubble::Pomodoro => Some(Tab::Pomodoro), Bubble::Call => Some(Tab::Discord), Bubble::Agents => Some(Tab::Agents), Bubble::Download | Bubble::CapsLock => None }
+        match self { Bubble::Pomodoro => Some(Tab::Pomodoro), Bubble::Call => Some(Tab::Discord), Bubble::Agents => Some(Tab::Agents), Bubble::Plugin(_) => Some(Tab::Plugins), Bubble::Download | Bubble::CapsLock => None }
     }
 }
 
@@ -625,13 +627,17 @@ impl Island {
     /// The live activities besides a track, first first: the glance shows the first of the
     /// track and these, and bubbles beside it the rest.
     fn activities(&self) -> Vec<Bubble> {
+        // Plugins tick only while their tab is visible (not hidden), so their activities show only then.
+        let plugins = if self.visible_tabs().contains(&Tab::Plugins) { self.plugins.list.len() } else { 0 };
         [
             (self.pomodoro.active(), Bubble::Pomodoro),
             (self.download.is_some(), Bubble::Download),
             (tabs::discord_live(self).is_some(), Bubble::Call),
             (tabs::agents_live(self).is_some(), Bubble::Agents),
-            (self.caps_lock, Bubble::CapsLock),
-        ].into_iter().filter_map(|(on, kind)| on.then_some(kind)).collect()
+        ].into_iter()
+            .chain((0..plugins).map(|i| (tabs::plugin_live(self, i).is_some(), Bubble::Plugin(i))))
+            .chain([(self.caps_lock, Bubble::CapsLock)])
+            .filter_map(|(on, kind)| on.then_some(kind)).collect()
     }
 
     /// The label of the live activity the glance shows beside the time; Caps Lock shows as an alert instead.
@@ -641,6 +647,7 @@ impl Island {
             Bubble::Download => self.download.map(|d| d.label()),
             Bubble::Call => tabs::discord_live(self).map(|l| l.label),
             Bubble::Agents => tabs::agents_live(self).map(|l| l.label),
+            Bubble::Plugin(i) => tabs::plugin_live(self, *i).map(|l| l.label),
             Bubble::CapsLock => None,
         }
     }
@@ -897,6 +904,7 @@ impl Island {
     fn open_bubble(&mut self, kind: Bubble, tx: &mut Tx) {
         tx.blur();
         self.set_mode(Mode::Large);
+        if let Bubble::Plugin(i) = kind { self.plugins.open = i }
         if let Some(tab) = kind.tab().filter(|t| self.visible_tabs().contains(t)) {
             self.set_tab(tab);
         }
@@ -1941,19 +1949,21 @@ fn bubble(s: &Island, kind: Bubble, [x, y, w, h]: [f32; 4]) -> El {
     let cfg = &s.cfg;
     let fg = cfg.text();
     let (key, content) = match kind {
-        Bubble::Pomodoro => ("bubble-pomodoro", tabs::pomodoro_bubble(&s.pomodoro, h * 0.6)),
-        Bubble::Download => ("bubble-download", s.download.map_or_else(el, |d| download_ring(s, d, h * 0.6))),
-        Bubble::Call => ("bubble-call", tabs::discord_live(s).map_or_else(el, |l| l.bubble(h))),
-        Bubble::Agents => ("bubble-agents", tabs::agents_live(s).map_or_else(el, |l| l.bubble(h))),
-        Bubble::CapsLock => ("bubble-caps-lock", el().role("img").label("Caps Lock").child(icon(Alert::CapsLock.icon(), h * 0.45).color(fg).a11y_hidden())),
+        Bubble::Pomodoro => ("bubble-pomodoro".to_string(), tabs::pomodoro_bubble(&s.pomodoro, h * 0.6)),
+        Bubble::Download => ("bubble-download".into(), s.download.map_or_else(el, |d| download_ring(s, d, h * 0.6))),
+        Bubble::Call => ("bubble-call".into(), tabs::discord_live(s).map_or_else(el, |l| l.bubble(h))),
+        Bubble::Agents => ("bubble-agents".into(), tabs::agents_live(s).map_or_else(el, |l| l.bubble(h))),
+        Bubble::Plugin(i) => (format!("bubble-plugin-{i}"), tabs::plugin_live(s, i).map_or_else(el, |l| l.bubble(h))),
+        Bubble::CapsLock => ("bubble-caps-lock".into(), el().role("img").label("Caps Lock").child(icon(Alert::CapsLock.icon(), h * 0.45).color(fg).a11y_hidden())),
     };
     let enter = Transition::blur_replace();
     el().key(key).role("button").label(match kind {
-        Bubble::Pomodoro => "Pomodoro: open its tab",
-        Bubble::Download => "Downloading: open Ripple",
-        Bubble::Call => "Discord call: open its tab",
-        Bubble::Agents => "Coding agents: open their tab",
-        Bubble::CapsLock => "Caps Lock is on: open Ripple",
+        Bubble::Pomodoro => "Pomodoro: open its tab".to_string(),
+        Bubble::Download => "Downloading: open Ripple".into(),
+        Bubble::Call => "Discord call: open its tab".into(),
+        Bubble::Agents => "Coding agents: open their tab".into(),
+        Bubble::Plugin(i) => format!("{}: open its plugin", s.plugins.list.get(i).map_or("Plugin", |p| p.name.as_str())),
+        Bubble::CapsLock => "Caps Lock is on: open Ripple".into(),
     }).hit().absolute(x, y).size(w, h).center()
         .fill(cfg.bg()).radius(cfg.radius(h / 2.0)).border(1.0, fg.alpha(0.12 * fg.a))
         .box_shadow(Shadow { x: 0.0, y: 0.0, blur: 24.0, spread: 0.0, color: Color::BLACK.alpha(0.12), inset: false })
@@ -2036,6 +2046,7 @@ fn glance(s: &Island, fg: Color) -> El {
                 .child(text(d.label()).font(style.features("'tnum' 1")).color(download_color(s)).a11y_hidden())),
             Bubble::Call => tabs::discord_live(s).map_or_else(el, |l| l.view(style)),
             Bubble::Agents => tabs::agents_live(s).map_or_else(el, |l| l.view(style)),
+            Bubble::Plugin(i) => tabs::plugin_live(s, *i).map_or_else(el, |l| l.view(style)),
             Bubble::CapsLock => el(),
         },
         None if cfg.standby && s.percent.is_some() => battery(),
@@ -2714,6 +2725,28 @@ mod tests {
         assert!(s.activities().is_empty());
         assert_eq!(tabs::clip("Carol", 3), "Ca…");
         assert_eq!(tabs::clip("Ünïcødé", 0), "…");
+    }
+
+    #[test]
+    fn plugins_show_live_activities() {
+        let mut s = island(Config { hide_inactive: true, ..Config::default() });
+        let mut tx = Tx::default();
+        let mut p = crate::plugins::Plugin::load("timer.lua".into(), None, include_str!("../plugins/example.lua"), None);
+        s.plugins.list = vec![crate::plugins::Plugin::load("other.lua".into(), None, "return { view = function() return '' end }", None)];
+        assert!(s.hidden());
+        p.press_key("start");
+        s.plugins.list.push(p);
+        assert_eq!(s.activities(), [Bubble::Plugin(1)]);
+        assert!(!s.hidden(), "a plugin's activity shows even when the Island hides");
+        assert!(s.live().is_some_and(|l| l.contains(':')), "the timer's time takes the glance");
+        // Beside a track it takes a bubble, and a press opens its plugin.
+        s.set_track(Some(Track { name: "Song".into(), playing: true, ..Default::default() }), &mut tx);
+        assert_eq!(s.bubbles().iter().map(|b| b.0).collect::<Vec<_>>(), [Bubble::Plugin(1)]);
+        s.open_bubble(Bubble::Plugin(1), &mut tx);
+        assert_eq!((s.mode, s.tab, s.plugins.open), (Mode::Large, Tab::Plugins, 1));
+        // A hidden Plugins tab stops their ticks, so their activities go with it.
+        s.cfg.hidden_tabs.push(Tab::Plugins);
+        assert!(s.activities().is_empty());
     }
 
     #[test]
