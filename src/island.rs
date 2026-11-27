@@ -1197,8 +1197,8 @@ impl Island {
             Source::Task => self.task_due(&r.id),
             Source::Event => self.event_due(&r.id),
             Source::Agent => self.agents_asking(&r.id),
-            // Its id is when it was offered.
-            Source::Script => r.id.parse::<i64>().is_ok_and(|ms| crate::date::now_ms() - ms <= crate::notify::STALE_MS),
+            // Its id starts with when it was offered.
+            Source::Script => r.id.split('-').next().and_then(|ms| ms.parse::<i64>().ok()).is_some_and(|ms| crate::date::now_ms() - ms <= crate::notify::STALE_MS),
         }
     }
 
@@ -1271,7 +1271,10 @@ impl Island {
 
     /// A script's or a plugin's alert, or Ripple's own news: it goes stale like a queued one.
     pub fn script_alert(&mut self, title: String) {
-        self.offer(Reminder { source: Source::Script, id: crate::date::now_ms().to_string(), title, link: None })
+        // The count keeps two equal texts offered in one millisecond two alerts.
+        static COUNT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let n = COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.offer(Reminder { source: Source::Script, id: format!("{}-{n}", crate::date::now_ms()), title, link: None })
     }
 
     fn set_battery(&mut self, battery: Option<(u8, bool)>, tx: &mut Tx) -> bool {
@@ -2150,7 +2153,7 @@ mod tests {
     #[test]
     fn an_offered_reminder_waits_for_quiet_hours_and_large_to_end() {
         let mut s = island(Config { standby: false, quiet_hours: true, quiet_from: 0, quiet_to: 24, ..Config::default() });
-        s.script_alert("Build passed".into());
+        s.script_alert("Deploy done".into());
         s.script_alert("Deploy done".into());
         // Offered at 1970: stale by the time it may show.
         s.offer(Reminder { source: Source::Script, id: "0".into(), title: "Old news".into(), link: None });
