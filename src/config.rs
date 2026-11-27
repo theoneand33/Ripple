@@ -309,14 +309,32 @@ pub struct Habit {
 
 /// One T3 server (local or remote); `token` comes from `t3 auth session issue` on that machine.
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+#[serde(from = "SavedT3Device")]
 pub struct T3Device {
     pub name: String,
     pub url: String,
     pub token: String,
     /// Found on this machine by `t3::detect_local`: the one whose loopback peer is checked
     /// where the OS can't say who owns a port, and whose removal turns detection off.
-    #[serde(default)]
     pub detected: bool,
+}
+
+/// A device as saved, which may predate `detected`.
+#[derive(Deserialize)]
+struct SavedT3Device {
+    name: String,
+    url: String,
+    token: String,
+    #[serde(default)]
+    detected: Option<bool>,
+}
+
+impl From<SavedT3Device> for T3Device {
+    fn from(d: SavedT3Device) -> T3Device {
+        // Saved before devices said they were detected: the detected one had this name.
+        let detected = d.detected.unwrap_or(d.name == crate::t3::LOCAL_NAME);
+        T3Device { name: d.name, url: d.url, token: d.token, detected }
+    }
 }
 
 impl T3Device {
@@ -689,8 +707,6 @@ impl Config {
         for o in [&mut self.compact_opacity, &mut self.large_opacity] { *o = if o.is_finite() { o.clamp(10.0, 100.0) } else { 100.0 } }
         if !SEARCH_ENGINES.iter().any(|e| e.0 == self.search_engine) { self.search_engine = "google".into() }
         if !PROVIDERS.iter().any(|p| p.id == self.ai_provider) { self.ai_provider = PROVIDERS[0].id.into() }
-        // Saved before devices said they were detected: the detected one had this name.
-        for d in &mut self.t3_devices { d.detected |= d.name == crate::t3::LOCAL_NAME }
         self
     }
 
@@ -998,8 +1014,8 @@ mod tests {
 
     #[test]
     fn a_t3_device_saved_before_the_detected_flag_is_known_by_its_name() {
-        let cfg = import(r#"{"settings": {"t3_devices": [{"name": "This computer", "url": "u", "token": "t"}, {"name": "Laptop", "url": "v", "token": "t"}]}}"#).unwrap();
-        assert_eq!(cfg.t3_devices.iter().map(|d| d.detected).collect::<Vec<_>>(), [true, false]);
+        let cfg = import(r#"{"settings": {"t3_devices": [{"name": "This computer", "url": "u", "token": "t"}, {"name": "Laptop", "url": "v", "token": "t"}, {"name": "This computer", "url": "w", "token": "t", "detected": false}]}}"#).unwrap();
+        assert_eq!(cfg.t3_devices.iter().map(|d| d.detected).collect::<Vec<_>>(), [true, false, false], "a saved flag wins over the name");
     }
 
     #[test]
