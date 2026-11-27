@@ -9,7 +9,6 @@ use rune::tok::{Family, TextStyle};
 use rune_kit::{Kit, PaletteSeed};
 use serde::{Deserialize, Deserializer, Serialize};
 
-pub const APP_ID: &str = "Ripple";
 
 /// Declares `Tab` and `Tab::ALL` from one list, in the default order.
 macro_rules! tabs {
@@ -105,47 +104,49 @@ fn known_tab<'de, D: Deserializer<'de>>(d: D) -> Result<Tab, D::Error> {
     Ok(Tab::try_from(u8::deserialize(d)?).unwrap_or(Config::default().default_tab))
 }
 
-/// What an Overview tile shows: a widget made for the dashboard, or a tab's own panel.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum Widget {
-    Clock,
-    Media,
-    Weather,
-    Battery,
-    /// Today's events and the tasks left.
-    Today,
-    /// Glasses of water drunk today, against a goal.
-    Water,
-    /// GitHub and LeetCode contribution graphs, with streaks.
-    Contributions,
-    /// A quote, a new one each day.
-    Quote,
-    /// Today as one timeline: the share gone, and its timed events and due tasks.
-    Day,
-    /// The Discord voice channel the user is in: who is there and who is speaking.
-    Voice,
-    Panel(Tab),
+/// Declares `Widget`, its names and `Widget::OWN` from one list, in the order the Overview's
+/// edit drawer offers them.
+macro_rules! widgets {
+    ($($(#[$doc:meta])* $widget:ident = $name:literal),* $(,)?) => {
+        /// What an Overview tile shows: a widget made for the dashboard, or a tab's own panel.
+        #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+        #[serde(rename_all = "kebab-case")]
+        pub enum Widget {
+            $($(#[$doc])* $widget,)*
+            Panel(Tab),
+        }
+
+        impl Widget {
+            /// The widgets made for the dashboard, panels aside.
+            pub const OWN: [Widget; [$($name),*].len()] = [$(Widget::$widget),*];
+
+            pub fn name(self) -> &'static str {
+                match self {
+                    $(Widget::$widget => $name,)*
+                    Widget::Panel(tab) => tab.name(),
+                }
+            }
+        }
+    };
 }
 
-impl Widget {
-    pub const OWN: [Widget; 10] = [Widget::Clock, Widget::Media, Widget::Weather, Widget::Battery, Widget::Today, Widget::Day, Widget::Quote, Widget::Water, Widget::Contributions, Widget::Voice];
-
-    pub fn name(self) -> &'static str {
-        match self {
-            Widget::Clock => "Clock",
-            Widget::Media => "Now Playing",
-            Widget::Weather => "Weather",
-            Widget::Battery => "Battery",
-            Widget::Today => "Today",
-            Widget::Water => "Water",
-            Widget::Contributions => "Contributions",
-            Widget::Quote => "Quote of the Day",
-            Widget::Day => "Day Progress",
-            Widget::Voice => "Discord Voice",
-            Widget::Panel(tab) => tab.name(),
-        }
-    }
+widgets! {
+    Clock = "Clock",
+    Media = "Now Playing",
+    Weather = "Weather",
+    Battery = "Battery",
+    /// Today's events and the tasks left.
+    Today = "Today",
+    /// Today as one timeline: the share gone, and its timed events and due tasks.
+    Day = "Day Progress",
+    /// A quote, a new one each day.
+    Quote = "Quote of the Day",
+    /// Glasses of water drunk today, against a goal.
+    Water = "Water",
+    /// GitHub and LeetCode contribution graphs, with streaks.
+    Contributions = "Contributions",
+    /// The Discord voice channel the user is in: who is there and who is speaking.
+    Voice = "Discord Voice",
 }
 
 /// One Overview tile: its widget and its size in grid cells.
@@ -214,15 +215,78 @@ pub const SEARCH_ENGINES: [(&str, &str, &str); 5] = [
     ("startpage", "Startpage", "https://www.startpage.com/do/search?q="),
 ];
 
-pub const POSITIONS: [(&str, &str); 7] = [
-    ("top-left", "Top left"),
-    ("top-center", "Top center"),
-    ("top-right", "Top right"),
-    ("bottom-left", "Bottom left"),
-    ("bottom-center", "Bottom center"),
-    ("bottom-right", "Bottom right"),
-    ("free", "Free placement"),
-];
+/// A setting that is one of a fixed set: each value's id (what `prefs.json` stores) and label,
+/// in the order Settings lists them. An unknown id reads as the default, so one bad value
+/// doesn't refuse the whole file.
+macro_rules! choice {
+    ($(#[$doc:meta])* $name:ident, default $default:ident { $($(#[$vdoc:meta])* $variant:ident = $id:literal, $label:literal);* $(;)? }) => {
+        $(#[$doc])*
+        #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+        pub enum $name { $($(#[$vdoc])* $variant),* }
+
+        impl $name {
+            pub const ALL: [$name; [$($id),*].len()] = [$($name::$variant),*];
+            pub fn id(self) -> &'static str { match self { $($name::$variant => $id),* } }
+            pub fn label(self) -> &'static str { match self { $($name::$variant => $label),* } }
+        }
+
+        impl Default for $name {
+            fn default() -> $name { $name::$default }
+        }
+
+        impl Serialize for $name {
+            fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> { s.serialize_str(self.id()) }
+        }
+
+        impl<'de> Deserialize<'de> for $name {
+            fn deserialize<D: Deserializer<'de>>(d: D) -> Result<$name, D::Error> {
+                let id = String::deserialize(d)?;
+                Ok($name::ALL.into_iter().find(|v| v.id() == id).unwrap_or_default())
+            }
+        }
+    };
+}
+
+choice! {
+    /// Where the Island sits on its display.
+    Position, default Free {
+        TopLeft = "top-left", "Top left";
+        TopCenter = "top-center", "Top center";
+        TopRight = "top-right", "Top right";
+        BottomLeft = "bottom-left", "Bottom left";
+        BottomCenter = "bottom-center", "Bottom center";
+        BottomRight = "bottom-right", "Bottom right";
+        Free = "free", "Free placement";
+    }
+}
+
+choice! {
+    /// What a resting Island does while an app is full screen.
+    FullscreenRule, default NoChange {
+        NoChange = "none", "No change";
+        /// Rest in Quick.
+        Standby = "standby", "Standby mode";
+        /// Hide when inactive.
+        Hidden = "hidden", "Hidden mode";
+        /// Standby off: rest in Still.
+        Still = "still", "Standby mode off";
+    }
+}
+
+choice! {
+    WeatherUnit, default Fahrenheit {
+        Fahrenheit = "f", "Fahrenheit (°F)";
+        Celsius = "c", "Celsius (°C)";
+    }
+}
+
+/// An OAuth token for the user's Discord app, renewed with `refresh` before `expires` (Unix ms).
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+pub struct DiscordToken {
+    pub access: String,
+    pub refresh: String,
+    pub expires: i64,
+}
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct QuickApp {
@@ -245,10 +309,32 @@ pub struct Habit {
 
 /// One T3 server (local or remote); `token` comes from `t3 auth session issue` on that machine.
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+#[serde(from = "SavedT3Device")]
 pub struct T3Device {
     pub name: String,
     pub url: String,
     pub token: String,
+    /// Found on this machine by `t3::detect_local`: the one whose loopback peer is checked
+    /// where the OS can't say who owns a port, and whose removal turns detection off.
+    pub detected: bool,
+}
+
+/// A device as saved, which may predate `detected`.
+#[derive(Deserialize)]
+struct SavedT3Device {
+    name: String,
+    url: String,
+    token: String,
+    #[serde(default)]
+    detected: Option<bool>,
+}
+
+impl From<SavedT3Device> for T3Device {
+    fn from(d: SavedT3Device) -> T3Device {
+        // Saved before devices said they were detected: the detected one had this name.
+        let detected = d.detected.unwrap_or(d.name == crate::t3::LOCAL_NAME);
+        T3Device { name: d.name, url: d.url, token: d.token, detected }
+    }
 }
 
 impl T3Device {
@@ -390,13 +476,12 @@ pub struct Config {
     pub update_check: bool,
     /// The day (days since 1970) the update check last ran.
     pub update_day: i64,
-    /// While an app is full screen: "none" (no change), "standby" (rest in Quick), "hidden" (hide when inactive), "still" (standby off).
-    pub fullscreen: String,
+    pub fullscreen: FullscreenRule,
     /// Wayland layer-shell: sit over panels (KDE Plasma) instead of below them.
     pub overlap_panels: bool,
     pub show_info_idle: bool,
     pub hour12: bool,
-    pub weather_unit: String,
+    pub weather_unit: WeatherUnit,
     pub location: String,
     /// An alert about an hour before rain or snow starts at the location.
     pub rain_alerts: bool,
@@ -416,7 +501,7 @@ pub struct Config {
     pub auto_launch: bool,
     /// The system-wide shortcut that opens Large Mode, as Rune spells it (`ctrl+alt+space`); empty turns it off.
     pub hotkey: String,
-    pub position_mode: String,
+    pub position_mode: Position,
     pub notch_mode: bool,
     /// Notch Mode: shrink the compact Island to fit its content instead of a fixed width.
     pub notch_auto_size: bool,
@@ -497,7 +582,7 @@ pub struct Config {
     pub discord_id: String,
     pub discord_secret: String,
     /// Discord: the token the app was granted, renewed as it nears expiry.
-    pub discord_token: Option<crate::discord::Token>,
+    pub discord_token: Option<DiscordToken>,
 }
 
 impl Default for Config {
@@ -527,11 +612,11 @@ impl Default for Config {
             quiet_fullscreen: false,
             update_check: true,
             update_day: 0,
-            fullscreen: "none".into(),
+            fullscreen: FullscreenRule::NoChange,
             overlap_panels: false,
             show_info_idle: false,
             hour12: true,
-            weather_unit: "f".into(),
+            weather_unit: WeatherUnit::Fahrenheit,
             location: String::new(),
             rain_alerts: true,
             // Off until asked for: it sends each track's title and artist to lrclib.net.
@@ -547,7 +632,7 @@ impl Default for Config {
             search_engine: "google".into(),
             auto_launch: false,
             hotkey: "ctrl+alt+space".into(),
-            position_mode: "free".into(),
+            position_mode: Position::Free,
             notch_mode: false,
             notch_auto_size: true,
             notch_mini: false,
@@ -780,7 +865,7 @@ pub struct Store(Arc<Mutex<Inner>>);
 impl Store {
     /// Headless runs (snapshots, tests) keep nothing on disk.
     pub fn open() -> Store {
-        let prefs = if rune::is_headless() { Prefs::memory() } else { Prefs::open(APP_ID) };
+        let prefs = if rune::is_headless() { Prefs::memory() } else { Prefs::open(crate::paths::APP_ID) };
         Store(Arc::new(Mutex::new(Inner { cfg: saved(&prefs).normalized(), prefs })))
     }
 
@@ -925,6 +1010,22 @@ mod tests {
         assert!(import(r#"{"settings": []}"#).is_err());
         assert!(import(r#"{"settings": {"island_x": "50"}}"#).is_err(), "a wrong type refuses the whole file");
         assert_eq!(import(r#"{"settings": {"standby": false}}"#).map(|c| c.standby), Ok(false), "missing fields take defaults");
+    }
+
+    #[test]
+    fn a_t3_device_saved_before_the_detected_flag_is_known_by_its_name() {
+        let cfg = import(r#"{"settings": {"t3_devices": [{"name": "This computer", "url": "u", "token": "t"}, {"name": "Laptop", "url": "v", "token": "t"}, {"name": "This computer", "url": "w", "token": "t", "detected": false}]}}"#).unwrap();
+        assert_eq!(cfg.t3_devices.iter().map(|d| d.detected).collect::<Vec<_>>(), [true, false, false], "a saved flag wins over the name");
+    }
+
+    #[test]
+    fn choices_keep_their_saved_ids_and_an_unknown_one_reads_as_the_default() {
+        let cfg: Config = serde_json::from_str(r#"{"position_mode": "bottom-right", "fullscreen": "hidden", "weather_unit": "c"}"#).unwrap();
+        assert_eq!((cfg.position_mode, cfg.fullscreen, cfg.weather_unit), (Position::BottomRight, FullscreenRule::Hidden, WeatherUnit::Celsius));
+        let saved = serde_json::to_value(&cfg).unwrap();
+        assert_eq!((&saved["position_mode"], &saved["fullscreen"], &saved["weather_unit"]), (&"bottom-right".into(), &"hidden".into(), &"c".into()));
+        let cfg: Config = serde_json::from_str(r#"{"position_mode": "middle", "standby": false}"#).unwrap();
+        assert_eq!((cfg.position_mode, cfg.standby), (Position::Free, false), "the rest of the file still loads");
     }
 
     #[test]

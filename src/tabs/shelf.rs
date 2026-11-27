@@ -9,6 +9,7 @@ use rune::{DragItem, DragOutcome, El, Key, KeyEvent, PointerPress, TextEdit, Tra
 use rune_kit::{MenuItem, context_menu};
 
 use super::{Undo, tool, undo_button};
+use crate::config::Tab;
 use crate::icons;
 use crate::island::{Island, Mode};
 use crate::system;
@@ -203,7 +204,7 @@ pub fn view(s: &Island, layer: &mut Vec<El>) -> El {
         header = header.child(text(status).font(s.cfg.font(12.0, 400.0)).color(muted).shrink().min_w(0.0).max_lines(1));
     }
     header = header.child(el().grow(1.0));
-    if let Some(undo) = undo_button(s) { header = header.child(undo) }
+    if let Some(undo) = undo_button(s, Tab::Shelf) { header = header.child(undo) }
     header = header.child(tool(s, "paste-shelf", &icons::CLIPBOARD_PASTE, "Add from clipboard").on_press_tx(paste));
     if !s.cfg.shelf.is_empty() {
         header = header.child(tool(s, "clear-shelf", &icons::TRASH, "Clear shelf").on_press(|s: &mut Island| {

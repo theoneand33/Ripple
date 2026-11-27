@@ -6,13 +6,14 @@
 
 use rune::{El, TextEdit, Transition, Tx, col, el, row, text};
 
-use super::{Scrolls, Undo, accent, button, empty, field, pill, tool, undo_button};
-use crate::config::Item;
+use super::{Scrolls, accent, button, empty, field, pill, tool, undo_button};
+use crate::config::{Item, Tab};
 use crate::icons;
 use crate::date::{days_in, format_date, shift_month, weekday};
 use crate::island::Island;
-use crate::ics::{event_day, feed_events, leading_time};
-use crate::nextcloud::{self, Kind};
+use crate::ics::{event_day, feed_events, leading_time, meeting_link};
+use crate::nextcloud::Kind;
+use crate::reminders::{Reminder, Source};
 
 #[derive(Default)]
 pub struct Calendar {
@@ -28,13 +29,11 @@ pub struct Calendar {
     pub feed_error: Option<String>,
     /// The links last fetched, and when (Unix seconds).
     feeds_loaded: (Vec<String>, i64),
-    /// An event alert due in quiet hours, (title, meeting link, how many it stands for): it shows once they end.
-    held: Option<(String, Option<String>, usize)>,
 }
 
 impl Island {
     /// Fetches the ICS links once every 30 minutes, or at once when they changed.
-    fn calendar_feeds_load(&mut self) {
+    pub(super) fn calendar_feeds_load(&mut self) {
         let now = crate::date::now_secs();
         let feeds = self.cfg.calendar_feeds.clone();
         if feeds == self.calendar.feeds_loaded.0 && now - self.calendar.feeds_loaded.1 < 1800 { return }
@@ -57,22 +56,8 @@ impl Island {
 
 const MONTHS: [&str; 12] = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 
-/// The first `https://` link in an event's title, and the title without it. An `http://` link
-/// stays in the title and gets no Join button.
-fn meeting_link(title: &str) -> (Option<String>, String) {
-    let link = title.split_whitespace().find(|w| w.starts_with("https://"));
-    let rest = title.split_whitespace().filter(|w| Some(*w) != link).collect::<Vec<_>>().join(" ");
-    (link.map(str::to_string), rest)
-}
-
-/// A link's host, for the Join button's label: `https://user@host:443/path` gives `host:443`.
-pub fn link_host(link: &str) -> &str {
-    // Browsers read `\` as `/` in an https link, so it ends the host too.
-    let authority = link.split_once("://").map_or(link, |l| l.1).split(['/', '\\', '?', '#']).next().unwrap_or("");
-    authority.rsplit('@').next().unwrap_or(authority)
-}
-
-/// Minutes after its start that an event can still alert, for one held while Large was open.
+/// Minutes after its start that an event can still alert: one Ripple wasn't running for, or
+/// whose alert waited.
 const EVENT_GRACE: i64 = 15;
 
 /// The timed events to alert now (`now` and `lead` in minutes, since 1970 on this clock): those
@@ -92,33 +77,35 @@ pub fn due_events(events: &[Item], now: i64, lead: i64, alerted: &[String]) -> V
 
 impl Island {
     /// Once a second: an alert for the next timed event, `event_alert_minutes` before it.
-    /// Large draws no alerts, and a showing reminder isn't replaced, so one waits for both.
-    pub fn event_alerts(&mut self, now: f64) {
+    pub fn event_alerts(&mut self) {
         let lead = i64::from(self.cfg.event_alert_minutes);
-        if lead == 0 || !self.can_remind() { return }
-        let quiet = self.quiet();
-        if !quiet && let Some((title, link, _)) = self.calendar.held.take() { return self.remind_event(title, link, now) }
-        let t = rune::time::LocalTime::at(crate::date::now_ms());
-        let minute = crate::date::days_from_civil(t.year, t.month, t.day) * 1440 + i64::from(t.hour * 60 + t.minute);
-        let due = due_events(&self.cfg.events, minute, lead, &self.cfg.alerted_events);
-        if due.is_empty() { return }
-        // Several at once share one alert, with the first meeting link.
-        let title = if due.len() == 1 { due[0].1.clone() } else { format!("{} events", due.len()) };
-        let link = due.iter().find_map(|d| d.2.clone());
-        let n = due.len();
+        if lead == 0 { return }
+        for (id, title, link) in due_events(&self.cfg.events, this_minute(), lead, &self.cfg.alerted_events) {
+            self.offer(Reminder { source: Source::Event, id, title, link })
+        }
+    }
+
+    /// Records the event alerts `ids` as shown, so none comes again, even after a restart.
+    pub fn events_alerted(&mut self, ids: Vec<String>) {
+        let minute = this_minute();
         self.save(|c| {
             // Ids start with the event's start minute; those over a day old can't alert again.
             c.alerted_events.retain(|id| id.split(' ').next().and_then(|m| m.parse::<i64>().ok()).is_some_and(|m| m >= minute - 1440));
-            c.alerted_events.extend(due.into_iter().map(|d| d.0));
-        });
-        // Held, not dropped: by the time quiet hours end the event may be past its alert window.
-        if !quiet { return self.remind_event(title, link, now) }
-        // Several held in one quiet spell share one alert, as a batch does.
-        self.calendar.held = Some(match self.calendar.held.take() {
-            Some((_, held_link, m)) => (format!("{} events", m + n), held_link.or(link), m + n),
-            None => (title, link, n),
+            c.alerted_events.extend(ids);
         });
     }
+
+    /// Whether the event a reminder `id` names may still alert: there, and not over
+    /// `EVENT_GRACE` minutes past its start, whatever the lead is now.
+    pub fn event_due(&self, id: &str) -> bool {
+        due_events(&self.cfg.events, this_minute(), i64::MAX / 2, &[]).iter().any(|d| d.0 == id)
+    }
+}
+
+/// Minutes since 1970 on this clock.
+fn this_minute() -> i64 {
+    let t = rune::time::LocalTime::at(crate::date::now_ms());
+    crate::date::days_from_civil(t.year, t.month, t.day) * 1440 + i64::from(t.hour * 60 + t.minute)
 }
 
 /// Adds the typed event on the picked day, or saves the one being edited there.
@@ -127,18 +114,9 @@ fn add_event(s: &mut Island, _: &mut Tx) {
     if title.is_empty() { return }
     let (y, m, d) = s.calendar.day.unwrap_or(s.today);
     let text = format!("{y:04}-{m:02}-{d:02} {title}");
-    match s.calendar.editing.take() {
-        Some(key) => s.save(|c| edit_event(c, key, text)),
-        None => s.save(|c| c.events.push(Item::new(text))),
-    }
+    let editing = s.calendar.editing.take();
     s.calendar.event.clear();
-    s.nextcloud_sync(Kind::Events);
-}
-
-/// In place, keeping its Nextcloud link: the next sync writes the change over the event there.
-/// One gone since the edit began (deleted by a sync) is added afresh, so the edit isn't lost.
-fn edit_event(c: &mut crate::config::Config, key: u64, text: String) {
-    match c.events.iter_mut().find(|e| e.key == key) { Some(e) => e.text = text, None => c.events.push(Item::new(text)) }
+    s.save_item(Kind::Events, editing, text);
 }
 
 fn start_edit(s: &mut Island, key: u64) {
@@ -163,20 +141,23 @@ fn cancel_edit(s: &mut Island) {
 
 fn delete_event(s: &mut Island, key: u64) {
     if s.calendar.editing == Some(key) { cancel_edit(s) }
-    let mut gone = None;
-    s.save(|c| gone = nextcloud::remove(c, Kind::Events, key));
-    if let Some((i, item)) = gone { s.undo = Some(Undo::Item(Kind::Events, i, item)) }
-    s.nextcloud_sync(Kind::Events);
+    s.delete_item(Kind::Events, key);
 }
 
-/// The picked day's events, by title, so timed ones (`HH:MM title`) run in order; a link's
-/// events have no key, as they can't be edited.
-fn day_events(s: &Island, day: (i32, u32, u32)) -> Vec<(Option<u64>, &str)> {
+/// Every event's text: the user's own, by key, then the ICS links', which have no key as they
+/// can't be edited.
+fn all_events(s: &Island) -> impl Iterator<Item = (Option<u64>, &str)> {
     let own = s.cfg.events.iter().map(|e| (Some(e.key), e.text.as_str()));
-    let feeds = s.calendar.feed_events.iter().map(|t| (None, t.as_str()));
-    let mut events: Vec<_> = own.chain(feeds).filter_map(|(key, text)| event_day(text).filter(|(d, _)| *d == day).map(|(_, title)| (key, title))).collect();
-    events.sort_by_key(|e| e.1);
-    events
+    own.chain(s.calendar.feed_events.iter().map(|t| (None, t.as_str())))
+}
+
+impl Island {
+    /// A day's events, own and the links', by title, so timed ones (`HH:MM title`) run in order.
+    pub fn events_on(&self, day: (i32, u32, u32)) -> Vec<(Option<u64>, &str)> {
+        let mut events: Vec<_> = all_events(self).filter_map(|(key, text)| event_day(text).filter(|(d, _)| *d == day).map(|(_, title)| (key, title))).collect();
+        events.sort_by_key(|e| e.1);
+        events
+    }
 }
 
 pub fn view(s: &Island) -> El {
@@ -207,7 +188,7 @@ pub fn view(s: &Island) -> El {
     // Six weeks always, so the Island keeps one height; days of the months around are dimmed.
     let first = weekday(year, month, 1) as i32;
     let picked = s.calendar.day.unwrap_or(s.today);
-    let busy_days: Vec<_> = s.cfg.events.iter().map(|e| e.text.as_str()).chain(s.calendar.feed_events.iter().map(String::as_str)).filter_map(|t| Some(event_day(t)?.0)).collect();
+    let busy_days: Vec<_> = all_events(s).filter_map(|(_, t)| Some(event_day(t)?.0)).collect();
     let (py, pm) = shift_month(year, month, -1);
     let (len, prev_len) = (days_in(year, month) as i32, days_in(py, pm) as i32);
     let mut grid = col().key(format!("calendar-grid-{year}-{month}")).role("group").label(format!("{} {year}", MONTHS[month as usize - 1]))
@@ -240,7 +221,7 @@ pub fn view(s: &Island) -> El {
     for e in [&s.nextcloud[Kind::Events].error, &s.calendar.feed_error].into_iter().flatten() {
         list = list.child(text(e).font(s.cfg.font(12.0, 400.0)).color(fg.alpha(0.55 * fg.a)).wrap_anywhere());
     }
-    let events = day_events(s, picked);
+    let events = s.events_on(picked);
     if events.is_empty() { list = list.child(empty(s, "No events")) }
     // Each event gets a colour of its own, a bar at its left edge, as Droppy's calendar does.
     let tints = [accent::indigo(), accent::orange(), accent::green(), accent::teal()];
@@ -275,7 +256,7 @@ pub fn view(s: &Island) -> El {
                     .child(text(crate::date::weekday_name(py_, pm_, pd_).to_uppercase()).font(s.cfg.font(15.0, 700.0)).color(fg.alpha(0.5 * fg.a)))
                     .child(text(crate::date::month_day(pm_, pd_)).font(s.cfg.font(15.0, 700.0)).color(fg))
             })
-            .children(undo_button(s))
+            .children(undo_button(s, Tab::Calendar))
             .children(editing.then(|| pill(s, "cancel-edit", "Cancel edit").on_press(cancel_edit))))
         .child(col().key("event-scroll").w_full().grow(1.0).min_h(0.0).scrolls().child(list))
         .child(
@@ -309,14 +290,10 @@ mod tests {
         assert_eq!(held.len(), 2, "held while Large was open");
         assert_eq!(&held[0].0, id);
         assert!(super::due_events(&events, start + 16, 10, &[]).is_empty(), "past");
-        assert_eq!(super::meeting_link("Lunch"), (None, "Lunch".into()));
         let next = super::due_events(&events, start + 1440, 0, &[]);
         assert_eq!((next[0].1.as_str(), next[0].2.as_deref()), ("Meeting", Some("https://meet.example.com/x")), "a link-only title");
         let http = super::due_events(&events, start + 1440 + 30, 0, &[]);
         assert_eq!((http[0].1.as_str(), http[0].2.as_deref()), ("Sync http://meet.example.com/y", None), "no Join for http");
-        assert_eq!(super::link_host("https://meet.example.com/abc?x=1"), "meet.example.com");
-        assert_eq!(super::link_host("https://meet.example.com@evil.example"), "evil.example");
-        assert_eq!(super::link_host("https://evil.example\\@trusted.example"), "evil.example", "a backslash ends the host, as browsers read it");
     }
 
     #[test]

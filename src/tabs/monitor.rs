@@ -67,15 +67,6 @@ pub fn view(s: &Island) -> El {
         .child(list("top-memory", "Top memory", accent::teal(), st.top_mem.iter().map(|(n, v)| (n.clone(), bytes(*v))).collect())))
 }
 
-/// A ring lit clockwise from the top up to `percent`: green, orange, then red as load rises.
-pub(super) fn gauge(s: &Island, percent: f32, high_good: bool) -> El {
-    let fg = s.cfg.text();
-    let p = percent.clamp(0.0, 100.0);
-    let load = if high_good { 100.0 - p } else { p };
-    let lit = if load < 60.0 { accent::green() } else if load < 85.0 { accent::orange() } else { accent::red() };
-    ring(44.0, p, lit, text(format!("{p:.0}%")).font(s.cfg.font(10.0, 700.0).features("'tnum' 1")).color(fg))
-}
-
 /// "29 / 48 GB", the unit said once when both share it.
 fn of_total(used: u64, total: u64) -> String {
     let (u, t) = (bytes(used), bytes(total));

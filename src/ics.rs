@@ -63,12 +63,6 @@ fn to_utc(local: i64) -> i64 {
     local - offset(local - offset(local))
 }
 
-/// Today on this clock, for the `today` and `tomorrow` a hand-edited task may hold.
-fn today() -> (i32, u32, u32) {
-    let t = rune::time::LocalTime::at(crate::date::now_ms());
-    (t.year, t.month, t.day)
-}
-
 /// A DATE (`all_day`) or local DATE-TIME value at `at` minutes since 1970.
 fn ics_value(at: i64, all_day: bool) -> String {
     let t = rune::time::LocalTime::at_offset(at * 60_000, 0);
@@ -137,9 +131,10 @@ fn duration(v: &str) -> Option<i64> {
 }
 
 /// A to-do's object with its text's edit made: only the parts that changed are written.
-pub(crate) fn edited_task(ics: &str, text: &str) -> Option<String> {
-    let (old, new) = (Task::parse(&open_task(ics)?, today()), Task::parse(text, today()));
-    let fresh = new_task("", text, "");
+/// `today` reads the `today` and `tomorrow` a hand-edited task may hold.
+pub(crate) fn edited_task(ics: &str, text: &str, today: (i32, u32, u32)) -> Option<String> {
+    let (old, new) = (Task::parse(&open_task(ics)?, today), Task::parse(text, today));
+    let fresh = new_task("", text, "", today);
     let line = |name: &str| fresh.lines().find(|l| l.split([':', ';']).next() == Some(name)).map(str::to_string);
     let (mut drop, mut add) = (Vec::new(), Vec::new());
     for (name, changed) in [("SUMMARY", old.title != new.title), ("PRIORITY", old.priority != new.priority), ("DUE", old.due != new.due), ("RRULE", old.every != new.every)] {
@@ -225,8 +220,8 @@ fn unescape_text(value: &str) -> String {
 fn escape_text(value: &str) -> String { value.replace('\\', "\\\\").replace(';', "\\;").replace(',', "\\,").replace('\n', "\\n").replace('\r', "") }
 
 /// A to-do from a task's text; `open_task` reads it back as the same text.
-pub(crate) fn new_task(uid: &str, text: &str, stamp: &str) -> String {
-    let task = Task::parse(text, today());
+pub(crate) fn new_task(uid: &str, text: &str, stamp: &str, today: (i32, u32, u32)) -> String {
+    let task = Task::parse(text, today);
     let summary = escape_text(&task.title);
     let mut extra = String::new();
     if task.priority > 0 { extra += &format!("PRIORITY:{}\r\n", [0, 9, 5, 1][usize::from(task.priority)]) }
@@ -315,8 +310,25 @@ pub fn leading_time(title: &str) -> (Option<(u32, u32)>, &str) {
     match time { Some((t, rest)) => (Some(t), rest), None => (None, title) }
 }
 
+/// The first `https://` link in an event's title, and the title without it. An `http://` link
+/// stays in the title and gets no Join button.
+pub fn meeting_link(title: &str) -> (Option<String>, String) {
+    let link = title.split_whitespace().find(|w| w.starts_with("https://"));
+    let rest = title.split_whitespace().filter(|w| Some(*w) != link).collect::<Vec<_>>().join(" ");
+    (link.map(str::to_string), rest)
+}
+
+/// A link's host, for the Join button's label: `https://user@host:443/path` gives `host:443`.
+pub fn link_host(link: &str) -> &str {
+    // Browsers read `\` as `/` in an https link, so it ends the host too.
+    let authority = link.split_once("://").map_or(link, |l| l.1).split(['/', '\\', '?', '#']).next().unwrap_or("");
+    authority.rsplit('@').next().unwrap_or(authority)
+}
+
 #[cfg(test)]
 mod tests {
+    /// The day hand-edited `today`s and `tomorrow`s are read on.
+    const DAY: (i32, u32, u32) = (2026, 1, 1);
     use super::*;
 
     #[test]
@@ -332,16 +344,17 @@ mod tests {
         let done = completed(ics, "20261118T000000Z");
         assert_eq!(open_task(&done), None);
         assert!(done.contains("DUE:20260101\r\nSTATUS:COMPLETED\r\nCOMPLETED:20261118T000000Z\r\nPERCENT-COMPLETE:100\r\nEND:VTODO") && !done.contains("NEEDS-ACTION"));
-        assert_eq!(open_task(&new_task("u", "a, b; c \\n", "20260101T000000Z")).as_deref(), Some("a, b; c \\n"));
+        assert_eq!(open_task(&new_task("u", "a, b; c \\n", "20260101T000000Z", DAY)).as_deref(), Some("a, b; c \\n"));
         let rich = "!!! Pay rent due:2026-12-01T09:30 every:month";
-        let written = new_task("u", rich, "20260101T000000Z");
+        let written = new_task("u", rich, "20260101T000000Z", DAY);
         assert!(written.contains("PRIORITY:1\r\nDUE:20261201T093000\r\nRRULE:FREQ=MONTHLY\r\n") && written.contains("SUMMARY:Pay rent\r\n"));
         assert_eq!(open_task(&written).as_deref(), Some(rich));
         assert_eq!(open_task("BEGIN:VTODO\r\nSUMMARY:Low\r\nPRIORITY:7\r\nRRULE:FREQ=WEEKLY;WKST=MO;INTERVAL=1\r\nEND:VTODO").as_deref(), Some("! Low every:week"));
         let fortnightly = "BEGIN:VCALENDAR\r\nBEGIN:VTODO\r\nSUMMARY:Bins\r\nRRULE:FREQ=WEEKLY;INTERVAL=2\r\nEND:VTODO\r\nEND:VCALENDAR\r\n";
         assert_eq!(open_task(fortnightly).as_deref(), Some("Bins every:custom"), "a rule Ripple can't follow is left to Nextcloud");
-        assert!(edited_task(fortnightly, "Take the bins out every:custom").unwrap().contains("RRULE:FREQ=WEEKLY;INTERVAL=2"));
-        assert!(!new_task("u", "Bins every:custom", "").contains("RRULE"));
+        assert!(edited_task(fortnightly, "Take the bins out every:custom", DAY).unwrap().contains("RRULE:FREQ=WEEKLY;INTERVAL=2"));
+        assert!(!new_task("u", "Bins every:custom", "", DAY).contains("RRULE"));
+        assert!(new_task("u", "Pay due:tomorrow", "", DAY).contains("20260102"), "relative to the day given");
         assert_eq!(open_task("BEGIN:VTODO\r\nSUMMARY:Task\r\nBEGIN:VALARM\r\nSUMMARY:Alarm\r\nEND:VALARM\r\nEND:VTODO").as_deref(), Some("Task"));
     }
 
@@ -390,12 +403,21 @@ mod tests {
         let trip = "BEGIN:VEVENT\r\nDTSTART;VALUE=DATE:20261101\r\nDURATION:P3D\r\nSUMMARY:Trip\r\nEND:VEVENT\r\n";
         assert!(edited_event(trip, "2026-11-10 Trip").unwrap().contains("DTSTART;VALUE=DATE:20261110\r\nDTEND;VALUE=DATE:20261113\r\n"), "a moved event keeps its length");
         let todo = "BEGIN:VCALENDAR\r\nBEGIN:VTODO\r\nSUMMARY:Rent\r\nRRULE:FREQ=MONTHLY;BYMONTHDAY=1\r\nDESCRIPTION:Landlord\r\nEND:VTODO\r\nEND:VCALENDAR\r\n";
-        let task = edited_task(todo, "!! Pay rent every:custom").unwrap();
+        let task = edited_task(todo, "!! Pay rent every:custom", DAY).unwrap();
         assert!(task.contains("RRULE:FREQ=MONTHLY;BYMONTHDAY=1") && task.contains("DESCRIPTION:Landlord"), "an unchanged repeat keeps its rule");
         assert!(task.contains("SUMMARY:Pay rent\r\nPRIORITY:5\r\nEND:VTODO"));
         assert_eq!(open_task(&task).as_deref(), Some("!! Pay rent every:custom"));
         assert_eq!((duration("P1DT2H30M"), duration("PT30M"), duration("P2W"), duration("1H")), (Some(1590), Some(30), Some(20_160), None));
         assert_eq!(ics_time("20261119T1500"), Some(((2026, 11, 19), Some((15, 0)))));
         assert_eq!((ics_time("2026111"), ics_time("20261119X")), (None, None));
+    }
+
+    #[test]
+    fn a_meeting_link_comes_out_of_the_title_and_shows_its_host() {
+        assert_eq!(meeting_link("Lunch"), (None, "Lunch".into()));
+        assert_eq!(meeting_link("Sync https://meet.example.com/x now"), (Some("https://meet.example.com/x".into()), "Sync now".into()));
+        assert_eq!(link_host("https://meet.example.com/abc?x=1"), "meet.example.com");
+        assert_eq!(link_host("https://meet.example.com@evil.example"), "evil.example");
+        assert_eq!(link_host("https://evil.example\\@trusted.example"), "evil.example", "a backslash ends the host, as browsers read it");
     }
 }

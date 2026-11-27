@@ -3,9 +3,12 @@
 
 use std::path::{Path, PathBuf};
 
+/// The folder name Rune keeps prefs.json in.
+pub const APP_ID: &str = "Ripple";
+
 /// The folder that holds prefs.json, for commands that need it without loading the settings.
 pub fn app_dir() -> Option<PathBuf> {
-    rune::prefs::Prefs::open(crate::config::APP_ID).path().and_then(Path::parent).map(Into::into)
+    rune::prefs::Prefs::open(APP_ID).path().and_then(Path::parent).map(Into::into)
 }
 
 /// A path typed by the user, with `~` for the home folder.

@@ -5,7 +5,7 @@ use rune::{El, TextEdit, Tx, col, el, icon, row, text};
 
 use super::{Scrolls, accent, button, empty, field, tool};
 use crate::config::Habit;
-use crate::date::{days_from_civil, weekday};
+use crate::date::{days_from_civil, streak, weekday};
 use crate::icons;
 use crate::island::Island;
 
@@ -13,12 +13,6 @@ use crate::island::Island;
 #[derive(Default)]
 pub struct Habits {
     pub field: TextEdit,
-}
-
-/// Days in a row done, up to today; a day not yet done today doesn't break it.
-pub fn streak(done: &[i64], today: i64) -> u32 {
-    let start = if done.contains(&today) { today } else { today - 1 };
-    (0..).take_while(|i| done.contains(&(start - i))).count() as u32
 }
 
 fn add(s: &mut Island, _: &mut Tx) {
@@ -95,19 +89,4 @@ pub fn view(s: &Island) -> El {
                 .child(field(s, "new-habit", &s.habits.field, "New habit…", |s: &mut Island| &mut s.habits.field, add))
                 .child(button(s, "add-habit", "Add", true).on_press_tx(add)),
         )
-}
-
-#[cfg(test)]
-mod tests {
-    use super::streak;
-
-    #[test]
-    fn streaks_count_back_from_today_or_yesterday() {
-        assert_eq!(streak(&[], 10), 0);
-        assert_eq!(streak(&[8, 9, 10], 10), 3);
-        // Today not done yet keeps yesterday's run.
-        assert_eq!(streak(&[7, 8, 9], 10), 3);
-        assert_eq!(streak(&[5, 7, 8], 10), 0);
-        assert_eq!(streak(&[4, 6, 7, 8, 9, 10], 10), 5);
-    }
 }

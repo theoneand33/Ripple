@@ -40,10 +40,20 @@ const IDLE: Duration = Duration::from_secs(10);
 /// An app that stops reporting without hiding its progress (it quit) is dropped after this.
 const STALE: Duration = Duration::from_secs(60);
 
-/// Each source's share done (None: not known) and when it last reported, by source.
-type Reports = Arc<Mutex<HashMap<String, (Option<f64>, Instant)>>>;
+/// What a source last said of one download. Windows has no source that reports.
+#[derive(Clone, Copy, PartialEq, Debug)]
+#[cfg_attr(windows, allow(dead_code))]
+pub enum Report {
+    /// Its share done; None while not known.
+    Running(Option<f64>),
+    /// Done, not cancelled (macOS NSProgress says which).
+    Finished,
+}
 
-fn lock(reports: &Reports) -> std::sync::MutexGuard<'_, HashMap<String, (Option<f64>, Instant)>> {
+/// Each source's report and when it came, by source.
+type Reports = Arc<Mutex<HashMap<String, (Report, Instant)>>>;
+
+fn lock(reports: &Reports) -> std::sync::MutexGuard<'_, HashMap<String, (Report, Instant)>> {
     reports.lock().unwrap_or_else(|e| e.into_inner())
 }
 
@@ -71,14 +81,15 @@ pub fn watch(on: impl Fn(Option<Progress>)) {
     let mut running: Option<(SystemTime, usize, bool)> = None;
     loop {
         let partial = scan.as_deref().map_or(0, |d| partial_files(d, SystemTime::now()));
-        let reported: Vec<Option<f64>> = {
+        let reported: Vec<Report> = {
             let mut r = lock(&reports);
             r.retain(|_, (_, at)| at.elapsed() < STALE);
             r.values().map(|v| v.0).collect()
         };
         // A source that calls a download complete (macOS NSProgress) ends it then, not when it unpublishes.
-        let full = reported.contains(&Some(1.0));
-        let now = merge(&reported.iter().copied().filter(|f| *f != Some(1.0)).collect::<Vec<_>>(), partial);
+        let full = reported.contains(&Report::Finished);
+        let shares: Vec<Option<f64>> = reported.iter().filter_map(|r| match r { Report::Running(share) => Some(*share), Report::Finished => None }).collect();
+        let now = merge(&shares, partial);
         let ended = match (now, running) {
             (Some(p), _) => { running = Some((running.map_or_else(SystemTime::now, |r| r.0), p.count, full)); None }
             (None, Some(r)) => { running = None; Some((r.0, r.1, r.2 || full)) }
@@ -99,13 +110,16 @@ fn folder() -> Option<PathBuf> {
     rune::dirs::AppDirs::new("ripple")?.downloads().map(Path::to_path_buf)
 }
 
+/// A browser's file for a download still running.
+fn is_partial(p: &Path) -> bool {
+    p.extension().and_then(|x| x.to_str()).is_some_and(|x| PARTIAL.iter().any(|s| x.eq_ignore_ascii_case(s)))
+}
+
 /// Partial downloads in `dir` written to within `IDLE` of `now`.
 fn partial_files(dir: &Path, now: SystemTime) -> usize {
     let Ok(entries) = std::fs::read_dir(dir) else { return 0 };
     entries.flatten().filter(|e| {
-        let p = e.path();
-        let partial = p.extension().and_then(|x| x.to_str()).is_some_and(|x| PARTIAL.iter().any(|s| x.eq_ignore_ascii_case(s)));
-        partial && e.metadata().and_then(|m| m.modified()).is_ok_and(|t| now.duration_since(t).unwrap_or_default() < IDLE)
+        is_partial(&e.path()) && e.metadata().and_then(|m| m.modified()).is_ok_and(|t| now.duration_since(t).unwrap_or_default() < IDLE)
     }).count()
 }
 
@@ -117,10 +131,8 @@ fn finished_file(dir: &Path, since: SystemTime) -> bool {
     // Filesystem times can be a moment coarse.
     let since = since - Duration::from_secs(2);
     entries.flatten().any(|e| {
-        let p = e.path();
-        let partial = p.extension().and_then(|x| x.to_str()).is_some_and(|x| PARTIAL.iter().any(|s| x.eq_ignore_ascii_case(s)));
         let hidden = e.file_name().to_string_lossy().starts_with('.');
-        !partial && !hidden && e.metadata().is_ok_and(|m| m.is_file() && m.modified().is_ok_and(|t| t >= since))
+        !is_partial(&e.path()) && !hidden && e.metadata().is_ok_and(|m| m.is_file() && m.modified().is_ok_and(|t| t >= since))
     })
 }
 
@@ -138,9 +150,8 @@ fn merge(reported: &[Option<f64>], partial: usize) -> Option<Progress> {
 fn launcher_entries(reports: &Reports) {
     // Apps whose bar is visible; unlike reports, this never goes stale, so a download that pauses past `STALE` comes back with its next progress.
     let mut shown = std::collections::HashSet::new();
-    let mut busctl = std::process::Command::new("busctl");
-    busctl.args(["--user", "monitor", "--json=short", "--match", "type='signal',interface='com.canonical.Unity.LauncherEntry',member='Update'"]);
-    crate::system::follow_lines(&mut busctl, false, |line| {
+    let args = ["--user", "monitor", "--json=short", "--match", "type='signal',interface='com.canonical.Unity.LauncherEntry',member='Update'"];
+    crate::system::follow_lines("busctl", &args, false, |line| {
         if let Some(update) = parse_launcher(line) { apply(&mut lock(reports), &mut shown, update, Instant::now()) }
     })
 }
@@ -148,13 +159,13 @@ fn launcher_entries(reports: &Reports) {
 /// Applies one LauncherEntry update: hidden drops the app; a progress without `progress-visible`
 /// updates an app whose bar is visible and keeps its last share when it has none.
 #[cfg(any(target_os = "linux", test))]
-fn apply(r: &mut HashMap<String, (Option<f64>, Instant)>, shown: &mut std::collections::HashSet<String>, (app, visible, progress): (String, Option<bool>, Option<f64>), now: Instant) {
+fn apply(r: &mut HashMap<String, (Report, Instant)>, shown: &mut std::collections::HashSet<String>, (app, visible, progress): (String, Option<bool>, Option<f64>), now: Instant) {
     match visible {
         Some(false) => { shown.remove(&app); r.remove(&app); }
         _ if visible == Some(true) || shown.contains(&app) => {
             shown.insert(app.clone());
-            let known = progress.or_else(|| r.get(&app).and_then(|e| e.0));
-            r.insert(app, (known, now));
+            let known = progress.or_else(|| match r.get(&app) { Some((Report::Running(share), _)) => *share, _ => None });
+            r.insert(app, (Report::Running(known), now));
         }
         _ => {}
     }
@@ -196,13 +207,13 @@ mod tests {
         assert!(r.is_empty(), "progress alone shows no bar");
         apply(&mut r, &mut shown, up(Some(true), Some(0.3)), now);
         apply(&mut r, &mut shown, up(None, Some(0.6)), now);
-        assert_eq!(r["app"].0, Some(0.6));
+        assert_eq!(r["app"].0, Report::Running(Some(0.6)));
         apply(&mut r, &mut shown, up(Some(true), None), now);
-        assert_eq!(r["app"].0, Some(0.6), "a share once known stays");
+        assert_eq!(r["app"].0, Report::Running(Some(0.6)), "a share once known stays");
         // Paused past STALE: `watch` drops the report; the next progress alone brings it back.
         r.clear();
         apply(&mut r, &mut shown, up(None, Some(0.7)), now);
-        assert_eq!(r["app"].0, Some(0.7));
+        assert_eq!(r["app"].0, Report::Running(Some(0.7)));
         apply(&mut r, &mut shown, up(Some(false), None), now);
         assert!(r.is_empty());
         apply(&mut r, &mut shown, up(None, Some(0.8)), now);

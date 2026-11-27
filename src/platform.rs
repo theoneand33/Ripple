@@ -215,21 +215,36 @@ fn pointer() -> Option<(f64, f64)> {
     }
 }
 
-/// The window with keyboard focus now, as an id `focus_window` takes. macOS gives the
-/// frontmost app's pid, as apps, not windows, take focus there.
-pub fn focused_window() -> Option<u64> {
+/// A window to give keyboard focus to, as the system that named it knows it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum WindowId {
+    /// An X11 window, XWayland's too.
     #[cfg(target_os = "linux")]
-    { x11_active().ok().flatten().map(u64::from) }
+    X11(u32),
+    /// A window as GNOME's Window Calls extension names it, on GNOME Wayland.
+    #[cfg(target_os = "linux")]
+    Gnome(u64),
+    #[cfg(windows)]
+    Hwnd(isize),
+    /// The app, by pid: apps, not windows, take focus on macOS.
+    #[cfg(target_os = "macos")]
+    App(i32),
+}
+
+/// The window with keyboard focus now. GNOME Wayland's comes from `gnome_focused_window`.
+pub fn focused_window() -> Option<WindowId> {
+    #[cfg(target_os = "linux")]
+    { x11_active().ok().flatten().map(WindowId::X11) }
     #[cfg(windows)]
     {
         #[link(name = "user32")]
         unsafe extern "system" { fn GetForegroundWindow() -> isize; }
         // SAFETY: no arguments; returns 0 when no window has focus.
         let hwnd = unsafe { GetForegroundWindow() };
-        (hwnd != 0).then_some(hwnd as u64)
+        (hwnd != 0).then_some(WindowId::Hwnd(hwnd))
     }
     #[cfg(target_os = "macos")]
-    { crate::mac::frontmost_pid().map(|pid| pid as u64) }
+    { crate::mac::frontmost_pid().map(WindowId::App) }
 }
 
 /// The focused app is full screen (a game, a video, a presentation). Blocks; call it off the UI thread.
@@ -282,23 +297,25 @@ fn x11_fullscreen() -> Result<bool, Box<dyn std::error::Error>> {
     Ok(reply.value32().is_some_and(|mut v| v.any(|a| a == full)))
 }
 
-/// Gives keyboard focus to a window `focused_window` or `gnome_focused_window` returned.
-pub fn focus_window(window: u64) {
-    #[cfg(target_os = "linux")]
-    if gnome_wayland() {
-        std::thread::spawn(move || if window_calls(&["Activate", "u", &window.to_string()]).is_none() {
-            eprintln!("Ripple: could not give focus back through the Window Calls extension");
-        });
-    } else if let Err(e) = x11_activate(window as u32) { eprintln!("Ripple: could not give focus back: {e}") }
-    #[cfg(windows)]
-    {
-        #[link(name = "user32")]
-        unsafe extern "system" { fn SetForegroundWindow(hwnd: isize) -> i32; }
-        // SAFETY: a stale handle only makes the call fail. Ripple is foreground, so Windows allows it.
-        unsafe { SetForegroundWindow(window as isize) };
+/// Gives keyboard focus to `window`.
+pub fn focus_window(window: WindowId) {
+    match window {
+        #[cfg(target_os = "linux")]
+        WindowId::X11(id) => if let Err(e) = x11_activate(id) { eprintln!("Ripple: could not give focus: {e}") },
+        #[cfg(target_os = "linux")]
+        WindowId::Gnome(id) => { std::thread::spawn(move || if window_calls(&["Activate", "u", &id.to_string()]).is_none() {
+            eprintln!("Ripple: could not give focus through the Window Calls extension");
+        }); }
+        #[cfg(windows)]
+        WindowId::Hwnd(hwnd) => {
+            #[link(name = "user32")]
+            unsafe extern "system" { fn SetForegroundWindow(hwnd: isize) -> i32; }
+            // SAFETY: a stale handle only makes the call fail. Ripple is foreground, so Windows allows it.
+            unsafe { SetForegroundWindow(hwnd) };
+        }
+        #[cfg(target_os = "macos")]
+        WindowId::App(pid) => crate::mac::activate_pid(pid),
     }
-    #[cfg(target_os = "macos")]
-    crate::mac::activate_pid(window as i32);
 }
 
 #[cfg(target_os = "linux")]
@@ -320,12 +337,12 @@ fn window_calls(method_args: &[&str]) -> Option<String> {
 /// The focused window on GNOME Wayland, which no Wayland client can ask for, from the
 /// Window Calls extension when it is installed. Blocks; call it off the UI thread.
 #[cfg(target_os = "linux")]
-pub fn gnome_focused_window() -> Option<u64> {
+pub fn gnome_focused_window() -> Option<WindowId> {
     if !gnome_wayland() { return None }
     // busctl --json prints {"type":"s","data":["<the extension's JSON list>"]}.
     let reply: serde_json::Value = serde_json::from_str(&window_calls(&["List"])?).ok()?;
     let list: Vec<serde_json::Value> = serde_json::from_str(reply["data"][0].as_str()?).ok()?;
-    focused_in(&list)
+    focused_in(&list).map(WindowId::Gnome)
 }
 
 /// The focused window in Window Calls' list, unless it is Ripple's own.
@@ -404,7 +421,7 @@ fn x11_active() -> Result<Option<u32>, Box<dyn std::error::Error>> {
 /// _NET_ACTIVE_WINDOW as a pager asks it (source 2), which window managers honour without
 /// focus-stealing checks.
 #[cfg(target_os = "linux")]
-pub(crate) fn x11_activate(window: u32) -> Result<(), Box<dyn std::error::Error>> {
+fn x11_activate(window: u32) -> Result<(), Box<dyn std::error::Error>> {
     use x11rb::connection::Connection;
     use x11rb::protocol::xproto::{ClientMessageEvent, ConnectionExt, EventMask};
     let (conn, screen) = x11rb::connect(None)?;

@@ -4,6 +4,7 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod agents;
+mod calc;
 mod command;
 mod config;
 mod date;
@@ -23,6 +24,7 @@ mod paths;
 mod pick;
 mod platform;
 mod plugins;
+mod reminders;
 mod settings;
 mod stocks;
 mod stremflix;
@@ -30,6 +32,7 @@ mod system;
 mod t3;
 mod task;
 mod tabs;
+mod url;
 #[cfg(test)]
 mod testserver;
 
@@ -158,7 +161,7 @@ fn island_spec() -> AppSpec<Island> {
                 s.tasks.field.replace_text("Ship v0.5");
             }),
             ("reminder", |s| s.remind("Ship v0.5 release notes".into(), 0.0)),
-            ("event-alert", |s| s.remind_event("Standup".into(), Some("https://meet.example.com/abc".into()), 0.0)),
+            ("event-alert", |s| s.show_reminder(reminders::Alert::new("Standup".into(), Some("https://meet.example.com/abc".into())), 0.0)),
             ("notify", |s| s.remind("Build passed".into(), 0.0)),
             ("rain-alert", |s| { s.weather.precip = Some((date::now_secs() + 3000, false)); s.remind(s.precip_label(), 0.0) }),
             ("break-reminder", |s| s.remind("Look away 20s".into(), 0.0)),
@@ -247,7 +250,16 @@ fn island_spec() -> AppSpec<Island> {
             ("timer-done", |s| { s.pomodoro.timer.rung = true; s.pomodoro.timer.left = 0.0 }),
             ("stopwatch-live", |s| { s.pomodoro.stopwatch.elapsed = 3723.0; s.pomodoro.stopwatch.since = Some(crate::date::wall() - 3723.0) }),
             ("pomodoro-live", |s| { let now = crate::date::wall(); s.pomodoro.ends = Some(now + 15.0 * 60.0 + 23.0); s.pomodoro.tick(now); }),
-            ("match", |s| { s.set_game(Some(games::Match { game: "Counter-Strike 2", target: games::Target::Window(0) })); }),
+            ("match", |s| {
+                // A window that isn't there: the scene only draws the alert.
+                #[cfg(target_os = "linux")]
+                let window = platform::WindowId::X11(0);
+                #[cfg(windows)]
+                let window = platform::WindowId::Hwnd(0);
+                #[cfg(target_os = "macos")]
+                let window = platform::WindowId::App(0);
+                s.set_game(Some(games::Match { game: "Counter-Strike 2", target: games::Target::Window(window) }));
+            }),
             ("match-league", |s| { s.set_game(Some(games::Match { game: "League of Legends", target: games::Target::League(Default::default()) })); }),
             ("download", |s| { s.set_download(Some(downloads::Progress { fraction: Some(0.42), count: 1, done: false }), &mut rune::Tx::default()); }),
             ("download-done", |s| { let mut tx = rune::Tx::default(); s.set_download(Some(downloads::Progress { fraction: Some(0.9), count: 1, done: false }), &mut tx); s.set_download(Some(downloads::Progress { fraction: Some(1.0), count: 1, done: true }), &mut tx); }),
@@ -374,7 +386,7 @@ fn island_spec() -> AppSpec<Island> {
             ("t3-device", |s| {
                 s.mode = Mode::Large;
                 s.tab = Tab::T3;
-                s.cfg.t3_devices = vec![config::T3Device { name: "Laptop".into(), url: "http://127.0.0.1:3773".into(), token: "t".into() }];
+                s.cfg.t3_devices = vec![config::T3Device { name: "Laptop".into(), url: "http://127.0.0.1:3773".into(), token: "t".into(), detected: false }];
                 s.t3.data = Some(t3::Loaded {
                     favorites: vec![t3::Favorite { instance_id: "claude".into(), model: "opus".into(), label: "Claude Opus".into() }],
                     runtime_mode: "full-access".into(),

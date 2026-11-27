@@ -3,8 +3,10 @@
 
 use std::path::PathBuf;
 
+use super::Undo;
+use crate::config::Item;
 use crate::island::Island;
-use crate::nextcloud::{Kind, Outcome, ShelfOutcome, adopt, apply, in_folder, sync, sync_shelf};
+use crate::nextcloud::{self, Kind, Outcome, ShelfOutcome, adopt, apply, in_folder, sync, sync_shelf};
 
 /// One kind's sync: whether one runs, whether another was asked for meanwhile, and the last error.
 #[derive(Default)]
@@ -30,6 +32,25 @@ impl std::ops::IndexMut<Kind> for Syncs {
 }
 
 impl Island {
+    /// Saves an item's text, then syncs: in place when `editing` names one still there, keeping
+    /// its Nextcloud link so the sync writes the change over it; else added afresh, so an edit
+    /// of one gone since it began (done elsewhere, removed by a sync) isn't lost.
+    pub(super) fn save_item(&mut self, kind: Kind, editing: Option<u64>, text: String) {
+        self.save(|c| {
+            let (items, _) = kind.lists(c);
+            match editing.and_then(|key| items.iter_mut().find(|i| i.key == key)) { Some(i) => i.text = text, None => items.push(Item::new(text)) }
+        });
+        self.nextcloud_sync(kind);
+    }
+
+    /// Deletes an item, kept for Undo while its tab stays open, then syncs.
+    pub(super) fn delete_item(&mut self, kind: Kind, key: u64) {
+        let mut gone = None;
+        self.save(|c| gone = nextcloud::remove(c, kind, key));
+        if let Some((i, item)) = gone { self.undo = Some(Undo::Item(kind, i, item)) }
+        self.nextcloud_sync(kind);
+    }
+
     /// Syncs one kind with Nextcloud in the background; a request while one runs queues one more.
     pub fn nextcloud_sync(&mut self, kind: Kind) {
         if !self.cfg.nextcloud.enabled() { return }
@@ -48,7 +69,8 @@ impl Island {
             for i in &mut items { i.remote = None }
             pending.clear();
         }
-        me.spawn(move || sync(&nc, kind, &items, &pending), move |s, out| s.nextcloud_synced(kind, &account, fresh, out));
+        let today = self.today;
+        me.spawn(move || sync(&nc, kind, &items, &pending, today), move |s, out| s.nextcloud_synced(kind, &account, fresh, out));
     }
 
     fn nextcloud_synced(&mut self, kind: Kind, account: &str, fresh: bool, out: Outcome) {
@@ -59,7 +81,8 @@ impl Island {
         let answered = !fresh || out.server.is_some() || !out.pushed.is_empty();
         // Otherwise the account changed while it ran, or a new one never answered.
         if current && answered {
-            let open = self.cfg.notes.get(self.notes.index).map(|n| (n.key, n.text.clone()));
+            // The note the editor shows, to keep it open wherever the sync moves it.
+            let open = (kind == Kind::Notes).then(|| self.cfg.notes.get(self.notes.index).map(|n| (n.key, n.text.clone()))).flatten();
             self.save(|c| {
                 adopt(c, account);
                 let (items, pending) = kind.lists(c);

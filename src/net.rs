@@ -202,7 +202,10 @@ fn rates_from(base: &str) -> Option<std::collections::HashMap<String, f64>> {
 }
 
 /// The newest release's tag on GitHub ("v0.7.0"); None when GitHub can't say.
-pub fn latest_release() -> Option<String> { latest_release_from("https://api.github.com/repos/theoneand33/Ripple") }
+/// Ripple on GitHub: its releases, its docs, and who calls an AI service.
+pub const REPO: &str = "theoneand33/Ripple";
+
+pub fn latest_release() -> Option<String> { latest_release_from(&format!("https://api.github.com/repos/{REPO}")) }
 
 fn latest_release_from(repo: &str) -> Option<String> {
     let data = get_json(agent().get(format!("{repo}/releases/latest")).header("Accept", "application/vnd.github+json"))?;
@@ -230,7 +233,7 @@ pub fn ask_ai(base: &str, model: &str, api_key: &str, question: &str, mut on_del
     let mut request = agent
         .post(format!("{base}/chat/completions"))
         .header("content-type", "application/json")
-        .header("http-referer", "https://github.com/TopMyster/Ripple")
+        .header("http-referer", format!("https://github.com/{REPO}"))
         .header("x-title", "Ripple");
     if !api_key.is_empty() {
         request = request.header("authorization", format!("Bearer {api_key}"));
@@ -296,7 +299,7 @@ pub fn fetch_image(url: &str) -> Option<Vec<u8>> {
         return meta.ends_with(";base64").then(|| base64::engine::general_purpose::STANDARD.decode(payload.trim()).ok()).flatten();
     }
     if let Some(path) = url.strip_prefix("file://") {
-        let path = percent_decode(path);
+        let path = crate::url::percent_decode(path);
         // file:///C:/a.png names C:/a.png on Windows.
         #[cfg(windows)]
         let path = match path.strip_prefix('/') { Some(p) if p.get(1..2) == Some(":") => p.to_string(), _ => path };
@@ -366,28 +369,6 @@ pub fn lyric_at(lines: &[Lyric], ms: u32) -> Option<&str> {
 pub fn is_vector(bytes: &[u8]) -> bool {
     let text = bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(bytes);
     bytes.starts_with(&[0x1f, 0x8b]) || text.iter().find(|b| !b.is_ascii_whitespace()) == Some(&b'<')
-}
-
-pub fn percent_decode(s: &str) -> String { String::from_utf8_lossy(&percent_decode_bytes(s)).into_owned() }
-
-pub fn percent_decode_bytes(s: &str) -> Vec<u8> {
-    let bytes = s.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        let hex = (bytes[i] == b'%').then(|| s.get(i + 1..i + 3).and_then(|h| u8::from_str_radix(h, 16).ok())).flatten();
-        out.push(hex.unwrap_or(bytes[i]));
-        i += if hex.is_some() { 3 } else { 1 };
-    }
-    out
-}
-
-/// `encodeURIComponent`: everything but unreserved characters is percent-encoded.
-pub fn percent_encode(s: &str) -> String {
-    s.bytes().fold(String::new(), |mut out, b| {
-        if b.is_ascii_alphanumeric() || b"-_.!~*'()".contains(&b) { out.push(b as char) } else { out.push_str(&format!("%{b:02X}")) }
-        out
-    })
 }
 
 #[cfg(test)]
@@ -525,12 +506,6 @@ mod tests {
         assert!(!newer("v0.6.0", "0.6.0") && !newer("v0.5.9", "0.6.0") && !newer("v0.6.0-beta", "0.6.0") && !newer("nightly", "0.6.0"));
     }
 
-    #[test]
-    fn urls_encode_and_decode() {
-        assert_eq!(percent_encode("rust & c++ ü"), "rust%20%26%20c%2B%2B%20%C3%BC");
-        assert_eq!(percent_decode("/tmp/a%20b%2Fc.png"), "/tmp/a b/c.png");
-        assert_eq!(percent_decode("100%"), "100%");
-    }
 
     #[test]
     fn data_urls_decode_and_other_schemes_are_refused() {

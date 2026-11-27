@@ -30,7 +30,7 @@ mod workflows;
 pub use agents::Agents;
 pub use assistant::Assistant;
 pub use calculator::Calculator;
-pub use calendar::{link_host, Calendar};
+pub use calendar::Calendar;
 pub use clipboard::{Clipboard, Content};
 pub use overview::{Contributions, Dashboard, height as overview_height, width as overview_width};
 pub use clocks::Clocks;
@@ -168,6 +168,7 @@ fn load_widget(s: &mut Island, widget: Widget) {
     match widget {
         Widget::Panel(tab) => load(s, tab),
         Widget::Contributions => s.contributions_load(),
+        Widget::Today | Widget::Day => s.calendar_feeds_load(),
         _ => {}
     }
 }
@@ -195,7 +196,7 @@ fn load(s: &mut Island, tab: Tab) {
         Tab::T3 => s.t3_load(),
         Tab::Stremflix => s.stremflix_load(),
         Tab::Limits => s.limits_load(),
-        Tab::Calculator => s.calc_load(),
+        Tab::Calculator => s.rates_load(),
         Tab::Stocks => s.stocks_load(),
         Tab::Clocks => s.clocks_load(),
         Tab::Controls => s.controls_load(),
@@ -214,8 +215,8 @@ fn load(s: &mut Island, tab: Tab) {
 pub fn each_second(s: &mut Island, now: f64) -> bool {
     let plugins = shows(s, Tab::Plugins) && s.plugins.tick();
     s.notes_tick();
-    s.task_reminders(now);
-    s.event_alerts(now);
+    s.task_reminders();
+    s.event_alerts();
     let agents = s.agents_poll(now);
     if waited(&mut s.stocks.reload_in) && shows(s, Tab::Stocks) { s.stocks_load() }
     if waited(&mut s.contributions.reload_in) && shows_widget(s, Widget::Contributions) { s.contributions_load() }
@@ -241,10 +242,32 @@ pub fn reloaded(s: &mut Island, old: &Config) {
     if old.github_user != s.cfg.github_user || old.leetcode_user != s.cfg.leetcode_user { s.contributions.reload_in = Some(2) }
 }
 
+impl Island {
+    /// Loads exchange rates for Calculator, Search and Stocks, unless they are under a day old.
+    pub fn rates_load(&mut self) {
+        if self.rates.asked || self.rates.fresh() { return }
+        let Some(me) = self.me.clone() else { return };
+        self.rates.asked = true;
+        me.spawn(crate::net::rates, |s, rates| { s.rates.asked = false; s.rates.got(rates) });
+    }
+}
+
 /// What a delete took: a note or an event and where it sat, or the cleared Shelf.
 pub enum Undo {
     Item(Kind, usize, Item),
     Shelf(Vec<std::path::PathBuf>),
+}
+
+impl Undo {
+    /// The tab whose panel offers it.
+    fn tab(&self) -> Tab {
+        match self {
+            Undo::Item(Kind::Notes, ..) => Tab::Notes,
+            Undo::Item(Kind::Tasks, ..) => Tab::Tasks,
+            Undo::Item(Kind::Events, ..) => Tab::Calendar,
+            Undo::Shelf(_) => Tab::Shelf,
+        }
+    }
 }
 
 impl Island {
@@ -326,6 +349,15 @@ pub fn ring(size: f32, percent: f32, color: Color, inner: El) -> El {
         .child(inner)
 }
 
+/// A ring lit clockwise from the top up to `percent`: green, orange, then red as load rises.
+fn gauge(s: &Island, percent: f32, high_good: bool) -> El {
+    let fg = s.cfg.text();
+    let p = percent.clamp(0.0, 100.0);
+    let load = if high_good { 100.0 - p } else { p };
+    let lit = if load < 60.0 { accent::green() } else if load < 85.0 { accent::orange() } else { accent::red() };
+    ring(44.0, p, lit, text(format!("{p:.0}%")).font(s.cfg.font(10.0, 700.0).features("'tnum' 1")).color(fg))
+}
+
 /// The fill of a list row: a raised grey card, no outline.
 fn card(fg: Color) -> Color { fg.alpha(0.09 * fg.a) }
 
@@ -338,9 +370,9 @@ fn pill(s: &Island, key: &str, label: &str) -> El {
         .child(text(label).font(s.cfg.font(13.0, 600.0)).color(fg).a11y_hidden())
 }
 
-/// Undo for the last delete, while the tab it happened on stays open.
-fn undo_button(s: &Island) -> Option<El> {
-    s.undo.is_some().then(|| pill(s, "undo", "Undo").on_press(Island::undo))
+/// Undo for the last delete, on the panel it happened on, while its tab stays open.
+fn undo_button(s: &Island, tab: Tab) -> Option<El> {
+    s.undo.as_ref().is_some_and(|u| u.tab() == tab).then(|| pill(s, "undo", "Undo").on_press(Island::undo))
 }
 
 /// Left and Right switch tabs even while typing, as the Electron app's window-wide key
@@ -394,4 +426,23 @@ fn checkbox(s: &Island, key: &str, label: &str, checked: bool) -> El {
         .hover(fg.alpha(0.15 * fg.a)).press(fg.alpha(0.25 * fg.a)).press_scale(0.97);
     if checked { b = b.child(icon(&icons::CHECK, 12.0).color(bg)) }
     b
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Store;
+
+    #[test]
+    fn undo_shows_only_on_the_panel_whose_item_went() {
+        let cfg = Config { events: vec![Item::new("2026-01-01 Standup")], notes: vec![Item::new("Old")], ..Config::default() };
+        let mut s = Island::new(Store::memory(cfg), Vec::new());
+        let key = s.cfg.events[0].key;
+        s.delete_item(Kind::Events, key);
+        assert!(s.cfg.events.is_empty());
+        assert!(undo_button(&s, Tab::Calendar).is_some());
+        assert!(undo_button(&s, Tab::Notes).is_none(), "an Overview with both panels offers it once");
+        s.undo();
+        assert_eq!(s.cfg.events.iter().map(|e| e.key).collect::<Vec<_>>(), [key], "back where it was");
+    }
 }

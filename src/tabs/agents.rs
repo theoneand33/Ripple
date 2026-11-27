@@ -9,6 +9,7 @@ use super::{Scrolls, accent, button, card, chip, chip_button, empty, tinted};
 use crate::agents::{self, Answer, Request, Session};
 use crate::config::Tab;
 use crate::island::Island;
+use crate::reminders::{Reminder, Source};
 
 #[derive(Default)]
 pub struct Agents {
@@ -18,8 +19,6 @@ pub struct Agents {
     pub picks: HashMap<(String, usize), Vec<String>>,
     /// Answered, but the hook may not have taken the answer yet: hidden so it doesn't come back.
     answered: HashSet<String>,
-    /// A new request that came in quiet hours: its alert shows once they end.
-    held: bool,
     /// When the agents' processes were last looked up: the process table is too dear to read each second.
     processes_at: f64,
 }
@@ -39,18 +38,17 @@ impl Island {
         let fresh = requests.iter().find(|r| !self.agents.requests.iter().any(|o| o.key == r.key)).map(|r| r.key.clone());
         self.agents.picks.retain(|(key, _), _| requests.iter().any(|r| &r.key == key));
         (self.agents.sessions, self.agents.requests) = (sessions, requests);
-        // Quiet hours: the request waits on this tab, and its alert until they end.
-        // Requests held over quiet hours share one alert, for the first still waiting.
-        let key = fresh.or_else(|| std::mem::take(&mut self.agents.held).then(|| self.agents.requests.first().map(|r| r.key.clone())).flatten());
-        if key.is_some() && self.quiet() { self.agents.held = true; return changed }
-        if let Some(r) = key.and_then(|k| self.agents.requests.iter().find(|r| r.key == k).cloned()) && !self.large_open() {
+        // Open, Large already shows the request.
+        if let Some(r) = fresh.and_then(|k| self.agents.requests.iter().find(|r| r.key == k).cloned()) && !self.large_open() {
             let agent = self.agents.sessions.iter().find(|s| s.key == r.session).map_or("An agent", |s| agents::name(&s.agent)).to_string();
-            self.set_tab(Tab::Agents);
-            self.remind(format!("{agent} needs you"), now);
+            self.offer(Reminder { source: Source::Agent, id: r.key, title: format!("{agent} needs you"), link: None });
             return true
         }
         changed
     }
+
+    /// Whether the request `key` still waits for an answer.
+    pub fn agents_asking(&self, key: &str) -> bool { self.agents.requests.iter().any(|r| r.key == key) }
 
     fn agents_answer(&mut self, key: &str, answer: Answer) {
         let Some(dir) = self.store.dir().map(|d| agents::folder(&d)) else { return };

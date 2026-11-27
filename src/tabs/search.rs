@@ -42,7 +42,7 @@ impl Island {
     /// Finds the installed apps once and loads exchange rates, off the UI thread.
     pub fn search_load(&mut self) {
         // A currency sum's answer needs the Calculator's rates.
-        self.calc_load();
+        self.rates_load();
         let Some(me) = self.me.clone() else { return };
         if self.finder.apps.is_some() || self.finder.finding_apps { return }
         self.finder.finding_apps = true;
@@ -76,7 +76,7 @@ impl Island {
         let q = self.finder.field.text.trim().to_lowercase();
         if q.is_empty() { return Vec::new() }
         let apps = self.finder.apps.iter().flatten().map(|a| (a.name.to_lowercase(), a));
-        let mut hits: Vec<Hit> = sum_answer(self.finder.field.text.trim(), self.calc.rates.as_ref()).map(Hit::Answer).into_iter().collect();
+        let mut hits: Vec<Hit> = sum_answer(self.finder.field.text.trim(), self.rates.get()).map(Hit::Answer).into_iter().collect();
         hits.extend(ranked(apps, &q).map(Hit::App));
         hits.extend(self.finder.files.iter().map(|p| Hit::File(p)));
         hits.push(Hit::Web);
@@ -103,7 +103,7 @@ impl Island {
     fn web_url(&self) -> String {
         let query = self.finder.field.text.trim();
         let lower = query.to_ascii_lowercase();
-        if !query.contains('.') || query.contains(' ') { format!("{}{}", self.cfg.search_engine().1, crate::net::percent_encode(query)) }
+        if !query.contains('.') || query.contains(' ') { format!("{}{}", self.cfg.search_engine().1, crate::url::percent_encode(query)) }
         else if lower.starts_with("http://") || lower.starts_with("https://") { query.to_string() }
         else { format!("https://{query}") }
     }
@@ -114,7 +114,7 @@ fn sum_answer(q: &str, rates: Option<&std::collections::HashMap<String, f64>>) -
     if q.parse::<f64>().is_ok() { return None }
     // Dates and phone numbers (`2026-11-25`, `555-1234`) are searches, not subtractions; `10 - 20` still sums.
     if q.chars().all(|c| c.is_ascii_digit() || c == '-' || c == '.') { return None }
-    super::calculator::answer(q, rates)
+    crate::calc::answer(q, rates)
 }
 
 /// Names that start with the query first, then names that contain it, at most `PER_KIND`.
@@ -143,7 +143,7 @@ fn file_url(path: &Path) -> String {
     let p = path.to_string_lossy();
     // Only Windows separates with `\`; elsewhere it's part of a name and is encoded.
     let p = if cfg!(windows) { p.replace('\\', "/") } else { p.into_owned() };
-    let enc: Vec<String> = p.split('/').map(|seg| if seg.len() == 2 && seg.ends_with(':') { seg.into() } else { crate::net::percent_encode(seg) }).collect();
+    let enc: Vec<String> = p.split('/').map(|seg| if seg.len() == 2 && seg.ends_with(':') { seg.into() } else { crate::url::percent_encode(seg) }).collect();
     let joined = enc.join("/");
     // A Windows UNC path `\\server\share` names its server as the URL's host.
     if cfg!(windows) && joined.starts_with("//") { format!("file:{joined}") }

@@ -14,8 +14,7 @@ pub fn poll(s: &mut Island, tx: &mut Tx) -> bool {
             Effect::Run { id, argv } => if let Some(me) = &s.me {
                 me.spawn(move || crate::plugins::run(&argv), move |s, out| s.plugins.finish(&path, id, out));
             },
-            // Queued like `ripple notify`, so it shows once the Island is compact.
-            Effect::Notify { text } => if let Some(dir) = s.store.dir() { let _ = crate::notify::queue(&dir, &text); },
+            Effect::Notify { text } => s.script_alert(text),
             Effect::Open { target } => crate::system::open_external(&target),
             Effect::Copy { text } => tx.copy(text),
         }

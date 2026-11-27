@@ -24,8 +24,8 @@ pub struct Match {
 
 #[derive(Clone, PartialEq, Debug)]
 pub enum Target {
-    /// The game's window: a Windows HWND or an X11 window id. The button brings it forward.
-    Window(u64),
+    /// The game's window. The button brings it forward.
+    Window(crate::platform::WindowId),
     /// League's client. The button accepts the match.
     League(League),
 }
@@ -97,12 +97,7 @@ pub fn watch(on: impl Fn(Option<Match>)) {
 /// The Island's button: brings the game forward, or accepts League's match.
 pub fn answer(m: &Match) {
     let done = match &m.target {
-        #[cfg(target_os = "linux")]
-        Target::Window(id) => crate::platform::x11_activate(*id as u32).map_err(|e| e.to_string()),
-        #[cfg(windows)]
         Target::Window(id) => { crate::platform::focus_window(*id); Ok(()) }
-        #[cfg(target_os = "macos")]
-        Target::Window(_) => Ok(()),
         Target::League(l) => accept(&league_agent(), l),
     };
     if let Err(e) = done { eprintln!("Ripple: could not answer the {} match: {e}", m.game) }
@@ -275,7 +270,7 @@ mod shell {
         loop {
             match rx.recv_timeout(Duration::from_secs(1)) {
                 Ok((HSHELL_FLASH, hwnd)) => if let Some(game) = super::game(&keys(hwnd as HWND)) {
-                    flagged.insert(hwnd, (Match { game, target: Target::Window(hwnd as u64) }, Instant::now()));
+                    flagged.insert(hwnd, (Match { game, target: Target::Window(crate::platform::WindowId::Hwnd(hwnd)) }, Instant::now()));
                 },
                 Ok((HSHELL_WINDOWACTIVATED | HSHELL_RUDEAPPACTIVATED | HSHELL_WINDOWDESTROYED, hwnd)) => { flagged.remove(&hwnd); }
                 Ok(_) | Err(RecvTimeoutError::Timeout) => {}
@@ -332,7 +327,7 @@ fn x11_scan(conn: &impl x11rb::connection::Connection, screen: usize) -> Result<
     for w in wanting {
         let class = conn.get_property(false, w, AtomEnum::WM_CLASS, AtomEnum::STRING, 0, 256)?.reply().map(|r| r.value).unwrap_or_default();
         let title = conn.get_property(false, w, name, utf8, 0, 256)?.reply().map(|r| r.value).unwrap_or_default();
-        if let Some(game) = game(&x11_keys(&class, &title)) { found.push(Match { game, target: Target::Window(u64::from(w)) }) }
+        if let Some(game) = game(&x11_keys(&class, &title)) { found.push(Match { game, target: Target::Window(crate::platform::WindowId::X11(w)) }) }
     }
     Ok(found)
 }

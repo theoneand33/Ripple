@@ -2,8 +2,7 @@
 
 use rune::{El, col, row, text};
 
-use super::{Scrolls, empty};
-use super::monitor::gauge;
+use super::{Scrolls, empty, gauge};
 use crate::island::Island;
 use crate::limits;
 

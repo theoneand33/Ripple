@@ -5,7 +5,7 @@ use std::cell::RefCell;
 use rune::{Color, Cursor, Cx, Drag, El, FileDialogOptions, FileDialogResult, Phase, ScrollSpec, Shortcut, ShortcutError, TextEdit, Tx, col, el, icon, row, text};
 use rune_kit::{Button, ButtonVariant, IconButton, Kit, RadioGroup, RadioItem, Select, ShortcutRecorder, ShortcutRecorderState, Switch, TextArea, TextInput};
 
-use crate::config::{Config, POSITIONS, PROVIDERS, QuickApp, SEARCH_ENGINES, Store, T3Device, THEMES, Tab, Workflow};
+use crate::config::{Config, FullscreenRule, Position, WeatherUnit, PROVIDERS, QuickApp, SEARCH_ENGINES, Store, T3Device, THEMES, Tab, Workflow};
 use crate::icons;
 use crate::island::Host;
 use crate::platform::Screen;
@@ -143,12 +143,18 @@ impl Settings {
     }
 
     fn save(&mut self, f: impl FnOnce(&mut Config)) {
-        self.cfg = self.store.update(f);
+        self.store.update(f);
+        self.refresh();
+        if let Some(island) = &self.island { island.update(|s, _| s.reload()) }
+    }
+
+    /// Shows the saved settings, the Island's own changes too (the sun's theme, a found device).
+    pub fn refresh(&mut self) {
+        self.cfg = self.store.get();
         // A theme rewrites both colours; the fields show what it set unless one is being typed in.
         for (edit, value) in [(&mut self.bg_color, &self.cfg.bg_color), (&mut self.text_color, &self.cfg.text_color)] {
             if !edit.focused && edit.text != *value { edit.replace_text(value) }
         }
-        if let Some(island) = &self.island { island.update(|s, _| s.reload()) }
     }
 
     fn reset_app_names(&mut self) {
@@ -179,11 +185,9 @@ impl Settings {
         self.workflow_urls.clear();
     }
 
-    /// Registers the new shortcut before letting the old one go, so a refused chord keeps the old.
+    /// A refused chord keeps the old one, and isn't saved.
     fn set_hotkey(&mut self, next: Option<&Shortcut>, _: &mut Tx) -> Result<(), ShortcutError> {
-        let island = self.island.clone().ok_or(ShortcutError::NotRunning)?;
-        let id = next.map(|k| island.register_hotkey(k.clone())).transpose()?;
-        island.update(move |s, _| if let Some(old) = std::mem::replace(&mut s.hotkey, id) && let Some(me) = &s.me { me.unregister_hotkey(old) });
+        self.island.as_ref().ok_or(ShortcutError::NotRunning)?.set_hotkey(next.cloned())?;
         let chord = next.map_or(String::new(), Shortcut::to_string);
         self.save(|c| c.hotkey = chord);
         Ok(())
@@ -241,7 +245,7 @@ impl Settings {
 
     fn add_t3_device(&mut self) {
         if !self.t3_addable() { return }
-        let device = T3Device { name: self.t3_name.text.trim().into(), url: self.t3_url.text.trim().into(), token: self.t3_token.text.trim().into() };
+        let device = T3Device { name: self.t3_name.text.trim().into(), url: self.t3_url.text.trim().into(), token: self.t3_token.text.trim().into(), detected: false };
         self.save(|c| c.t3_devices.push(device));
         self.t3_name.clear();
         self.t3_url.clear();
@@ -293,6 +297,20 @@ fn choice(s: &Settings, k: &Kit, layer: &mut Vec<El>, key: &'static str, label: 
         .on_choose(move |s: &mut Settings, label: &str, _: &mut Tx| {
             s.open = None;
             if let Some(&(value, _)) = options.iter().find(|o| o.1 == label) { s.save(|c| set(c, value)) }
+        })
+        .build(k, layer)
+}
+
+/// A `choice` over a fixed set of values.
+fn pick<T: Copy + PartialEq + 'static>(s: &Settings, k: &Kit, layer: &mut Vec<El>, key: &'static str, label: &str, all: &[T], current: T, name: fn(T) -> &'static str, set: fn(&mut Config, T)) -> El {
+    let labels: Vec<&str> = all.iter().map(|v| name(*v)).collect();
+    let all = all.to_vec();
+    Select::new(key, &labels).label(label).width(190.0)
+        .current(Some(name(current)))
+        .open(s.open == Some(key)).on_toggle(toggle_open(key)).on_close(close)
+        .on_choose(move |s: &mut Settings, label: &str, _: &mut Tx| {
+            s.open = None;
+            if let Some(&value) = all.iter().find(|v| name(**v) == label) { s.save(|c| set(c, value)) }
         })
         .build(k, layer)
 }
@@ -413,52 +431,73 @@ fn tab_pages(cfg: &Config) -> impl Iterator<Item = Page> + '_ {
     cfg.tab_order.iter().filter(|&&t| has_panel(t)).map(|&t| Page::Tab(t))
 }
 
-/// Whether a tab has its own settings page: one `panel` has sections for.
-fn has_panel(tab: Tab) -> bool {
+/// A part of a tab's settings page; tabs that share a feature share its section.
+#[derive(Clone, Copy)]
+enum Section { Search, Weather, Water, Music, Contributions, QuickApps, Workflows, Ai, T3, Limits, Nextcloud(NextcloudList), EventAlerts, CalendarLinks, Sure, Discord }
+
+/// The list a Nextcloud section names besides the account: the one its tab syncs with.
+#[derive(Clone, Copy)]
+enum NextcloudList { Notes, Tasks, Calendar, Shelf }
+
+/// A tab's settings page, top to bottom; empty for a tab without one.
+fn sections(tab: Tab) -> &'static [Section] {
     match tab {
-        Tab::Search | Tab::Workflows | Tab::Overview | Tab::Weather | Tab::Assistant | Tab::T3 | Tab::Limits | Tab::Tasks | Tab::Notes | Tab::Calendar | Tab::Shelf | Tab::Stocks | Tab::Discord => true,
-        Tab::Clipboard | Tab::Stremflix | Tab::System | Tab::Plugins | Tab::Pomodoro | Tab::Calculator | Tab::Habits | Tab::Clocks | Tab::Colors | Tab::Agents | Tab::Controls => false,
+        Tab::Search => &[Section::Search],
+        // The Overview's weather and the Weather tab both read these.
+        Tab::Overview => &[Section::Weather, Section::Water, Section::Music, Section::Contributions],
+        Tab::Weather => &[Section::Weather],
+        Tab::Workflows => &[Section::QuickApps, Section::Workflows],
+        Tab::Assistant => &[Section::Ai],
+        Tab::T3 => &[Section::T3],
+        Tab::Limits => &[Section::Limits],
+        Tab::Notes => &[Section::Nextcloud(NextcloudList::Notes)],
+        Tab::Tasks => &[Section::Nextcloud(NextcloudList::Tasks)],
+        Tab::Calendar => &[Section::Nextcloud(NextcloudList::Calendar), Section::EventAlerts, Section::CalendarLinks],
+        Tab::Shelf => &[Section::Nextcloud(NextcloudList::Shelf)],
+        Tab::Stocks => &[Section::Sure],
+        Tab::Discord => &[Section::Discord],
+        Tab::Clipboard | Tab::Stremflix | Tab::System | Tab::Plugins | Tab::Pomodoro | Tab::Calculator | Tab::Habits | Tab::Clocks | Tab::Colors | Tab::Agents | Tab::Controls => &[],
     }
 }
 
+fn has_panel(tab: Tab) -> bool { !sections(tab).is_empty() }
+
 fn panel(s: &Settings, k: &Kit, layer: &mut Vec<El>, tab: Tab) -> Vec<El> {
+    sections(tab).iter().map(|part| section_of(s, k, layer, *part)).collect()
+}
+
+fn section_of(s: &Settings, k: &Kit, layer: &mut Vec<El>, part: Section) -> El {
     let cfg = &s.cfg;
     let fg = cfg.text().alpha(1.0);
-    let mut sections = Vec::new();
-    match tab {
-        Tab::Search => {
+    match part {
+        Section::Search => {
             let engines: Vec<(&str, &str)> = SEARCH_ENGINES.iter().map(|e| (e.0, e.1)).collect();
-            sections.push(section(s, "search", "Search", vec![
+            section(s, "search", "Search", vec![
                 setting(s, "Search engine", choice(s, k, layer, "engine", "Search engine", &engines, &cfg.search_engine, |c, v| c.search_engine = v.into())),
-            ]));
+            ])
         }
-        // The Overview's weather and the Weather tab both read these.
-        Tab::Overview | Tab::Weather => {
-            sections.push(section(s, "weather", "Weather", vec![
-                setting(s, "Location", TextInput::new(&s.location).label("Location").placeholder("City, ST, Country").width(Some(200.0))
-                    .binds(|s| &mut s.location, |c, v| c.location = v.into()).build(k)),
-                setting(s, "Unit", choice(s, k, layer, "unit", "Unit", &[("f", "Fahrenheit (°F)"), ("c", "Celsius (°C)")], &cfg.weather_unit, |c, v| c.weather_unit = v.into())),
-                toggle(s, k, "Alert before rain or snow", cfg.rain_alerts, |c| c.rain_alerts = !c.rain_alerts),
-            ]));
-            if tab == Tab::Overview {
-                sections.push(section(s, "water", "Water", vec![
-                    setting(s, &format!("Daily goal ({} glasses)", cfg.water_goal), slider(s, "water-goal", "Daily goal", (1.0, 20.0, 1.0), |c| c.water_goal as f32, |c, v| c.water_goal = v as u32)).key("water-goal-row"),
-                    toggle(s, k, "Hourly reminders", cfg.water_reminders, |c| c.water_reminders = !c.water_reminders),
-                    setting(s, &format!("From {}:00", cfg.water_from), slider(s, "water-from", "Reminders from", (0.0, 24.0, 1.0), |c| c.water_from as f32, |c, v| c.water_from = v as u32)).key("water-from-row"),
-                    setting(s, &format!("Until {}:00", cfg.water_to), slider(s, "water-to", "Reminders until", (0.0, 24.0, 1.0), |c| c.water_to as f32, |c, v| c.water_to = v as u32)).key("water-to-row"),
-                ]));
-                sections.push(section(s, "music", "Music", vec![
-                    toggle(s, k, "Synced lyrics (from LRCLIB)", cfg.lyrics, |c| c.lyrics = !c.lyrics),
-                ]));
-                sections.push(section(s, "contributions", "Contribution graphs", vec![
-                    setting(s, "GitHub user", TextInput::new(&s.github_user).label("GitHub user").placeholder("octocat").width(Some(200.0))
-                        .binds(|s| &mut s.github_user, |c, v| c.github_user = v.trim().into()).build(k)),
-                    setting(s, "LeetCode user", TextInput::new(&s.leetcode_user).label("LeetCode user").placeholder("User name").width(Some(200.0))
-                        .binds(|s| &mut s.leetcode_user, |c, v| c.leetcode_user = v.trim().into()).build(k)),
-                ]));
-            }
-        }
-        Tab::Workflows => {
+        Section::Weather => section(s, "weather", "Weather", vec![
+            setting(s, "Location", TextInput::new(&s.location).label("Location").placeholder("City, ST, Country").width(Some(200.0))
+                .binds(|s| &mut s.location, |c, v| c.location = v.into()).build(k)),
+            setting(s, "Unit", pick(s, k, layer, "unit", "Unit", &WeatherUnit::ALL, cfg.weather_unit, WeatherUnit::label, |c, v| c.weather_unit = v)),
+            toggle(s, k, "Alert before rain or snow", cfg.rain_alerts, |c| c.rain_alerts = !c.rain_alerts),
+        ]),
+        Section::Water => section(s, "water", "Water", vec![
+            setting(s, &format!("Daily goal ({} glasses)", cfg.water_goal), slider(s, "water-goal", "Daily goal", (1.0, 20.0, 1.0), |c| c.water_goal as f32, |c, v| c.water_goal = v as u32)).key("water-goal-row"),
+            toggle(s, k, "Hourly reminders", cfg.water_reminders, |c| c.water_reminders = !c.water_reminders),
+            setting(s, &format!("From {}:00", cfg.water_from), slider(s, "water-from", "Reminders from", (0.0, 24.0, 1.0), |c| c.water_from as f32, |c, v| c.water_from = v as u32)).key("water-from-row"),
+            setting(s, &format!("Until {}:00", cfg.water_to), slider(s, "water-to", "Reminders until", (0.0, 24.0, 1.0), |c| c.water_to as f32, |c, v| c.water_to = v as u32)).key("water-to-row"),
+        ]),
+        Section::Music => section(s, "music", "Music", vec![
+            toggle(s, k, "Synced lyrics (from LRCLIB)", cfg.lyrics, |c| c.lyrics = !c.lyrics),
+        ]),
+        Section::Contributions => section(s, "contributions", "Contribution graphs", vec![
+            setting(s, "GitHub user", TextInput::new(&s.github_user).label("GitHub user").placeholder("octocat").width(Some(200.0))
+                .binds(|s| &mut s.github_user, |c, v| c.github_user = v.trim().into()).build(k)),
+            setting(s, "LeetCode user", TextInput::new(&s.leetcode_user).label("LeetCode user").placeholder("User name").width(Some(200.0))
+                .binds(|s| &mut s.leetcode_user, |c, v| c.leetcode_user = v.trim().into()).build(k)),
+        ]),
+        Section::QuickApps => {
             let mut apps = vec![
                 row().key("add-app").w_full().gap(8.0).center_y()
                     .child(TextInput::new(&s.new_app).label("Add app").placeholder("Add app, like Apple Music")
@@ -494,7 +533,9 @@ fn panel(s: &Settings, k: &Kit, layer: &mut Vec<El>, tab: Tab) -> Vec<El> {
                             .on_press(move |s: &mut Settings| { s.save(|c| { if i < c.quick_apps.len() { c.quick_apps.remove(i); } }); s.reset_app_names() }).build(k)),
                 );
             }
-            sections.push(section(s, "quick-apps", "Quick apps", apps));
+            section(s, "quick-apps", "Quick apps", apps)
+        }
+        Section::Workflows => {
             let mut workflows = vec![
                 text("Workflow name").font(cfg.font(14.0, 500.0)).color(fg.alpha(0.8)),
                 TextInput::new(&s.workflow_name).width(None).label("Workflow name").placeholder("e.g. Work Tools").on_edit(|s: &mut Settings| &mut s.workflow_name).build(k),
@@ -513,57 +554,53 @@ fn panel(s: &Settings, k: &Kit, layer: &mut Vec<El>, tab: Tab) -> Vec<El> {
                             .on_press(move |s: &mut Settings| s.save(|c| { if i < c.workflows.len() { c.workflows.remove(i); } })).build(k)),
                 );
             }
-            sections.push(section(s, "workflows", "Workflows", workflows));
+            section(s, "workflows", "Workflows", workflows)
         }
-        Tab::Assistant => {
-            sections.push(section(s, "integrations", "Integrations", vec![
-                setting(s, "AI provider", {
-                    let labels: Vec<&str> = PROVIDERS.iter().map(|p| p.label).collect();
-                    Select::new("provider", &labels).label("AI provider").width(190.0)
-                        .current(Some(cfg.provider().label))
-                        .open(s.open == Some("provider")).on_toggle(toggle_open("provider")).on_close(close)
-                        .on_choose(move |s: &mut Settings, label: &str, _: &mut Tx| {
-                            s.open = None;
-                            let Some(provider) = PROVIDERS.iter().find(|p| p.label == label) else { return };
-                            s.save(|c| { c.ai_provider = provider.id.into(); c.ai_model = provider.model.into(); c.ai_url.clear() });
-                            s.ai_model.replace_text(provider.model);
-                            s.ai_url.clear();
-                        })
-                        .build(k, layer)
-                }),
-                stacked(s, "AI model", TextInput::new(&s.ai_model).width(None).label("AI model").placeholder(cfg.provider().model)
-                    .binds(|s| &mut s.ai_model, |c, v| c.ai_model = v.into()).build(k)),
-                stacked(s, "Base URL", TextInput::new(&s.ai_url).width(None).label("Base URL").placeholder(cfg.provider().url)
-                    .binds(|s| &mut s.ai_url, |c, v| c.ai_url = v.trim().into()).build(k)),
-                stacked(s, "API key", TextInput::new(&s.api_key).width(None).label("API key").secure().placeholder(match cfg.provider().key_hint { "" => "Not needed", hint => hint })
-                    .binds(|s| &mut s.api_key, |c, v| c.api_key = v.into()).build(k)),
-            ]));
-        }
-        Tab::T3 => {
+        Section::Ai => section(s, "integrations", "Integrations", vec![
+            setting(s, "AI provider", {
+                let labels: Vec<&str> = PROVIDERS.iter().map(|p| p.label).collect();
+                Select::new("provider", &labels).label("AI provider").width(190.0)
+                    .current(Some(cfg.provider().label))
+                    .open(s.open == Some("provider")).on_toggle(toggle_open("provider")).on_close(close)
+                    .on_choose(move |s: &mut Settings, label: &str, _: &mut Tx| {
+                        s.open = None;
+                        let Some(provider) = PROVIDERS.iter().find(|p| p.label == label) else { return };
+                        s.save(|c| { c.ai_provider = provider.id.into(); c.ai_model = provider.model.into(); c.ai_url.clear() });
+                        s.ai_model.replace_text(provider.model);
+                        s.ai_url.clear();
+                    })
+                    .build(k, layer)
+            }),
+            stacked(s, "AI model", TextInput::new(&s.ai_model).width(None).label("AI model").placeholder(cfg.provider().model)
+                .binds(|s| &mut s.ai_model, |c, v| c.ai_model = v.into()).build(k)),
+            stacked(s, "Base URL", TextInput::new(&s.ai_url).width(None).label("Base URL").placeholder(cfg.provider().url)
+                .binds(|s| &mut s.ai_url, |c, v| c.ai_url = v.trim().into()).build(k)),
+            stacked(s, "API key", TextInput::new(&s.api_key).width(None).label("API key").secure().placeholder(match cfg.provider().key_hint { "" => "Not needed", hint => hint })
+                .binds(|s| &mut s.api_key, |c, v| c.api_key = v.into()).build(k)),
+        ]),
+        Section::T3 => {
             let mut t3 = vec![text("T3 Code on this computer is added by itself; removing it here doesn't end its session, so revoke it in T3's Sharing & access. For another device, run `t3 auth session issue --token-only` there.").font(cfg.font(12.0, 400.0)).color(fg.alpha(0.6))];
             for (i, d) in cfg.t3_devices.iter().enumerate() {
                 t3.push(setting(s, d.label(), IconButton::new(&icons::TRASH).label(format!("Remove {}", d.label()))
-                    .on_press(move |s: &mut Settings| s.save(|c| { if i < c.t3_devices.len() && c.t3_devices.remove(i).name == crate::t3::LOCAL_NAME { c.t3_detected = true } })).build(k)));
+                    .on_press(move |s: &mut Settings| s.save(|c| { if i < c.t3_devices.len() && c.t3_devices.remove(i).detected { c.t3_detected = true } })).build(k)));
             }
             t3.push(TextInput::new(&s.t3_name).width(None).label("Device name").placeholder("Name (e.g. Laptop)").on_edit(|s: &mut Settings| &mut s.t3_name).build(k));
             t3.push(TextInput::new(&s.t3_url).width(None).label("Device URL").placeholder("http://127.0.0.1:3773").on_edit(|s: &mut Settings| &mut s.t3_url).build(k));
             t3.push(TextInput::new(&s.t3_token).width(None).label("Bearer token").secure().placeholder("Bearer token").on_edit(|s: &mut Settings| &mut s.t3_token).on_submit(|s: &mut Settings, _| s.add_t3_device()).build(k));
             t3.push(row().child(Button::new("Add device").variant(ButtonVariant::Contrast).disabled(!s.t3_addable()).on_press(Settings::add_t3_device).build(k)));
-            sections.push(section(s, "t3", "T3 Code devices", t3));
+            section(s, "t3", "T3 Code devices", t3)
         }
-        Tab::Limits => {
-            sections.push(section(s, "limits", "Accounts", vec![
-                text("Each CLI's own sign-in is found by itself. Add more accounts here.").font(cfg.font(12.0, 400.0)).color(fg.alpha(0.6)),
-                text("More Claude Code or Codex config folders, one per line").font(cfg.font(14.0, 500.0)).color(fg.alpha(0.8)).mt(10.0),
-                TextArea::new(&s.agent_dirs).width(None).label("Claude Code or Codex config folders").placeholder("~/.claude-work").rows(3)
-                    .on_edit(|s: &mut Settings| &mut s.agent_dirs)
-                    .on_change(|s: &mut Settings, _| { let v = s.agent_dirs.text.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_string).collect(); s.save(|c| c.agent_dirs = v) }).build(k),
-                text("CLIProxyAPI auth folder").font(cfg.font(14.0, 500.0)).color(fg.alpha(0.8)).mt(10.0),
-                TextInput::new(&s.cliproxy_dir).width(None).label("CLIProxyAPI auth folder").placeholder("~/.cli-proxy-api")
-                    .binds(|s| &mut s.cliproxy_dir, |c, v| c.cliproxy_dir = v.trim().into()).build(k),
-            ]));
-        }
-        Tab::Tasks | Tab::Notes | Tab::Calendar | Tab::Shelf => {
+        Section::Limits => section(s, "limits", "Accounts", vec![
+            text("Each CLI's own sign-in is found by itself. Add more accounts here.").font(cfg.font(12.0, 400.0)).color(fg.alpha(0.6)),
+            text("More Claude Code or Codex config folders, one per line").font(cfg.font(14.0, 500.0)).color(fg.alpha(0.8)).mt(10.0),
+            TextArea::new(&s.agent_dirs).width(None).label("Claude Code or Codex config folders").placeholder("~/.claude-work").rows(3)
+                .on_edit(|s: &mut Settings| &mut s.agent_dirs)
+                .on_change(|s: &mut Settings, _| { let v = s.agent_dirs.text.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_string).collect(); s.save(|c| c.agent_dirs = v) }).build(k),
+            text("CLIProxyAPI auth folder").font(cfg.font(14.0, 500.0)).color(fg.alpha(0.8)).mt(10.0),
+            TextInput::new(&s.cliproxy_dir).width(None).label("CLIProxyAPI auth folder").placeholder("~/.cli-proxy-api")
+                .binds(|s| &mut s.cliproxy_dir, |c, v| c.cliproxy_dir = v.trim().into()).build(k),
+        ]),
+        Section::Nextcloud(list) => {
             // Labels name Nextcloud: a search lists these beside other pages' rows.
             let mut rows = vec![
                 text("Notes, Tasks, Calendar and the Shelf sync with this account. Make an app password in Nextcloud under Settings → Security.").font(cfg.font(12.0, 400.0)).color(fg.alpha(0.6)).wrap(),
@@ -574,63 +611,48 @@ fn panel(s: &Settings, k: &Kit, layer: &mut Vec<El>, tab: Tab) -> Vec<El> {
                 stacked(s, "Nextcloud app password", TextInput::new(&s.nc_password).width(None).label("Nextcloud app password").secure().placeholder(if cfg.nextcloud.password.is_empty() { "App password" } else { "Saved" })
                     .binds(|s| &mut s.nc_password, |c, v| c.nextcloud.password = v.into()).build(k)),
             ];
-            if tab == Tab::Tasks {
-                rows.push(stacked(s, "Nextcloud tasks list", TextInput::new(&s.nc_list).width(None).label("Nextcloud tasks list").placeholder("The first list with tasks")
-                    .binds(|s| &mut s.nc_list, |c, v| c.nextcloud.list = v.trim().into()).build(k)));
+            match list {
+                NextcloudList::Notes => {}
+                NextcloudList::Tasks => rows.push(stacked(s, "Nextcloud tasks list", TextInput::new(&s.nc_list).width(None).label("Nextcloud tasks list").placeholder("The first list with tasks")
+                    .binds(|s| &mut s.nc_list, |c, v| c.nextcloud.list = v.trim().into()).build(k))),
+                NextcloudList::Calendar => rows.push(stacked(s, "Nextcloud calendar", TextInput::new(&s.nc_calendar).width(None).label("Nextcloud calendar").placeholder("The first calendar with events")
+                    .binds(|s| &mut s.nc_calendar, |c, v| c.nextcloud.calendar = v.trim().into()).build(k))),
+                NextcloudList::Shelf => rows.push(stacked(s, "Nextcloud Shelf folder", TextInput::new(&s.nc_shelf).width(None).label("Nextcloud shelf folder").placeholder("Ripple Shelf")
+                    .binds(|s| &mut s.nc_shelf, |c, v| c.nextcloud.shelf_folder = v.trim().into()).build(k))),
             }
-            if tab == Tab::Calendar {
-                rows.push(stacked(s, "Nextcloud calendar", TextInput::new(&s.nc_calendar).width(None).label("Nextcloud calendar").placeholder("The first calendar with events")
-                    .binds(|s| &mut s.nc_calendar, |c, v| c.nextcloud.calendar = v.trim().into()).build(k)));
-            }
-            if tab == Tab::Shelf {
-                rows.push(stacked(s, "Nextcloud Shelf folder", TextInput::new(&s.nc_shelf).width(None).label("Nextcloud shelf folder").placeholder("Ripple Shelf")
-                    .binds(|s| &mut s.nc_shelf, |c, v| c.nextcloud.shelf_folder = v.trim().into()).build(k)));
-            }
-            sections.push(section(s, "nextcloud", "Nextcloud", rows));
-            if tab == Tab::Calendar {
-                sections.push(section(s, "event-alerts", "Alerts", vec![
-                    setting(s, &match cfg.event_alert_minutes { 0 => "Alert before events: off".to_string(), m => format!("Alert {m} min before events") },
-                        slider(s, "event-alert", "Minutes before an event its alert shows", (0.0, 60.0, 5.0), |c| c.event_alert_minutes as f32, |c, v| c.event_alert_minutes = v as u32)).key("event-alert-row"),
-                    text("A meeting link in an event's title adds a Join button to its alert.").font(cfg.font(12.0, 400.0)).color(fg.alpha(0.6)),
-                ]));
-            }
-
-            if tab == Tab::Calendar {
-                sections.push(section(s, "calendar-feeds", "Calendar links", vec![
-                    text("ICS links from Google Calendar (Secret address in iCal format), Outlook (Publish a calendar) or iCloud (Public Calendar), one per line. Their events show read-only.").font(cfg.font(12.0, 400.0)).color(fg.alpha(0.6)).wrap(),
-                    TextArea::new(&s.calendar_feeds).width(None).label("Calendar links").placeholder("https://calendar.google.com/calendar/ical/…/basic.ics").rows(3)
-                        .on_edit(|s: &mut Settings| &mut s.calendar_feeds)
-                        .on_change(|s: &mut Settings, _| { let v = s.calendar_feeds.text.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_string).collect(); s.save(|c| c.calendar_feeds = v) }).build(k),
-                ]));
-            }
+            section(s, "nextcloud", "Nextcloud", rows)
         }
-        Tab::Stocks => {
-            sections.push(section(s, "sure", "Sure", vec![
-                text("The portfolio comes from Sure's investment and crypto accounts. Make a Read Only key in Sure under Settings → API Keys.").font(cfg.font(12.0, 400.0)).color(fg.alpha(0.6)).wrap(),
-                stacked(s, "Sure server", TextInput::new(&s.sure_url).width(None).label("Sure server").placeholder("https://app.sure.am")
-                    .binds(|s| &mut s.sure_url, |c, v| c.sure_url = v.trim().into()).build(k)),
-                stacked(s, "Sure API key", TextInput::new(&s.sure_key).width(None).label("Sure API key").secure().placeholder(if cfg.sure_key.is_empty() { "API key" } else { "Saved" })
-                    .binds(|s| &mut s.sure_key, |c, v| c.sure_key = v.trim().into()).build(k)),
-                setting(s, "Portfolio currency", TextInput::new(&s.stocks_currency).label("Base currency").placeholder("USD").width(Some(120.0))
-                    .binds(|s| &mut s.stocks_currency, |c, v| c.stocks_currency = v.trim().to_uppercase()).build(k)),
-                text("Accounts in other currencies convert at Frankfurter's reference rates before the totals.").font(cfg.font(12.0, 400.0)).color(fg.alpha(0.6)).wrap(),
-            ]));
-        }
-        Tab::Discord => {
-            sections.push(section(s, "discord", "Discord app", vec![
-                text(&format!("Discord lets only an app's own testers read voice over RPC, so Ripple uses yours. In the Discord Developer Portal, make an application, add {} as an OAuth2 redirect, and paste its client ID and secret here. Discord asks once to approve it.", crate::discord::REDIRECT))
-                    .font(cfg.font(12.0, 400.0)).color(fg.alpha(0.6)).wrap(),
-                stacked(s, "Client ID", TextInput::new(&s.discord_id).width(None).label("Client ID").placeholder("123456789012345678")
-                    // Another app's token is no good: the next connection asks again.
-                    .binds(|s| &mut s.discord_id, |c, v| { let v = v.trim(); if c.discord_id != v { c.discord_token = None } c.discord_id = v.into() }).build(k)),
-                stacked(s, "Client secret", TextInput::new(&s.discord_secret).width(None).label("Client secret").secure().placeholder(if cfg.discord_secret.is_empty() { "Client secret" } else { "Saved" })
-                    .binds(|s| &mut s.discord_secret, |c, v| c.discord_secret = v.trim().into()).build(k)),
-            ]));
-        }
-        // `has_panel` lists the tabs without settings.
-        _ => {}
+        Section::EventAlerts => section(s, "event-alerts", "Alerts", vec![
+            setting(s, &match cfg.event_alert_minutes { 0 => "Alert before events: off".to_string(), m => format!("Alert {m} min before events") },
+                slider(s, "event-alert", "Minutes before an event its alert shows", (0.0, 60.0, 5.0), |c| c.event_alert_minutes as f32, |c, v| c.event_alert_minutes = v as u32)).key("event-alert-row"),
+            text("A meeting link in an event's title adds a Join button to its alert.").font(cfg.font(12.0, 400.0)).color(fg.alpha(0.6)),
+        ]),
+        Section::CalendarLinks => section(s, "calendar-feeds", "Calendar links", vec![
+            text("ICS links from Google Calendar (Secret address in iCal format), Outlook (Publish a calendar) or iCloud (Public Calendar), one per line. Their events show read-only.").font(cfg.font(12.0, 400.0)).color(fg.alpha(0.6)).wrap(),
+            TextArea::new(&s.calendar_feeds).width(None).label("Calendar links").placeholder("https://calendar.google.com/calendar/ical/…/basic.ics").rows(3)
+                .on_edit(|s: &mut Settings| &mut s.calendar_feeds)
+                .on_change(|s: &mut Settings, _| { let v = s.calendar_feeds.text.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_string).collect(); s.save(|c| c.calendar_feeds = v) }).build(k),
+        ]),
+        Section::Sure => section(s, "sure", "Sure", vec![
+            text("The portfolio comes from Sure's investment and crypto accounts. Make a Read Only key in Sure under Settings → API Keys.").font(cfg.font(12.0, 400.0)).color(fg.alpha(0.6)).wrap(),
+            stacked(s, "Sure server", TextInput::new(&s.sure_url).width(None).label("Sure server").placeholder("https://app.sure.am")
+                .binds(|s| &mut s.sure_url, |c, v| c.sure_url = v.trim().into()).build(k)),
+            stacked(s, "Sure API key", TextInput::new(&s.sure_key).width(None).label("Sure API key").secure().placeholder(if cfg.sure_key.is_empty() { "API key" } else { "Saved" })
+                .binds(|s| &mut s.sure_key, |c, v| c.sure_key = v.trim().into()).build(k)),
+            setting(s, "Portfolio currency", TextInput::new(&s.stocks_currency).label("Base currency").placeholder("USD").width(Some(120.0))
+                .binds(|s| &mut s.stocks_currency, |c, v| c.stocks_currency = v.trim().to_uppercase()).build(k)),
+            text("Accounts in other currencies convert at Frankfurter's reference rates before the totals.").font(cfg.font(12.0, 400.0)).color(fg.alpha(0.6)).wrap(),
+        ]),
+        Section::Discord => section(s, "discord", "Discord app", vec![
+            text(&format!("Discord lets only an app's own testers read voice over RPC, so Ripple uses yours. In the Discord Developer Portal, make an application, add {} as an OAuth2 redirect, and paste its client ID and secret here. Discord asks once to approve it.", crate::discord::REDIRECT))
+                .font(cfg.font(12.0, 400.0)).color(fg.alpha(0.6)).wrap(),
+            stacked(s, "Client ID", TextInput::new(&s.discord_id).width(None).label("Client ID").placeholder("123456789012345678")
+                // Another app's token is no good: the next connection asks again.
+                .binds(|s| &mut s.discord_id, |c, v| { let v = v.trim(); if c.discord_id != v { c.discord_token = None } c.discord_id = v.into() }).build(k)),
+            stacked(s, "Client secret", TextInput::new(&s.discord_secret).width(None).label("Client secret").secure().placeholder(if cfg.discord_secret.is_empty() { "Client secret" } else { "Saved" })
+                .binds(|s| &mut s.discord_secret, |c, v| c.discord_secret = v.trim().into()).build(k)),
+        ]),
     }
-    sections
 }
 
 fn page(s: &Settings, k: &Kit, layer: &mut Vec<El>, page: Page) -> Vec<El> {
@@ -641,11 +663,7 @@ fn page(s: &Settings, k: &Kit, layer: &mut Vec<El>, page: Page) -> Vec<El> {
         Page::Tab(tab) => return panel(s, k, layer, tab),
         Page::General => {
             let mut general = vec![setting(s, "Clock format", choice(s, k, layer, "clock", "Clock format", &[("12", "12-hour"), ("24", "24-hour")], if cfg.hour12 { "12" } else { "24" }, |c, v| c.hour12 = v == "12"))];
-            general.push(setting(s, "Launch at login", switch(k, "Launch at login", cfg.auto_launch, |c| {
-                c.auto_launch = !c.auto_launch;
-                let on = c.auto_launch;
-                std::thread::spawn(move || crate::system::set_auto_launch(on));
-            }).a11y_hidden()));
+            general.push(setting(s, "Launch at login", switch(k, "Launch at login", cfg.auto_launch, |c| c.auto_launch = !c.auto_launch).a11y_hidden()));
             if !s.screens.is_empty() {
                 let current = if s.screens.contains(&cfg.display) { cfg.display.clone() } else { s.screens[0].clone() };
                 general.push(setting(s, "Display", Select::new("display", &s.screens).label("Display").width(190.0).current(Some(&current))
@@ -740,12 +758,12 @@ fn page(s: &Settings, k: &Kit, layer: &mut Vec<El>, page: Page) -> Vec<El> {
                 // Auto size only sizes around a physical notch.
                 if !cfg.notch_mini { style.insert(2, toggle(s, k, "Auto size", cfg.notch_auto_size, |c| c.notch_auto_size = !c.notch_auto_size)) }
             }
-            let position = POSITIONS.iter()
-                .fold(RadioGroup::new().label("Position"), |group, &(value, label)| {
-                    group.item(RadioItem::new(label, cfg.position_mode == value).on_select(move |s: &mut Settings| s.save(|c| c.position_mode = value.into())))
+            let position = Position::ALL.into_iter()
+                .fold(RadioGroup::new().label("Position"), |group, value| {
+                    group.item(RadioItem::new(value.label(), cfg.position_mode == value).on_select(move |s: &mut Settings| s.save(|c| c.position_mode = value)))
                 });
             style.push(col().key("position").w_full().gap(8.0).padding(14.0).radius(16.0).fill(fg.alpha(0.03)).border(1.0, fg.alpha(0.08)).child(position.build(k)));
-            if cfg.position_mode == "free" {
+            if cfg.position_mode == Position::Free {
                 style.push(setting(s, &format!("Position X ({:.1}%)", cfg.island_x), slider(s, "island-x", "Position X", (0.0, 100.0, 0.1), |c| c.island_x, |c, v| c.island_x = v)).key("island-x-row"));
                 style.push(setting(s, &format!("Position Y ({}px)", cfg.island_y.round()), slider(s, "island-y", "Position Y", (0.0, 500.0, 1.0), |c| c.island_y, |c, v| c.island_y = v)).key("island-y-row"));
             }
@@ -754,7 +772,7 @@ fn page(s: &Settings, k: &Kit, layer: &mut Vec<El>, page: Page) -> Vec<El> {
             style.push(setting(s, &format!("Opacity, open ({}%)", cfg.large_opacity.round()), slider(s, "large-opacity", "Opacity when open", (10.0, 100.0, 5.0), |c| c.large_opacity, |c, v| c.large_opacity = v)).key("large-opacity-row"));
             style.push(toggle(s, k, "Island border", cfg.island_border, |c| c.island_border = !c.island_border));
             // Only the Wayland layer-shell overlay can be pushed below a panel.
-            if matches!(s.island, Some(Host::Overlay(..))) {
+            if s.island.as_ref().is_some_and(Host::is_overlay) {
                 style.push(toggle(s, k, "Overlap panels", cfg.overlap_panels, |c| c.overlap_panels = !c.overlap_panels));
             }
             style.push(toggle(s, k, "Hide when inactive", cfg.hide_inactive, |c| c.hide_inactive = !c.hide_inactive));
@@ -778,14 +796,13 @@ fn page(s: &Settings, k: &Kit, layer: &mut Vec<El>, page: Page) -> Vec<El> {
                 toggle(s, k, "Low battery alerts", cfg.battery_alerts, |c| c.battery_alerts = !c.battery_alerts),
                 toggle(s, k, "Standby mode", cfg.standby, |c| c.standby = !c.standby),
                 toggle(s, k, "Large standby mode", cfg.large_standby, |c| c.large_standby = !c.large_standby),
-                setting(s, "When an app is full screen", choice(s, k, layer, "fullscreen", "When an app is full screen",
-                    &[("none", "No change"), ("standby", "Standby mode"), ("hidden", "Hidden mode"), ("still", "Standby mode off")],
-                    &cfg.fullscreen, |c, v| c.fullscreen = v.into())),
+                setting(s, "When an app is full screen", pick(s, k, layer, "fullscreen", "When an app is full screen",
+                    &FullscreenRule::ALL, cfg.fullscreen, FullscreenRule::label, |c, v| c.fullscreen = v)),
                 toggle(s, k, "Show info when idle", cfg.show_info_idle, |c| c.show_info_idle = !c.show_info_idle),
             ]));
             let hour = |h: u32| if cfg.hour12 { format!("{}{}", (h + 11) % 12 + 1, if h % 24 < 12 { " AM" } else { " PM" }) } else { format!("{:02}:00", h % 24) };
             let mut quiet = vec![
-                text("Water, break, rain, event and agent alerts wait until it ends; downloads don't show, and a script's alert waits up to 5 minutes. Low battery still shows.").font(cfg.font(12.0, 400.0)).color(fg.alpha(0.6)).wrap(),
+                text("Water, break, rain, task, event, agent and script alerts wait until it ends; downloads don't show. Low battery still shows.").font(cfg.font(12.0, 400.0)).color(fg.alpha(0.6)).wrap(),
                 toggle(s, k, "Quiet hours", cfg.quiet_hours, |c| c.quiet_hours = !c.quiet_hours),
             ];
             if cfg.quiet_hours {

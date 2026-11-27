@@ -8,7 +8,7 @@ use super::{Scrolls, accent, card, empty, pill, ring, tool};
 use crate::config::{Tab, Tile, Widget};
 use crate::icons;
 use crate::island::{Island, SPRING, control, cover, estimate_width, marquee, visualizer};
-use crate::ics::{event_day, leading_time};
+use crate::ics::leading_time;
 use crate::net::Graph;
 use crate::task::Task;
 use crate::system::MediaCommand;
@@ -509,7 +509,7 @@ const LINE: f32 = 21.0;
 
 /// Today's events.
 fn today_events(s: &Island) -> Vec<&str> {
-    s.cfg.events.iter().filter_map(|e| event_day(&e.text).filter(|(d, _)| *d == s.today).map(|(_, t)| t)).collect()
+    s.events_on(s.today).into_iter().map(|e| e.1).collect()
 }
 
 /// The event lines a tall Today tile holds, between its title and its tasks line.
@@ -618,7 +618,7 @@ fn graph(s: &Island, key: &str, name: &str, user: &str, data: Option<&Result<Gra
         Some(Ok(days)) => days,
     };
     let active: Vec<i64> = days.iter().map(|d| d.0).collect();
-    let streak = super::habits::streak(&active, today);
+    let streak = crate::date::streak(&active, today);
     let flame = if streak > 0 { accent::orange() } else { fg.alpha(0.35 * fg.a) };
     let head = head.child(row().key("streak").role("img").label(format!("{streak} day streak")).gap(3.0).center_y()
         .child(icon(&icons::FLAME, 13.0).color(flame).a11y_hidden())
@@ -716,8 +716,7 @@ fn quote(s: &Island, h: f32) -> El {
 /// Today's timed events and the tasks due today, as (minutes since midnight, title, a task?),
 /// in time order. A task due without a time counts at 9:00, as its reminder does.
 fn timeline(s: &Island) -> Vec<(u32, String, bool)> {
-    let events = s.cfg.events.iter().filter_map(|e| {
-        let (_, title) = event_day(&e.text).filter(|(d, _)| *d == s.today)?;
+    let events = today_events(s).into_iter().filter_map(|title| {
         let (Some((h, m)), rest) = leading_time(title) else { return None };
         Some((h * 60 + m, rest.to_string(), false))
     });
@@ -866,6 +865,9 @@ mod tests {
         let mut s = Island::new(Store::memory(cfg), Vec::new());
         s.today = (2026, 1, 1);
         assert_eq!(timeline(&s), [(540, "Plan".into(), true), (780, "Lunch".into(), false), (1050, "Ship".into(), true)]);
+        s.calendar.feed_events = vec!["2026-01-01 08:00 Standup".into()];
+        assert_eq!(today_events(&s), ["08:00 Standup", "13:00 Lunch", "All day"], "a link's events too, as the Calendar shows them");
+        assert_eq!(timeline(&s)[0], (480, "Standup".into(), false));
     }
 
     #[test]

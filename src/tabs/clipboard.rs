@@ -69,8 +69,8 @@ pub const TOOLS: [(&str, TextTool); 10] = [
     ("Base64", |t| { use base64::Engine; Ok(base64::engine::general_purpose::STANDARD.encode(t)) }),
     ("From Base64", |t| from_base64(t.trim(), false)),
     ("JSON", pretty_json),
-    ("URL encode", |t| Ok(crate::net::percent_encode(t))),
-    ("URL decode", |t| String::from_utf8(crate::net::percent_decode_bytes(&t.replace('+', " "))).map_err(|_| "it doesn't decode to UTF-8 text".into())),
+    ("URL encode", |t| Ok(crate::url::percent_encode(t))),
+    ("URL decode", |t| String::from_utf8(crate::url::percent_decode_bytes(&t.replace('+', " "))).map_err(|_| "it doesn't decode to UTF-8 text".into())),
     ("JWT", jwt),
     ("Unix time", unix_time),
 ];

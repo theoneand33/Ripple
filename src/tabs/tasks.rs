@@ -9,6 +9,7 @@ use rune::time::LocalTime;
 use rune::{El, Transition, Tx, col, el, row, text};
 
 use super::{Scrolls, accent, button, checkbox, chip_button, empty, field, tool};
+use crate::reminders::{Reminder, Source};
 use crate::config::Item;
 use crate::date::{add_days, format_date};
 use crate::task::{Date, Every, Task, is_bangs, now_key};
@@ -150,13 +151,9 @@ fn add_task(s: &mut Island, _: &mut Tx) {
     if d.every.is_some() { task.every = d.every }
     if task.title.is_empty() { return }
     let text = task.to_string();
-    match s.tasks.draft.editing {
-        // Gone since the edit began (done elsewhere, removed by a sync): saved as a new task, not lost.
-        Some(key) => s.save(|c| match c.tasks.iter_mut().find(|t| t.key == key) { Some(t) => t.text = text, None => c.tasks.push(Item::new(text)) }),
-        None => s.save(|c| c.tasks.push(Item::new(text))),
-    }
+    let editing = s.tasks.draft.editing;
     reset_draft(s);
-    s.nextcloud_sync(Kind::Tasks);
+    s.save_item(Kind::Tasks, editing, text);
 }
 
 /// As the tab opens: an edit left open is dropped, and the list syncs.
@@ -243,21 +240,28 @@ fn due_reminders(tasks: &[Item], reminded: &[String], now: &str, today: Date) ->
 
 impl Island {
     /// Once a minute: a reminder for the tasks that fell due and haven't had one, including those
-    /// that fell due while Ripple wasn't running. Several at once share one reminder.
-    pub fn task_reminders(&mut self, now: f64) {
-        if !self.can_remind() { return }
+    /// that fell due while Ripple wasn't running.
+    pub fn task_reminders(&mut self) {
         let mark = now_key();
         if std::mem::replace(&mut self.tasks.mark, mark.clone()) == mark { return }
-        let due = due_reminders(&self.cfg.tasks, &self.cfg.reminded_tasks, &mark, self.today);
-        if due.is_empty() { return }
-        let title = if due.len() == 1 { due[0].1.clone() } else { format!("{} tasks due", due.len()) };
+        for (id, title) in due_reminders(&self.cfg.tasks, &self.cfg.reminded_tasks, &mark, self.today) {
+            self.offer(Reminder { source: Source::Task, id, title, link: None })
+        }
+    }
+
+    /// Records the task reminders `ids` as shown, so none comes again, even after a restart.
+    pub fn tasks_reminded(&mut self, ids: Vec<String>) {
         self.save(|c| {
             // Ids of tasks gone or moved since are dropped.
             let live: Vec<String> = c.tasks.iter().map(|i| format!("{}@", i.key)).collect();
             c.reminded_tasks.retain(|id| live.iter().any(|k| id.starts_with(k)));
-            c.reminded_tasks.extend(due.into_iter().map(|d| d.0));
+            c.reminded_tasks.extend(ids);
         });
-        self.remind(title, now);
+    }
+
+    /// Whether the task a reminder `id` names is still due: not done, moved or gone since.
+    pub fn task_due(&self, id: &str) -> bool {
+        due_reminders(&self.cfg.tasks, &[], &now_key(), self.today).iter().any(|d| d.0 == id)
     }
 }
 

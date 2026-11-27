@@ -11,12 +11,13 @@ use rune::{
     Phase, Shadow, Shortcut, ShortcutError, ShortcutId, Spring, SurfaceFit, Transition, Tx, Vec2, Waker, WheelEvent, WindowHandle, col, el, icon, row, text,
 };
 
-use crate::config::{Config, Store, Tab};
+use crate::config::{Config, FullscreenRule, Position, Store, Tab};
 use crate::net::Weather;
 use crate::platform::{self, Passthrough, Screen};
 use crate::system::{self, MediaCommand, Track};
 use crate::tabs::{self, accent};
 use crate::icons;
+use crate::reminders::{Reminder, Reminders, Source};
 
 /// The Island's smallest window, in points: the largest Island at its hover scale, its tab dock, plus their shadows.
 /// The window spans the display's width when that's wider, so a widened Overview grows to it.
@@ -148,6 +149,9 @@ impl Host {
         match self { Host::Window(h) => h.is_visible(), Host::Overlay(_, _, shown) => shown.load(Ordering::Relaxed) }
     }
 
+    /// A Wayland layer-shell overlay, which can sit over or under panels.
+    pub fn is_overlay(&self) -> bool { matches!(self, Host::Overlay(..)) }
+
     /// Shows the Island without taking focus.
     pub fn show(&self) {
         match self { Host::Window(h) => h.show(), Host::Overlay(h, _, shown) => { shown.store(true, Ordering::Relaxed); h.show() } }
@@ -177,8 +181,16 @@ impl Host {
         match self { Host::Window(h) => h.activate(token.unwrap_or_default()), Host::Overlay(..) => { self.show(); self.allow_keys() } }
     }
 
-    /// Registers the system-wide shortcut that opens Large Mode (`Island::hotkey`).
-    pub fn register_hotkey(&self, shortcut: Shortcut) -> Result<ShortcutId, ShortcutError> {
+    /// Makes `next` the system-wide shortcut that opens Large Mode (`Island::hotkey`): registered
+    /// before the old one goes, so a refused chord keeps the old.
+    pub fn set_hotkey(&self, next: Option<Shortcut>) -> Result<(), ShortcutError> {
+        let id = next.map(|k| self.register_hotkey(k)).transpose()?;
+        let me = self.clone();
+        self.update(move |s, _| if let Some(old) = std::mem::replace(&mut s.hotkey, id) { me.unregister_hotkey(old) });
+        Ok(())
+    }
+
+    fn register_hotkey(&self, shortcut: Shortcut) -> Result<ShortcutId, ShortcutError> {
         match self {
             Host::Window(h) => h.register_shortcut(shortcut, Island::hotkey),
             Host::Overlay(h, app, _) => {
@@ -191,7 +203,7 @@ impl Host {
         }
     }
 
-    pub fn unregister_hotkey(&self, id: ShortcutId) {
+    fn unregister_hotkey(&self, id: ShortcutId) {
         let done = match self { Host::Window(h) => h.unregister_shortcut(id), Host::Overlay(_, app, _) => app.unregister_shortcut(id) };
         if let Err(e) = done { eprintln!("Ripple: {e}") }
     }
@@ -230,14 +242,14 @@ impl Placement {
         let (align, x, top, y) = if cfg.notch_mode {
             (0, dw * 0.5, true, 0.0)
         } else {
-            match cfg.position_mode.as_str() {
-                "top-left" => (-1, 15.0, true, 15.0),
-                "top-right" => (1, dw - 15.0, true, 15.0),
-                "bottom-left" => (-1, 15.0, false, dh - 45.0),
-                "bottom-right" => (1, dw - 15.0, false, dh - 45.0),
-                "top-center" => (0, dw * 0.498, true, 20.0),
-                "bottom-center" => (0, dw * 0.498, false, dh - 45.0),
-                _ => (0, dw * cfg.island_x / 100.0, true, cfg.island_y / zoom),
+            match cfg.position_mode {
+                Position::TopLeft => (-1, 15.0, true, 15.0),
+                Position::TopRight => (1, dw - 15.0, true, 15.0),
+                Position::BottomLeft => (-1, 15.0, false, dh - 45.0),
+                Position::BottomRight => (1, dw - 15.0, false, dh - 45.0),
+                Position::TopCenter => (0, dw * 0.498, true, 20.0),
+                Position::BottomCenter => (0, dw * 0.498, false, dh - 45.0),
+                Position::Free => (0, dw * cfg.island_x / 100.0, true, cfg.island_y / zoom),
             }
         };
         // The window stays on the display; the Island moves inside it instead.
@@ -334,8 +346,8 @@ pub struct Island {
     reminder: String,
     /// The reminder's meeting link, for its Join button.
     reminder_link: Option<String>,
-    /// The reminder showing is `ripple notify`'s, standing for this many alerts.
-    notified: Option<usize>,
+    /// Reminders waiting for the Island to show them.
+    reminders: Reminders,
     /// The hour of rain or snow already alerted (Unix seconds).
     rain_alerted: Option<i64>,
     /// Seconds until each break reminder (eye, hourly), counted only while no app is full screen.
@@ -360,6 +372,7 @@ pub struct Island {
     /// Until when a finished download shows its tick.
     download_done: Option<f64>,
     pub calc: tabs::Calculator,
+    pub rates: crate::calc::Rates,
     pub shelf: tabs::Shelf,
     pub tasks: tabs::Tasks,
     pub habits: tabs::Habits,
@@ -393,7 +406,7 @@ pub struct Island {
     /// The Island's window has keyboard focus.
     focused: bool,
     /// The window that had focus when the pointer reached the Island; it gets focus back on close.
-    prior: Option<u64>,
+    prior: Option<platform::WindowId>,
     weather_kick: Option<Sender<()>>,
     /// The registered shortcut that opens Large Mode.
     pub hotkey: Option<ShortcutId>,
@@ -481,7 +494,7 @@ impl Island {
             fullscreen: false,
             reminder: String::new(),
             reminder_link: None,
-            notified: None,
+            reminders: Reminders::default(),
             water_mark: None,
             rain_alerted: None,
             break_left: [None; 2],
@@ -496,6 +509,7 @@ impl Island {
             download: None,
             download_done: None,
             calc: tabs::Calculator::default(),
+            rates: Default::default(),
             shelf: tabs::Shelf::default(),
             tasks: tabs::Tasks::default(),
             habits: tabs::Habits::default(),
@@ -579,10 +593,10 @@ impl Island {
 
     /// Hide when inactive, unless an app is full screen and its rule says otherwise.
     pub fn hiding(&self) -> bool {
-        match self.fullscreen_rule() { "hidden" => true, "standby" | "still" => false, _ => self.cfg.hide_inactive }
+        match self.fullscreen_rule() { FullscreenRule::Hidden => true, FullscreenRule::Standby | FullscreenRule::Still => false, FullscreenRule::NoChange => self.cfg.hide_inactive }
     }
 
-    fn fullscreen_rule(&self) -> &str { if self.fullscreen { &self.cfg.fullscreen } else { "none" } }
+    fn fullscreen_rule(&self) -> FullscreenRule { if self.fullscreen { self.cfg.fullscreen } else { FullscreenRule::NoChange } }
 
     /// Hide when inactive: resting with no track or live activity to show.
     pub fn hidden(&self) -> bool { self.hiding() && self.mode == Mode::Still && !self.shows_track() && self.activities().is_empty() }
@@ -779,7 +793,7 @@ impl Island {
     pub fn rest(&self) -> Mode {
         // Standby is on by default, so the opt-in settings win over it or they could never apply.
         // Hiding wins over both, since it only works at Still. A full screen rule wins over all.
-        match self.fullscreen_rule() { "standby" => return Mode::Quick, "still" => return Mode::Still, _ => {} }
+        match self.fullscreen_rule() { FullscreenRule::Standby => return Mode::Quick, FullscreenRule::Still => return Mode::Still, FullscreenRule::NoChange | FullscreenRule::Hidden => {} }
         if self.hiding() { Mode::Still } else if self.cfg.large_standby { Mode::Large } else if self.cfg.standby { Mode::Quick } else { Mode::Still }
     }
 
@@ -1091,13 +1105,22 @@ impl Island {
         if old.hour12 != self.cfg.hour12 { self.set_clock() }
         if old.hide_from_capture != self.cfg.hide_from_capture && let Some(w) = self.passthrough.window() { platform::hide_from_capture(w, self.cfg.hide_from_capture) }
         if !old.lyrics && self.cfg.lyrics { self.fetch_lyrics() }
+        if old.auto_launch != self.cfg.auto_launch {
+            let on = self.cfg.auto_launch;
+            std::thread::spawn(move || system::set_auto_launch(on));
+        }
         if old.overlap_panels != self.cfg.overlap_panels && let Some(Host::Overlay(h, ..)) = &self.me { h.set_overlap_panels(self.cfg.overlap_panels) }
         tabs::reloaded(self, &old);
     }
 
-    /// Changes the settings from the Island itself (tasks, the T3 choices).
+    /// Changes the settings from the Island itself (tasks, the T3 choices); an open Settings
+    /// window shows the change.
     pub fn save(&mut self, f: impl FnOnce(&mut Config)) {
+        // A headless run has no other window to write the store, and its scene set `cfg` itself:
+        // the store would only overwrite the scene.
+        if rune::is_headless() { return f(&mut self.cfg) }
         self.cfg = self.store.update(f);
+        if let Some(settings) = &self.settings_app { settings.update(|s, _| s.refresh()) }
     }
 
     fn load_background(&mut self) {
@@ -1122,23 +1145,72 @@ impl Island {
 
     // --- What the pollers report ---
 
-    pub fn remind(&mut self, title: String, now: f64) { self.remind_for(title, None, now + 6.0) }
+    /// Shows `title` now, in place of any reminder showing.
+    pub fn remind(&mut self, title: String, now: f64) { self.show_reminder(crate::reminders::Alert::new(title, None), now) }
 
-    fn remind_for(&mut self, title: String, link: Option<String>, until: f64) {
-        self.show_alert(Alert::Reminder, until, &[]);
-        (self.reminder, self.reminder_link, self.notified) = (title, link, None);
+    pub fn show_reminder(&mut self, alert: crate::reminders::Alert, now: f64) {
+        self.reminders.ended();
+        self.put_up(alert, now)
+    }
+
+    fn put_up(&mut self, alert: crate::reminders::Alert, now: f64) {
+        self.show_alert(Alert::Reminder, now + alert.secs, &[]);
+        (self.reminder, self.reminder_link) = (alert.title, alert.link);
+        if let Some(tab) = alert.tab { self.set_tab(tab) }
         if !self.large_open() { self.set_mode(Mode::Quick) }
     }
 
-    /// Non-urgent alerts (water, breaks, rain, events, downloads, agents, `ripple notify`) wait:
-    /// it's quiet hours, or an app is full screen and that is set to quiet too. Low battery shows.
+    /// Holds a reminder until the Island may show it (`deliver`).
+    pub fn offer(&mut self, reminder: Reminder) { self.reminders.offer(reminder) }
+
+    /// Reminders wait: Large is open, or it's quiet. Headless runs show none, so every machine
+    /// renders the same.
+    fn holds_reminders(&self) -> bool { rune::is_headless() || self.large_open() || self.quiet() }
+
+    /// Once a second: what waits shows as one alert, unless reminders are held or one from
+    /// elsewhere shows.
+    fn deliver(&mut self, now: f64) {
+        if self.holds_reminders() { return }
+        let mut reminders = std::mem::take(&mut self.reminders);
+        reminders.retain(|r| self.stands(r));
+        // One that ends this tick no longer shows: the poll after this second sweeps it.
+        let on_screen = self.shown_until(Alert::Reminder).is_some_and(|until| now < until);
+        let next = reminders.next(on_screen);
+        self.reminders = reminders;
+        let Some(mut a) = next else { return };
+        let (mut tasks, mut events) = (Vec::new(), Vec::new());
+        for r in std::mem::take(&mut a.fresh) {
+            match r.source {
+                Source::Task => tasks.push(r.id),
+                Source::Event => events.push(r.id),
+                Source::Agent | Source::Script => {}
+            }
+        }
+        if !tasks.is_empty() { self.tasks_reminded(tasks) }
+        if !events.is_empty() { self.events_alerted(events) }
+        self.put_up(a, now)
+    }
+
+    /// Whether what a waiting reminder is about is still so.
+    fn stands(&self, r: &Reminder) -> bool {
+        match r.source {
+            Source::Task => self.task_due(&r.id),
+            Source::Event => self.event_due(&r.id),
+            Source::Agent => self.agents_asking(&r.id),
+            // Its id starts with when it was offered.
+            Source::Script => r.id.split('-').next().and_then(|ms| ms.parse::<i64>().ok()).is_some_and(|ms| crate::date::now_ms() - ms <= crate::notify::STALE_MS),
+        }
+    }
+
+    /// Non-urgent alerts (water, breaks, rain, and everything `offer`ed) wait: it's quiet hours,
+    /// or an app is full screen and that is set to quiet too. Downloads don't show. Low battery shows.
     pub fn quiet(&self) -> bool {
         (self.cfg.quiet_fullscreen && self.fullscreen) || (self.cfg.quiet_hours && self.cfg.quiet_at(LocalTime::at(crate::date::now_ms()).hour))
     }
 
-    /// A reminder may show now: Large isn't open and none shows, which it would replace; one
-    /// held back stays due until then. Headless runs show none, so every machine renders the same.
-    pub fn can_remind(&self) -> bool { !rune::is_headless() && !self.large_open() && !self.reminding() }
+    /// A reminder of the Island's own (water, breaks, rain) may show now: none is held, and none
+    /// shows, which it would replace; one held back stays due until then.
+    fn may_remind(&self) -> bool { !self.holds_reminders() && !self.reminding() }
 
     /// Large is open by hand or under the pointer, not merely resting there (large_standby).
     pub(crate) fn large_open(&self) -> bool {
@@ -1150,7 +1222,7 @@ impl Island {
     fn break_reminders(&mut self, now: f64) {
         let elapsed = now - std::mem::replace(&mut self.break_tick, now);
         let on = [self.cfg.eye_breaks, self.cfg.hourly_breaks];
-        let paused = self.fullscreen || !self.can_remind() || self.quiet();
+        let paused = self.fullscreen || !self.may_remind();
         if let Some(i) = count_breaks(&mut self.break_left, on, elapsed, paused) {
             self.remind(["Look away 20s", "Take a break"][i].into(), now);
         }
@@ -1159,7 +1231,7 @@ impl Island {
     /// On the hour within the set hours, while the Water widget is on the Overview and today's
     /// glasses are short of the goal.
     pub fn water_reminders(&mut self, now: f64) {
-        if !self.can_remind() || self.quiet() { return }
+        if !self.may_remind() { return }
         let t = LocalTime::at(crate::date::now_ms());
         let mark = (crate::date::days_from_civil(t.year, t.month, t.day), t.hour);
         // Track the hour even while reminders are off, so turning them on or adding the widget mid-hour stays quiet.
@@ -1178,15 +1250,10 @@ impl Island {
     fn rain_alert(&mut self, now: f64) {
         // `rain_alerted` stays through a pause in the rain: `rain_due` lets only rain 3 hours away from it alert again.
         let Some((at, _)) = self.weather.precip else { return };
-        if !self.cfg.rain_alerts || !self.can_remind() || self.quiet() { return }
+        if !self.cfg.rain_alerts || !self.may_remind() { return }
         if !rain_due(at, crate::date::now_secs(), self.rain_alerted) { return }
         self.rain_alerted = Some(at);
         self.remind(self.precip_label(), now);
-    }
-
-    /// An event's alert: 30 seconds, so its Join button can be reached.
-    pub fn remind_event(&mut self, title: String, link: Option<String>, now: f64) {
-        self.remind_for(title, link, now + 30.0);
     }
 
     /// The alert's Join button: opens the meeting and ends the alert.
@@ -1196,20 +1263,18 @@ impl Island {
         self.set_mode(Mode::Still);
     }
 
-    /// Once a second: alerts that `ripple notify` queued; several at once, or while one shows, share one.
-    pub fn notifications(&mut self, now: f64) {
+    /// Once a second: the alerts `ripple notify` queued, to show like any reminder.
+    fn notifications(&mut self) {
         let Some(dir) = self.store.dir() else { return };
-        // An open Large draws no alerts: they stay queued until the Island is compact (`take` drops ones over 5 minutes old).
-        // Resting in Large (Large standby) isn't open: `remind` shows the alert compact.
-        if self.large_open() || self.quiet() { return }
-        // An alert of ours showing counts as the alerts it merged; another reminder isn't replaced, so they wait.
-        // One that ends this tick no longer shows: the poll after this second sweeps it.
-        let showing = self.shown_until(Alert::Reminder).is_some_and(|until| now < until);
-        let shown = match self.notified { _ if !showing => 0, Some(n) => n, None => return };
-        if let Some((text, n)) = crate::notify::merge(shown, crate::notify::take(&dir)) {
-            self.remind(text, now);
-            self.notified = Some(n);
-        }
+        for title in crate::notify::take(&dir) { self.script_alert(title) }
+    }
+
+    /// A script's or a plugin's alert, or Ripple's own news: it goes stale like a queued one.
+    pub fn script_alert(&mut self, title: String) {
+        // The count keeps two equal texts offered in one millisecond two alerts.
+        static COUNT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let n = COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.offer(Reminder { source: Source::Script, id: format!("{}-{n}", crate::date::now_ms()), title, link: None })
     }
 
     fn set_battery(&mut self, battery: Option<(u8, bool)>, tx: &mut Tx) -> bool {
@@ -1449,7 +1514,8 @@ impl Island {
             self.next_second = now + 1.0;
             tx.wake_at(self.next_second);
             changed |= tabs::each_second(self, now);
-            self.notifications(now);
+            self.notifications();
+            self.deliver(now);
             self.water_reminders(now);
             self.rain_alert(now);
             self.break_reminders(now);
@@ -1469,7 +1535,7 @@ impl Island {
                 // Leaves Large alone, as `set_levels` did.
                 Alert::Volume | Alert::Brightness => self.mode != Mode::Large,
                 Alert::Camera | Alert::Microphone => { self.next_capture(tx); !self.capturing() }
-                Alert::Reminder => { (self.reminder_link, self.notified) = (None, None); true }
+                Alert::Reminder => { self.reminder_link = None; true }
                 _ => true,
             };
         }
@@ -1492,7 +1558,7 @@ impl Island {
         changed |= due(&mut self.paused_until);
         if due(&mut self.download_done) { self.download = None; changed = true }
         if due(&mut self.intro_at) {
-            system::open_external("https://github.com/TopMyster/Ripple/blob/main/instructions.md");
+            system::open_external(&format!("https://github.com/{}/blob/main/instructions.md", crate::net::REPO));
             self.save(|c| c.new_user = false);
         }
         self.schedule(tx);
@@ -1558,8 +1624,8 @@ impl Island {
         if self.cfg.auto_launch { std::thread::spawn(|| system::set_auto_launch(true)); }
         let chord = self.cfg.hotkey.trim();
         if !chord.is_empty() {
-            match chord.parse().and_then(|k| me.register_hotkey(k)) {
-                Ok(id) => self.hotkey = Some(id),
+            match chord.parse().and_then(|k| me.set_hotkey(Some(k))) {
+                Ok(()) => {}
                 Err(e) => {
                     eprintln!("Ripple: the shortcut {chord} is off: {e}");
                     // Settings shows it unset, so recording it again retries; the saved chord stays for the next launch.
@@ -1587,7 +1653,7 @@ impl Island {
         let h = me.clone();
         let store = self.store.clone();
         // No rule and no break reminders, no query: the default pays nothing.
-        every(1000, move || { let f = { let c = store.get(); (c.fullscreen != "none" || c.eye_breaks || c.hourly_breaks || c.quiet_fullscreen) && platform::fullscreen() }; h.update_if(move |s, _| s.set_fullscreen(f)); });
+        every(1000, move || { let f = { let c = store.get(); (c.fullscreen != FullscreenRule::NoChange || c.eye_breaks || c.hourly_breaks || c.quiet_fullscreen) && platform::fullscreen() }; h.update_if(move |s, _| s.set_fullscreen(f)); });
         let h = me.clone();
         every(250, move || { let on = system::caps_lock().unwrap_or(false); h.update_if(move |s, _| s.set_caps_lock(on)); });
         let h = me.clone();
@@ -1618,7 +1684,7 @@ impl Island {
             }
         });
 
-        // Once a day, through `ripple notify`'s queue: it waits for a closed Large like any alert.
+        // Once a day: it waits for a closed Large like any reminder.
         let (h, store) = (me.clone(), self.store.clone());
         std::thread::spawn(move || loop {
             let (cfg, t) = (store.get(), LocalTime::at(crate::date::now_ms()));
@@ -1626,15 +1692,10 @@ impl Island {
             // A failed request tries again next hour.
             if cfg.update_check && cfg.update_day != today && let Some(tag) = crate::net::latest_release() {
                 h.update(move |s, _| {
-                    // Not while quiet, as the queue drops an alert that waits over 5 minutes: next hour.
-                    if s.quiet() { return }
+                    // Not while held, as the alert would go stale: next hour.
+                    if s.holds_reminders() { return }
                     s.save(|c| c.update_day = today);
-                    if crate::net::newer(&tag, env!("CARGO_PKG_VERSION"))
-                        && let Some(dir) = s.store.dir()
-                        && let Err(e) = crate::notify::queue(&dir, &format!("Ripple {tag} is out"))
-                    {
-                        eprintln!("Ripple: {e}");
-                    }
+                    if crate::net::newer(&tag, env!("CARGO_PKG_VERSION")) { s.script_alert(format!("Ripple {tag} is out")) }
                 });
             }
             std::thread::sleep(std::time::Duration::from_secs(3600));
@@ -1648,7 +1709,7 @@ impl Island {
         std::thread::spawn(move || loop {
             let cfg = store.get();
             // No location: clear the weather so no icon shows and no request is sent.
-            let w = if cfg.location.trim().is_empty() { Some(Weather::default()) } else { crate::net::weather(&cfg.location, &cfg.weather_unit) };
+            let w = if cfg.location.trim().is_empty() { Some(Weather::default()) } else { crate::net::weather(&cfg.location, cfg.weather_unit.id()) };
             match w {
                 Some(w) => { found = cfg.location.clone(); me.update_if(move |s, _| s.weather != w && { s.weather = w; true }) }
                 // A new place not found: the sun times are the old place's, so the themes stop following them.
@@ -1908,7 +1969,7 @@ fn glance(s: &Island, fg: Color) -> El {
         Some(alert) if s.joinable() => row().key("label").gap(8.0).center_y()
             .child(text(s.alert_label(alert)).font(style).color(color))
             // The button shows the host: a shared event's link is someone else's, so the user sees where it goes.
-            .child(alert_button(cfg, "join", format!("Join {}", tabs::link_host(s.reminder_link.as_deref().unwrap_or(""))), tabs::link_host(s.reminder_link.as_deref().unwrap_or("")), Island::join)),
+            .child(alert_button(cfg, "join", format!("Join {}", crate::ics::link_host(s.reminder_link.as_deref().unwrap_or(""))), crate::ics::link_host(s.reminder_link.as_deref().unwrap_or("")), Island::join)),
         Some(Alert::Match) if let Some(game) = &s.game => row().key("label").gap(8.0).center_y()
             .child(text(s.alert_label(Alert::Match)).font(style).color(color))
             .child(alert_button(cfg, "answer", format!("{} {}", game.action(), game.game), game.action(), Island::answer_match)),
@@ -2090,6 +2151,42 @@ mod tests {
     }
 
     #[test]
+    fn an_offered_reminder_waits_for_quiet_hours_and_large_to_end() {
+        let mut s = island(Config { standby: false, quiet_hours: true, quiet_from: 0, quiet_to: 24, ..Config::default() });
+        s.script_alert("Deploy done".into());
+        s.script_alert("Deploy done".into());
+        // Offered at 1970: stale by the time it may show.
+        s.offer(Reminder { source: Source::Script, id: "0".into(), title: "Old news".into(), link: None });
+        s.poll(1.0, &mut Tx::default());
+        assert!(!s.reminding(), "quiet");
+        s.cfg.quiet_hours = false;
+        s.set_mode(Mode::Large);
+        s.poll(2.0, &mut Tx::default());
+        assert!(!s.reminding(), "Large is open");
+        s.set_mode(Mode::Still);
+        s.poll(3.0, &mut Tx::default());
+        assert_eq!((s.alert(), s.reminder.as_str()), (Some(Alert::Reminder), "2 alerts"));
+    }
+
+    #[test]
+    fn a_reminder_for_a_task_done_while_it_waited_never_shows() {
+        let tasks = ["Ship it due:2020-01-01", "Water plants due:2020-01-01"].map(crate::config::Item::new).into();
+        let mut s = island(Config { standby: false, tasks, ..Config::default() });
+        s.set_mode(Mode::Large);
+        s.large_by_hand = true;
+        s.task_reminders();
+        s.poll(1.0, &mut Tx::default());
+        assert!(!s.reminding(), "Large is open");
+        assert!(s.cfg.reminded_tasks.is_empty(), "not shown yet: a restart now reminds again");
+        s.cfg.tasks.remove(0);
+        s.large_by_hand = false;
+        s.set_mode(Mode::Still);
+        s.poll(2.0, &mut Tx::default());
+        assert_eq!((s.alert(), s.reminder.as_str()), (Some(Alert::Reminder), "Water plants"));
+        assert_eq!(s.cfg.reminded_tasks.len(), 1, "recorded once shown");
+    }
+
+    #[test]
     fn a_match_alerts_until_answered_or_gone() {
         use crate::games::{Match, Target};
         // League with no client: answering only fails to reach it, touching no window.
@@ -2158,18 +2255,18 @@ mod tests {
 
     #[test]
     fn a_full_overview_fits_a_short_display() {
-        for mode in ["top-center", "bottom-center"] {
-            let mut s = island(Config { position_mode: mode.into(), ..Config::default() });
+        for mode in [Position::TopCenter, Position::BottomCenter] {
+            let mut s = island(Config { position_mode: mode, ..Config::default() });
             s.cfg.dashboard = crate::config::Widget::OWN.into_iter().map(|w| crate::config::Tile::new(w).sized(4, 6)).collect();
             s.placement = Placement::of(&s.cfg, (853.0, 533.0));
             s.mode = Mode::Large;
             s.set_tab(Tab::Overview);
             let ([_, iy, _, ih], [_, dy, _, dh]) = (s.rect(), s.dock_rect().unwrap());
             let (top, bottom) = (iy.min(dy), (iy + ih).max(dy + dh));
-            assert!(top >= 0.0 && bottom <= s.placement.visible_h, "{mode}: {top}..{bottom}");
+            assert!(top >= 0.0 && bottom <= s.placement.visible_h, "{mode:?}: {top}..{bottom}");
         }
         // No room at all below the Island: it keeps to the Overview's usual size, its tiles shrunk to fit.
-        let mut s = island(Config { position_mode: "free".into(), island_y: 500.0, ..Config::default() });
+        let mut s = island(Config { position_mode: Position::Free, island_y: 500.0, ..Config::default() });
         s.placement = Placement::of(&s.cfg, (960.0, 540.0));
         s.mode = Mode::Large;
         s.set_tab(Tab::Overview);
@@ -2180,10 +2277,10 @@ mod tests {
     #[test]
     fn a_scaled_island_keeps_its_window_on_the_display() {
         for scale in [80.0, 110.0, 130.0, 150.0, 170.0, 180.0] {
-            for mode in ["top-right", "bottom-right", "bottom-left", "free"] {
-                let p = Placement::of(&Config { island_scale: scale, position_mode: mode.into(), ..Config::default() }, (1920.0, 1080.0));
+            for mode in [Position::TopRight, Position::BottomRight, Position::BottomLeft, Position::Free] {
+                let p = Placement::of(&Config { island_scale: scale, position_mode: mode, ..Config::default() }, (1920.0, 1080.0));
                 let [x, y, w, h] = p.frame();
-                assert!(x >= 0.0 && y >= 0.0 && x + w <= 1920.01 && y + h <= 1080.01, "{scale}% {mode}: {:?}", p.frame());
+                assert!(x >= 0.0 && y >= 0.0 && x + w <= 1920.01 && y + h <= 1080.01, "{scale}% {mode:?}: {:?}", p.frame());
                 assert!(w > 1918.0, "{scale}%: spans the display, {w}");
             }
         }
@@ -2295,7 +2392,7 @@ mod tests {
         s.set_fullscreen(true);
         s.set_fullscreen(false);
         assert!(s.large_open(), "a full screen app with no rule leaves a Large opened by hand alone");
-        s.cfg.fullscreen = "standby".into();
+        s.cfg.fullscreen = FullscreenRule::Standby;
         s.set_fullscreen(true);
         assert!(s.mode == Mode::Large && s.large_open(), "nor does one with a rule");
         s.remind("Look away 20s".into(), 0.0);
@@ -2306,24 +2403,24 @@ mod tests {
     #[test]
     fn the_window_stays_on_the_display_and_the_island_keeps_its_place() {
         let display = (1920.0, 1080.0);
-        let at = |mode: &str| {
-            let p = Placement::of(&Config { position_mode: mode.into(), ..Config::default() }, display);
+        let at = |mode: Position| {
+            let p = Placement::of(&Config { position_mode: mode, ..Config::default() }, display);
             let [x, y, w, h] = p.rect((140.0, 40.0));
             // The Island's rect on the display.
             (p.window.0 + x, p.window.1 + y, w, h, p.window)
         };
-        assert_eq!(at("top-left"), (15.0, 15.0, 140.0, 40.0, (0.0, 0.0)));
-        let (x, y, w, _, window) = at("top-right");
+        assert_eq!(at(Position::TopLeft), (15.0, 15.0, 140.0, 40.0, (0.0, 0.0)));
+        let (x, y, w, _, window) = at(Position::TopRight);
         assert_eq!((x + w, y, window.0), (1905.0, 15.0, 0.0));
-        let (x, y, _, h, window) = at("bottom-left");
+        let (x, y, _, h, window) = at(Position::BottomLeft);
         assert_eq!((x, y + h, window.1), (15.0, 1035.0, 1035.0 + 30.0 - CANVAS.1));
         // An Island `max_w` wide stays in its window and on the display, whatever its anchor.
-        for mode in ["top-left", "top-right", "top-center", "free"] {
-            let p = Placement::of(&Config { position_mode: mode.into(), ..Config::default() }, display);
+        for mode in [Position::TopLeft, Position::TopRight, Position::TopCenter, Position::Free] {
+            let p = Placement::of(&Config { position_mode: mode, ..Config::default() }, display);
             let [x, _, w, _] = p.rect((p.max_w(), 40.0));
-            assert!(x >= 0.0 && x + w <= p.visible_w, "{mode}: {x}..{}", x + w);
+            assert!(x >= 0.0 && x + w <= p.visible_w, "{mode:?}: {x}..{}", x + w);
         }
-        let (x, _, w, _, _) = at("free");
+        let (x, _, w, _, _) = at(Position::Free);
         assert_eq!(x + w / 2.0, 960.0);
         let notch = Placement::of(&Config { notch_mode: true, ..Config::default() }, display);
         assert_eq!((notch.window.1, notch.rect((210.0, 34.0))[1]), (0.0, 0.0));
@@ -2341,14 +2438,14 @@ mod tests {
 
     #[test]
     fn a_full_screen_app_applies_its_rule_to_a_resting_island() {
-        let full = |rule: &str, cfg: Config| { let mut s = island(Config { fullscreen: rule.into(), ..cfg }); s.set_fullscreen(true); s };
-        assert_eq!(full("none", Config::default()).mode, Mode::Quick);
-        assert_eq!(full("still", Config::default()).mode, Mode::Still);
-        assert_eq!(full("standby", Config { standby: false, ..Config::default() }).mode, Mode::Quick);
+        let full = |rule: FullscreenRule, cfg: Config| { let mut s = island(Config { fullscreen: rule, ..cfg }); s.set_fullscreen(true); s };
+        assert_eq!(full(FullscreenRule::NoChange, Config::default()).mode, Mode::Quick);
+        assert_eq!(full(FullscreenRule::Still, Config::default()).mode, Mode::Still);
+        assert_eq!(full(FullscreenRule::Standby, Config { standby: false, ..Config::default() }).mode, Mode::Quick);
         // The rule beats Hide when inactive, so the Island neither hides nor draws as hidden.
-        let s = full("standby", Config { hide_inactive: true, ..Config::default() });
+        let s = full(FullscreenRule::Standby, Config { hide_inactive: true, ..Config::default() });
         assert!(s.mode == Mode::Quick && !s.hiding());
-        let mut s = full("hidden", Config::default());
+        let mut s = full(FullscreenRule::Hidden, Config::default());
         assert!(s.mode == Mode::Still && s.hidden());
         s.set_fullscreen(false);
         assert!(s.mode == Mode::Quick && !s.hidden());
@@ -2419,7 +2516,7 @@ mod tests {
         let mut tx = Tx::default();
         s.set_capture(Some(true), Some(true), &mut tx);
         assert_eq!(s.alert(), Some(Alert::Camera), "camera and microphone take turns");
-        s.remind_event("Standup".into(), Some("https://meet.example/x".into()), 0.0);
+        s.show_reminder(crate::reminders::Alert::new("Standup".into(), Some("https://meet.example/x".into())), 0.0);
         s.show_alert(Alert::Charging, 1.0, &[]);
         assert_eq!(s.alert(), Some(Alert::Charging), "charging goes over the reminder, the reminder over the camera");
         s.poll(3.5, &mut tx);
@@ -2488,7 +2585,7 @@ mod tests {
         assert!(s.bubbles().is_empty());
 
         // Against the left edge, both go right.
-        let mut s = island(Config { position_mode: "top-left".into(), ..Config::default() });
+        let mut s = island(Config { position_mode: Position::TopLeft, ..Config::default() });
         s.set_caps_lock(true);
         s.set_track(Some(Track { name: "Song".into(), playing: true, ..Default::default() }), &mut tx);
         s.pomodoro.ends = Some(crate::date::wall() + 60.0);
@@ -2577,7 +2674,7 @@ mod tests {
 
     #[test]
     fn the_dock_fits_the_canvas_with_every_tab_visible() {
-        let t3 = crate::config::T3Device { name: "t".into(), url: "u".into(), token: "t".into() };
+        let t3 = crate::config::T3Device { name: "t".into(), url: "u".into(), token: "t".into(), detected: false };
         let mut s = island(Config { hidden_tabs: Vec::new(), t3_devices: vec![t3], discord_id: "1".into(), discord_secret: "s".into(), ..Config::default() });
         s.mode = Mode::Large;
         assert_eq!(s.visible_tabs().len(), Tab::ALL.len());
@@ -2605,7 +2702,7 @@ mod tests {
         s.mode = Mode::Large;
         let ([_, iy, _, ih], [_, dy, _, dh]) = (s.rect(), s.dock_rect().unwrap());
         assert_eq!(dy, iy + ih);
-        s.placement = Placement::of(&Config { position_mode: "bottom-center".into(), ..Config::default() }, (1920.0, 1080.0));
+        s.placement = Placement::of(&Config { position_mode: Position::BottomCenter, ..Config::default() }, (1920.0, 1080.0));
         let ([_, iy, _, _], [_, dy, _, dh2]) = (s.rect(), s.dock_rect().unwrap());
         assert_eq!((dy + dh2, dh2), (iy, dh));
     }

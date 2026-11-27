@@ -63,7 +63,7 @@ Ripple alerts you when a charger connects or the battery runs low, when a Blueto
 
 Scripts can raise their own alert: `ripple notify "Build passed"`.
 
-Quiet hours hold back the alerts that can wait between the times you set, and can also hold them while an app is full screen. Water, break, rain, event and coding agent alerts show once quiet hours end, and the update check waits for them. Downloads don't show, and a `ripple notify` alert is dropped after waiting 5 minutes. Low battery still shows.
+Quiet hours hold back the alerts that can wait between the times you set, and can also hold them while an app is full screen. Water, break, rain, task, event, coding agent, plugin, update and `ripple notify` alerts show once quiet hours end. Downloads don't show. Low battery still shows.
 
 Once a day Ripple checks GitHub for a newer release and shows an alert when there is one. Turn it off in Settings → General.
 

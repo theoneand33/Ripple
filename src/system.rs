@@ -334,20 +334,26 @@ end if"#;
     })
 }
 
+/// PowerShell that sets `$session` to the media session the Island shows: one playing, else
+/// Windows' current one.
+#[cfg(windows)]
+macro_rules! windows_session {
+    () => { "Add-Type -AssemblyName System.Runtime.WindowsRuntime; $manager = [Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager, Windows.Media.Control, ContentType = WindowsRuntime]::RequestAsync().GetAwaiter().GetResult(); $session = $manager.GetSessions() | Where-Object { $_.GetPlaybackInfo().PlaybackStatus -eq 'Playing' } | Select-Object -First 1; if (-not $session) { $session = $manager.GetCurrentSession() }; " };
+}
+
 #[cfg(windows)]
 pub fn media() -> Option<Track> {
-    const SCRIPT: &str = "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Add-Type -AssemblyName System.Runtime.WindowsRuntime; $manager = [Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager, Windows.Media.Control, ContentType = WindowsRuntime]::RequestAsync().GetAwaiter().GetResult(); $session = $manager.GetSessions() | Where-Object { $_.GetPlaybackInfo().PlaybackStatus -eq 'Playing' } | Select-Object -First 1; if (-not $session) { $session = $manager.GetCurrentSession() }; if ($session) { $props = $session.TryGetMediaPropertiesAsync().GetAwaiter().GetResult(); $playback = $session.GetPlaybackInfo(); $status = $playback.PlaybackStatus; $timeline = $session.GetTimelineProperties(); $position = $timeline.Position; if ($status.ToString() -eq 'Playing' -and $timeline.LastUpdatedTime.Year -gt 2000) { $position += [DateTimeOffset]::Now - $timeline.LastUpdatedTime }; $length = $timeline.EndTime - $timeline.StartTime; $thumbnail = $props.Thumbnail; $key = [string]$session.SourceAppUserModelId + '|' + $props.Title + '|' + $props.Artist + '|' + $props.AlbumTitle + '|' + $timeline.EndTime; if ($key -ne $global:artKey) { $global:art = ''; if ($thumbnail) { try { $stream = $thumbnail.OpenReadAsync().GetAwaiter().GetResult(); $buffer = New-Object byte[] $stream.Size; $reader = New-Object Windows.Storage.Streams.DataReader $stream; $reader.LoadAsync($stream.Size).GetAwaiter().GetResult() | Out-Null; $reader.ReadBytes($buffer); $global:art = 'data:image/png;base64,' + [Convert]::ToBase64String($buffer); $global:artKey = $key; $reader.Close(); $stream.Close(); } catch { } } }; $artwork = $global:art; $info = @{ Title = $props.Title; Artist = $props.Artist; Album = $props.AlbumTitle; Status = $status.ToString().ToLower(); Source = $session.SourceAppUserModelId; Artwork = $artwork; Position = $position.TotalSeconds; Length = $length.TotalSeconds }; return $info | ConvertTo-Json -Compress; } return 'null';";
+    const SCRIPT: &str = concat!("[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; ", windows_session!(), "if ($session) { $props = $session.TryGetMediaPropertiesAsync().GetAwaiter().GetResult(); $playback = $session.GetPlaybackInfo(); $status = $playback.PlaybackStatus; $timeline = $session.GetTimelineProperties(); $position = $timeline.Position; if ($status.ToString() -eq 'Playing' -and $timeline.LastUpdatedTime.Year -gt 2000) { $position += [DateTimeOffset]::Now - $timeline.LastUpdatedTime }; $length = $timeline.EndTime - $timeline.StartTime; $thumbnail = $props.Thumbnail; $key = [string]$session.SourceAppUserModelId + '|' + $props.Title + '|' + $props.Artist + '|' + $props.AlbumTitle + '|' + $timeline.EndTime; if ($key -ne $global:artKey) { $global:art = ''; if ($thumbnail) { try { $stream = $thumbnail.OpenReadAsync().GetAwaiter().GetResult(); $buffer = New-Object byte[] $stream.Size; $reader = New-Object Windows.Storage.Streams.DataReader $stream; $reader.LoadAsync($stream.Size).GetAwaiter().GetResult() | Out-Null; $reader.ReadBytes($buffer); $global:art = 'data:image/png;base64,' + [Convert]::ToBase64String($buffer); $global:artKey = $key; $reader.Close(); $stream.Close(); } catch { } } }; $artwork = $global:art; $info = @{ Title = $props.Title; Artist = $props.Artist; Album = $props.AlbumTitle; Status = $status.ToString().ToLower(); Source = $session.SourceAppUserModelId; Artwork = $artwork; Position = $position.TotalSeconds; Length = $length.TotalSeconds }; return $info | ConvertTo-Json -Compress; } return 'null';");
     // The cover is read once per track (`$global:art` lasts in the shared PowerShell); a player sets it after the title, so an empty one is retried.
     let out = powershell_media(SCRIPT);
     if let Ok(data) = serde_json::from_str::<serde_json::Value>(&out)
         && data.is_object()
     {
         let field = |k: &str| data[k].as_str().unwrap_or_default().to_string();
-        let or = |v: String, fallback: &str| if v.is_empty() { fallback.to_string() } else { v };
         let playing = field("Status") == "playing";
         return Some(Track {
-            name: or(field("Title"), "Unknown Title"),
-            artist: or(field("Artist"), "Unknown Artist"),
+            name: field("Title"),
+            artist: field("Artist"),
             artwork_url: Some(field("Artwork")).filter(|a| !a.is_empty()),
             playing,
             paused: !playing,
@@ -390,7 +396,7 @@ end if"#);
     {
         let method = match cmd { MediaCommand::PlayPause => "TryTogglePlayPauseAsync", MediaCommand::Next => "TrySkipNextAsync", MediaCommand::Previous => "TrySkipPreviousAsync" };
         // A one-off process: a click mustn't wait behind the media poll's shared one.
-        let _ = output("powershell", &["-NoProfile", "-EncodedCommand", &ps_encode(&format!("Add-Type -AssemblyName System.Runtime.WindowsRuntime; $m = [Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager, Windows.Media.Control, ContentType = WindowsRuntime]::RequestAsync().GetAwaiter().GetResult(); $s = $m.GetSessions() | Where-Object {{ $_.GetPlaybackInfo().PlaybackStatus -eq 'Playing' }} | Select-Object -First 1; if (-not $s) {{ $s = $m.GetCurrentSession() }}; if ($s) {{ $s.{method}().GetAwaiter().GetResult() | Out-Null }}"))]);
+        let _ = output("powershell", &["-NoProfile", "-EncodedCommand", &ps_encode(&format!("{}if ($session) {{ $session.{method}().GetAwaiter().GetResult() | Out-Null }}", windows_session!()))]);
     }
 }
 
@@ -566,18 +572,20 @@ pub fn watch_levels(on: impl Fn(Option<u8>, Option<u8>)) {
     }
     // One process for good: starting one per poll costs too much CPU at this rate.
     #[cfg(windows)]
-    let (mut cmd, from_stderr) = { let mut c = command("powershell"); c.args(["-NoProfile", "-EncodedCommand", &ps_encode(&format!("{WINDOWS_AUDIO}{WINDOWS_LEVELS}"))]); (c, false) };
+    let (program, args, from_stderr) = ("powershell", vec!["-NoProfile".to_string(), "-EncodedCommand".into(), ps_encode(&format!("{WINDOWS_AUDIO}{WINDOWS_LEVELS}"))], false);
     // AppleScript's `log` writes to stderr. shortcut: no brightness, as macOS has no public CLI for it; read it through IOKit/DisplayServices if users ask.
     #[cfg(target_os = "macos")]
-    let (mut cmd, from_stderr) = { let mut c = command("osascript"); for line in MAC_LEVELS { c.args(["-e", line]); } (c, true) };
+    let (program, args, from_stderr) = ("osascript", MAC_LEVELS.iter().flat_map(|line| ["-e".to_string(), line.to_string()]).collect::<Vec<_>>(), true);
     #[cfg(not(target_os = "linux"))]
-    follow_lines(&mut cmd, from_stderr, |line| { let (volume, brightness) = parse_levels(line); on(volume, brightness) });
+    follow_lines(program, args.as_slice(), from_stderr, |line| { let (volume, brightness) = parse_levels(line); on(volume, brightness) });
 }
 
-/// Runs `cmd` and calls `on_line` with each line it writes (to stderr with `from_stderr`),
+/// Runs `program` and calls `on_line` with each line it writes (to stderr with `from_stderr`),
 /// starting it again whenever it exits. Blocks for good; run it on its own thread.
-pub(crate) fn follow_lines(cmd: &mut Command, from_stderr: bool, mut on_line: impl FnMut(&str)) -> ! {
+pub(crate) fn follow_lines<S: AsRef<std::ffi::OsStr>>(program: &str, args: &[S], from_stderr: bool, mut on_line: impl FnMut(&str)) -> ! {
     use std::io::BufRead;
+    let mut cmd = command(program);
+    cmd.args(args);
     loop {
         cmd.stdin(Stdio::null());
         if from_stderr { cmd.stdout(Stdio::null()).stderr(Stdio::piped()) } else { cmd.stdout(Stdio::piped()).stderr(Stdio::null()) };
@@ -678,19 +686,26 @@ fn parse_levels(line: &str) -> (Option<u8>, Option<u8>) {
     (parts.next().flatten(), parts.next().flatten())
 }
 
+/// The default sink's level and whether it is muted: from PipeWire, else PulseAudio.
 #[cfg(target_os = "linux")]
-fn volume() -> Option<u8> {
+fn sink() -> Option<(u8, bool)> {
     output("wpctl", &["get-volume", "@DEFAULT_AUDIO_SINK@"]).and_then(|o| parse_wpctl(&o)).or_else(|| {
-        if output("pactl", &["get-sink-mute", "@DEFAULT_SINK@"])?.contains("yes") { return Some(0) }
-        first_percent(&output("pactl", &["get-sink-volume", "@DEFAULT_SINK@"])?).map(|p| p.min(100))
+        let muted = output("pactl", &["get-sink-mute", "@DEFAULT_SINK@"])?.contains("yes");
+        let level = output("pactl", &["get-sink-volume", "@DEFAULT_SINK@"]).and_then(|o| first_percent(&o)).map(|l| l.min(100));
+        // Muted reads as 0 whatever the level, so it needn't be known.
+        Some((level.or(muted.then_some(0))?, muted))
     })
 }
 
+/// Muted reads as 0.
+#[cfg(target_os = "linux")]
+fn volume() -> Option<u8> { sink().map(|(level, muted)| if muted { 0 } else { level }) }
+
 /// `wpctl get-volume`: "Volume: 0.45", with " [MUTED]" when muted; it can pass 1.0.
 #[cfg_attr(not(any(target_os = "linux", test)), allow(dead_code))]
-fn parse_wpctl(out: &str) -> Option<u8> {
+fn parse_wpctl(out: &str) -> Option<(u8, bool)> {
     let level: f32 = out.strip_prefix("Volume:")?.split_whitespace().next()?.parse().ok()?;
-    Some(if out.contains("[MUTED]") { 0 } else { (level * 100.0).round().clamp(0.0, 100.0) as u8 })
+    Some(((level * 100.0).round().clamp(0.0, 100.0) as u8, out.contains("[MUTED]")))
 }
 
 /// The first backlight, as a percent of its maximum.
@@ -720,8 +735,7 @@ pub fn toggle(t: Toggle) -> Option<bool> {
         match t {
             Toggle::Wifi => output("nmcli", &["radio", "wifi"]).map(|o| o == "enabled"),
             Toggle::Bluetooth => output("bluetoothctl", &["show"]).filter(|o| o.contains("Powered:")).map(|o| o.contains("Powered: yes")),
-            Toggle::Mute => output("wpctl", &["get-volume", "@DEFAULT_AUDIO_SINK@"]).map(|o| o.contains("[MUTED]"))
-                .or_else(|| output("pactl", &["get-sink-mute", "@DEFAULT_SINK@"]).map(|o| o.contains("yes"))),
+            Toggle::Mute => sink().map(|(_, muted)| muted),
         }
     }
     #[cfg(target_os = "macos")]
@@ -1016,11 +1030,11 @@ fn own_exe() -> Option<std::path::PathBuf> {
     std::env::var_os("APPIMAGE").map(std::path::PathBuf::from).or_else(|| std::env::current_exe().ok())
 }
 
-/// Writes `text` to `file`, its folder made first, or removes the file for None.
+/// Writes `text` to `file`, or removes the file for None.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn set_file(file: &std::path::Path, text: Option<String>) -> std::io::Result<()> {
     match text {
-        Some(text) => file.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|()| std::fs::write(file, text)),
+        Some(text) => crate::paths::write_atomic(file, &text),
         None if file.exists() => std::fs::remove_file(file),
         None => Ok(()),
     }
@@ -1154,7 +1168,7 @@ pub(crate) fn openable(url: &str) -> bool {
     // The name the OS opens: decoded as the file-URL handler decodes it, without its query,
     // fragment or trailing slash (a macOS bundle is a folder), and without the trailing dots
     // and spaces Windows drops (`x.exe.` is `x.exe`).
-    let path = crate::net::percent_decode(path.split(['?', '#']).next().unwrap_or_default());
+    let path = crate::url::percent_decode(path.split(['?', '#']).next().unwrap_or_default());
     let path = path.trim_end_matches(['/', '\\', '.', ' ']);
     !path.is_empty() && !runs_as_program(path)
 }
@@ -1353,7 +1367,7 @@ fn baloo_paths(out: &str) -> Vec<std::path::PathBuf> {
 /// `localsearch search` prints a heading, then indented `file://` URIs.
 #[cfg_attr(not(any(target_os = "linux", test)), allow(dead_code))]
 fn tracker_paths(out: &str) -> Vec<std::path::PathBuf> {
-    out.lines().filter_map(|l| l.trim().strip_prefix("file://")).map(|p| crate::net::percent_decode(p).into()).collect()
+    out.lines().filter_map(|l| l.trim().strip_prefix("file://")).map(|p| crate::url::percent_decode(p).into()).collect()
 }
 
 #[cfg(target_os = "macos")]
@@ -1467,9 +1481,9 @@ mod tests {
 
     #[test]
     fn volume_and_brightness_read_as_percents() {
-        assert_eq!(parse_wpctl("Volume: 0.45"), Some(45));
-        assert_eq!(parse_wpctl("Volume: 0.45 [MUTED]"), Some(0));
-        assert_eq!(parse_wpctl("Volume: 1.50"), Some(100));
+        assert_eq!(parse_wpctl("Volume: 0.45"), Some((45, false)));
+        assert_eq!(parse_wpctl("Volume: 0.45 [MUTED]"), Some((45, true)));
+        assert_eq!(parse_wpctl("Volume: 1.50"), Some((100, false)));
         assert_eq!(parse_wpctl("Could not connect to PipeWire"), None);
         assert_eq!(first_percent("Volume: front-left: 29491 /  45% / -20.81 dB"), Some(45));
         assert_eq!(parse_levels("37 80"), (Some(37), Some(80)));
