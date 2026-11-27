@@ -8,7 +8,7 @@ A plugin is one Lua 5.4 file that adds a panel to the Plugins tab. Put `.lua` fi
 
 Ripple creates the folder on launch. It loads new and changed files, and reloads plugins with an error, each time you open the Plugins tab, so you don't need to restart. With more than one plugin, chips at the top of the tab switch between them.
 
-[`plugins/example.lua`](plugins/example.lua) is a complete plugin: a focus timer.
+[`plugins/example.lua`](plugins/example.lua) is a complete plugin: a focus timer, with a live activity.
 
 ## The API
 
@@ -19,7 +19,8 @@ return {
   name = "Counter",          -- the chip's label; defaults to the file name
   state = { n = 0 },         -- passed to view, tick and every handler
   persist = true,            -- optional; keeps state across restarts (see Saved state)
-  tick = function(state) end, -- optional; once a second while the panel shows
+  tick = function(state) end, -- optional; once a second while the panel shows, or always with live
+  live = function(state) end, -- optional; a live activity on the compact Island (see Live activities)
   view = function(state)     -- required; runs after load, each press and each tick
     return ui.col {
       ui.text("Count: " .. state.n, { size = 20, weight = 600 }),
@@ -52,7 +53,26 @@ return {
 | `ripple.open(target)` | Opens an `http(s)://` or `file://` URL in its default app. Programs are refused. |
 | `ripple.copy(text)` | Copies `text` to the clipboard. |
 
-Use `ripple.run` for anything slow: `io.popen` blocks the Island until it returns. Call `ripple.*` from `tick`, a handler or a callback, not from `view`: `view` runs after each of those, so it is an error there.
+### Live activities
+
+`live(state)` puts the plugin on the compact Island, as a Pomodoro or a download shows there: an icon and a label beside the time, or a circle of its own beside the Island when something else holds that spot. A press opens the plugin's panel. It runs after the view each time, so return the activity from state, or `nil` for none:
+
+```lua
+live = function(state)
+  if not state.ends then return nil end
+  return {
+    icon = "timer",                -- required; a Lucide name, as for ui.icon
+    label = "12:30",               -- short; cut to 16 characters
+    color = "orange",              -- optional; blue, green, orange, red, indigo, teal, pink or "#rrggbb". The text colour by default
+    progress = 0.4,                -- optional; 0 to 1, a ring around the icon
+    spoken = "Focus, 13 minutes left", -- optional; what a screen reader hears. "<name>: <label>" by default
+  }
+end,
+```
+
+A plugin with `live` ticks once a second even while its panel is hidden, so its activity can update and end. An error ends its activity and these ticks until the plugin reloads. Activities show while the Plugins tab does: hiding the tab stops them.
+
+Use `ripple.run` for anything slow: `io.popen` blocks the Island until it returns. Call `ripple.*` from `tick`, a handler or a callback, not from `view` or `live`: they run after each of those, so it is an error there.
 
 ### Saved state
 
@@ -60,7 +80,7 @@ With `persist = true`, Ripple saves `state` as JSON to `plugin-data/<file name>.
 
 Every plugin has its own Lua state, with the standard libraries except `debug` and `__gc` metamethods, so it can read files and run commands as you. Install only plugins you trust, as you would a shell script.
 
-Plugins run on the UI thread. Each load, tick or button press must finish in 250 ms, its view included, or it is stopped with an error, each plugin may use up to 64 MB, and a view may have up to 2,000 nodes, 32 deep. Time spent inside a C function such as `io.popen` isn't counted, so run slow work with `ripple.run`. Give every button a unique `key`; two buttons with the same label need one.
+Plugins run on the UI thread. Each load, tick or button press must finish in 250 ms, its view and live activity included, or it is stopped with an error, each plugin may use up to 64 MB, and a view may have up to 2,000 nodes, 32 deep. Time spent inside a C function such as `io.popen` isn't counted, so run slow work with `ripple.run`. Give every button a unique `key`; two buttons with the same label need one.
 
 Errors show at the top of the panel and on stderr. An error stays until you change the file or open the Plugins tab again, which reloads the plugin.
 
@@ -79,17 +99,20 @@ ripple --test-plugin counter.lua --press + --press + --tick
   "name": "Counter",
   "error": null,
   "view": { "type": "col", "gap": 6.0, "children": [{ "type": "text", "text": "Count: 2", ... }, ...] },
+  "live": null,
   "effects": []
 }
 ```
 
-`--press KEY` presses the button or toggle with that key. `--type KEY TEXT` types into a field, which runs its `on_change`, and `--submit KEY` presses Return in it. `--tick` runs one tick. `--wait` runs the `ripple.run` jobs asked for so far and delivers their output. `effects` lists what the plugin asked the Island to do (`notify`, `open`, `copy`, and `run` jobs no `--wait` ran) without doing it.
+`--press KEY` presses the button or toggle with that key. `--type KEY TEXT` types into a field, which runs its `on_change`, and `--submit KEY` presses Return in it. `--tick` runs one tick. `--wait` runs the `ripple.run` jobs asked for so far and delivers their output. `live` is what `live(state)` last returned. `effects` lists what the plugin asked the Island to do (`notify`, `open`, `copy`, and `run` jobs no `--wait` ran) without doing it.
 
 Debug builds also render the panel. `RIPPLE_PLUGINS` points the Island at one file or a folder instead of the plugins folder:
 
 ```bash
 RIPPLE_PLUGINS=counter.lua cargo run -- --window island --scene plugins --snap plugin.png
 ```
+
+The `plugin-live` and `plugin-live-bubble` scenes render the example's activity on the compact Island.
 
 To press buttons in the render, pass a [Rune input script](https://github.com/anomalyco/rune) that taps an element by its key, and `--tree` to dump what is on screen:
 

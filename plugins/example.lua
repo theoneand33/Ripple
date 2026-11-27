@@ -10,12 +10,24 @@ end
 return {
   name = "Focus Timer",
   state = { length = WORK },
-  -- Runs once a second while the panel shows; it catches up on phases that ended while it didn't.
+  -- Runs once a second; it catches up on phases that ended while the Island slept.
   tick = function(s)
     while s.ends and os.time() >= s.ends do
       s.length = s.length == WORK and BREAK or WORK
       s.ends = s.ends + s.length
     end
+  end,
+  -- While the timer runs, it shows on the compact Island beside the time.
+  live = function(s)
+    if not s.ends then return nil end
+    local l = left(s)
+    return {
+      icon = "timer",
+      label = string.format("%02d:%02d", l // 60, l % 60),
+      color = s.length == WORK and "orange" or "green",
+      progress = 1 - l / s.length,
+      spoken = string.format("%s, %d minutes left", s.length == WORK and "Focus" or "Break", math.ceil(l / 60)),
+    }
   end,
   view = function(s)
     local l = left(s)

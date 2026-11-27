@@ -84,7 +84,7 @@ pub fn live(s: &Island) -> Option<Live> {
     let a = &s.agents;
     if let n @ 1.. = a.requests.len() {
         let spoken = if n == 1 { "An agent needs you".into() } else { format!("{n} agent requests need you") };
-        return Some(Live { key: "agents-asking", glyph: &icons::BOT, tint: accent::orange(), label: "Needs you".into(), spoken });
+        return Some(Live { key: "agents-asking", glyph: &icons::BOT, tint: accent::orange(), label: "Needs you".into(), spoken, progress: None });
     }
     let working: Vec<&Session> = a.sessions.iter().filter(|s| s.working).collect();
     let (label, spoken) = match working.as_slice() {
@@ -92,7 +92,7 @@ pub fn live(s: &Island) -> Option<Live> {
         [one] => (clip(agents::name(&one.agent), 12), format!("{} is working", agents::name(&one.agent))),
         many => (format!("{} agents", many.len()), format!("{} agents are working", many.len())),
     };
-    Some(Live { key: "agents-working", glyph: &icons::BOT, tint: accent::blue(), label, spoken })
+    Some(Live { key: "agents-working", glyph: &icons::BOT, tint: accent::blue(), label, spoken, progress: None })
 }
 
 pub fn view(s: &Island) -> El {

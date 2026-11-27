@@ -32,6 +32,7 @@ pub use assistant::Assistant;
 pub use calculator::Calculator;
 pub use calendar::Calendar;
 pub use clipboard::{Clipboard, Content};
+pub use plugins::live as plugin_live;
 pub use overview::{Contributions, Dashboard, height as overview_height, width as overview_width};
 pub use clocks::Clocks;
 pub use discord::{Discord, live as discord_live, widget as discord_widget};
@@ -213,7 +214,7 @@ fn load(s: &mut Island, tab: Tab) {
 
 /// Once a second, from `Island::poll`.
 pub fn each_second(s: &mut Island, now: f64) -> bool {
-    let plugins = shows(s, Tab::Plugins) && s.plugins.tick();
+    let plugins = s.visible_tabs().contains(&Tab::Plugins) && s.plugins.tick(shows(s, Tab::Plugins));
     s.notes_tick();
     s.task_reminders();
     s.event_alerts();
@@ -350,19 +351,29 @@ pub struct Live {
     pub label: String,
     /// What a screen reader hears for it.
     pub spoken: String,
+    /// Share done, 0 to 1: a ring around the icon.
+    pub progress: Option<f32>,
 }
 
 impl Live {
     /// The glance's right side.
     pub fn view(&self, style: rune::tok::TextStyle) -> El {
         row().key(self.key).role("img").label(self.spoken.as_str()).gap(6.0).center_y()
-            .child(icon(self.glyph, 16.0).color(self.tint))
+            .child(self.glyph(18.0, 16.0))
             .child(text(&self.label).font(style).color(self.tint).max_w(120.0).truncate().a11y_hidden())
     }
 
     /// The bubble's content.
     pub fn bubble(&self, size: f32) -> El {
-        el().key(self.key).role("img").label(self.spoken.as_str()).child(icon(self.glyph, size * 0.45).color(self.tint).a11y_hidden())
+        el().key(self.key).role("img").label(self.spoken.as_str()).child(self.glyph(size * 0.6, size * 0.45).a11y_hidden())
+    }
+
+    /// The icon at `plain` size, or inside a ring `ringed` wide when it has progress.
+    fn glyph(&self, ringed: f32, plain: f32) -> El {
+        match self.progress {
+            Some(p) => ring(ringed, p * 100.0, self.tint, icon(self.glyph, ringed * 0.55).color(self.tint)),
+            None => icon(self.glyph, plain).color(self.tint),
+        }
     }
 }
 

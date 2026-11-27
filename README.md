@@ -53,7 +53,7 @@ https://github.com/user-attachments/assets/44171a15-ad2e-4f5f-989c-26578ba98882
 - World Clocks shows the time in the cities you add on the tab, with today's sunrise and sunset there and the moon's phase. Open-Meteo looks each city up.
 - Discord shows the voice channel you're in on the Discord desktop app: who is there, who is speaking, and who is muted. Mute, deafen or leave the call from the Island. The Overview's Discord Voice widget shows the channel's members and a mute button. Discord lets only an app's own testers read voice, so you use your own app: in the [Discord Developer Portal](https://discord.com/developers/applications), create an application, add `http://127.0.0.1` as an OAuth2 redirect, and paste its client ID and secret into the tab's settings. Discord asks you once to approve it. The tab stays hidden until you add an app.
 - Habits tracks things to do every day. Tick off today or any of the last six days; each habit shows its streak of days in a row.
-- Plugins shows panels you write in Lua: drop a `.lua` file in the `plugins` folder next to `prefs.json`. See [PLUGINS.md](PLUGINS.md) for the API and how to test a plugin without a display.
+- Plugins shows panels you write in Lua, and their live activities on the compact Island: drop a `.lua` file in the `plugins` folder next to `prefs.json`. See [PLUGINS.md](PLUGINS.md) for the API and how to test a plugin without a display.
 
 You can reorder and hide tabs in Settings.
 
