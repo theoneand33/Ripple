@@ -342,8 +342,8 @@ pub struct Island {
     pub open_select: Option<&'static str>,
     /// A select's menu was open at the last poll.
     menu_was_open: bool,
-    /// Where the pointer last moved over an open menu or its scrim, in window points.
-    menu_pointer: Option<(f32, f32)>,
+    /// The pointer last moved over the open menu, or over the Island under its scrim.
+    near_menu: bool,
     pub background: Option<Image>,
     bluetooth: bool,
     /// The last Bluetooth poll found nothing connected; a disconnect needs two in a row.
@@ -500,7 +500,7 @@ impl Island {
             undo: None,
             open_select: None,
             menu_was_open: false,
-            menu_pointer: None,
+            near_menu: false,
             background: None,
             bluetooth: false,
             bluetooth_missed: false,
@@ -1599,12 +1599,11 @@ impl Island {
         if std::mem::replace(&mut self.menu_was_open, menu_open) != menu_open {
             if let Some(me) = &self.me { me.take_all_input(menu_open) }
             // The menu closed. Rune reports the Island's hover again only once layout settles, so a
-            // pointer last over the Island gets a moment for that (its hover cancels the close);
-            // elsewhere, the next poll lets the Island rest.
-            let [x, y, w, h] = self.rect();
-            let over = self.menu_pointer.take().is_some_and(|(px, py)| px >= x && px < x + w && py >= y && py < y + h);
+            // pointer last on the menu or the Island gets a moment to reach the Island (its hover
+            // cancels the close); elsewhere, the next poll lets the Island rest.
+            let near = std::mem::take(&mut self.near_menu);
             if !menu_open && !self.hovered {
-                if over {
+                if near {
                     let at = tx.clock() + 3.0;
                     self.close_at = Some(at);
                     tx.wake_at(at);
@@ -1875,10 +1874,14 @@ pub fn view(s: &Island, cx: &mut Cx<Island>) -> El {
                         .child(tabs::view(s, &mut layer)),
                 ),
         );
-        // An open menu is modal, so the Island under it hears no hover: the menu and its scrim
-        // note where the pointer is instead, for when the menu closes.
-        if s.open_select.is_some() {
-            layer = layer.into_iter().map(|e| e.on_pointer_move(|s: &mut Island, p| s.menu_pointer = Some((p.x, p.y)))).collect();
+        // An open menu is modal, so the Island under it hears no hover: the menu (the layer's last
+        // element) and its scrim note where the pointer is instead, for when the menu closes.
+        if s.open_select.is_some() && let Some(menu) = layer.pop() {
+            layer = layer.into_iter().map(|e| e.on_pointer_move(|s: &mut Island, p| {
+                let [x, y, w, h] = s.rect();
+                s.near_menu = p.x >= x && p.x < x + w && p.y >= y && p.y < y + h;
+            })).collect();
+            layer.push(menu.on_pointer_move(|s: &mut Island, _| s.near_menu = true));
         }
     } else if s.mode == Mode::Quick || s.alert().is_some() || s.shows_track() || cfg.show_info_idle || s.live().is_some() {
         island = island.child(if s.shows_track() && s.alert().is_none() { now_playing(s, fg) } else { glance(s, fg) });
@@ -3014,10 +3017,7 @@ mod tests {
             s.set_tab(Tab::T3);
             // Entering the tab starts a load; this stands in for its answer.
             s.t3.data = Some(crate::t3::Loaded {
-                favorites: vec![
-                    crate::t3::Favorite { instance_id: "claude".into(), model: "opus".into(), label: "Claude Opus".into() },
-                    crate::t3::Favorite { instance_id: "claude".into(), model: "sonnet".into(), label: "Claude Sonnet".into() },
-                ],
+                favorites: (0..12).map(|i| crate::t3::Favorite { instance_id: "claude".into(), model: format!("m{i}"), label: format!("Model {i}") }).collect(),
                 runtime_mode: "full-access".into(),
                 links: Vec::new(),
             });
@@ -3032,12 +3032,21 @@ mod tests {
         click(&mut rt, &mut step, option);
         step(&mut rt, 300);
         assert_eq!((rt.state.open_select, rt.state.mode, rt.state.hovered), (None, Mode::Large, true));
-        assert_eq!(rt.state.cfg.t3_model, "claude/sonnet");
+        assert_eq!(rt.state.cfg.t3_model, "claude/m1");
+        // Part of an option outside the Island: the pointer gets back to the Island before it rests.
+        click(&mut rt, &mut step, trigger);
+        let [lx, ly, lw, lh] = rt.state.rect();
+        let option = (lx - 10.0, rt.find("option6").unwrap().1);
+        assert!(rt.element_at(option.0, option.1).is_some_and(|p| p.path().contains("/option6")), "the menu hangs outside the Island");
+        click(&mut rt, &mut step, option);
+        assert_eq!(rt.state.cfg.t3_model, "claude/m6");
+        rt.pointer_move(lx + lw / 2.0, ly + lh / 2.0);
+        step(&mut rt, 300);
+        assert_eq!((rt.state.mode, rt.state.hovered), (Mode::Large, true));
         // Leaving the Island before its hover returns lets it rest too.
         click(&mut rt, &mut step, trigger);
         let option = rt.find("option0").unwrap();
         click(&mut rt, &mut step, option);
-        let [lx, ly, lw, lh] = rt.state.rect();
         rt.pointer_move(lx + lw + 100.0, ly + lh / 2.0);
         step(&mut rt, 300);
         assert_eq!((rt.state.mode, rt.state.hovered), (Mode::Still, false));
