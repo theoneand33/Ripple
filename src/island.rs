@@ -112,7 +112,18 @@ impl Alert {
 pub enum Bubble {
     Pomodoro,
     Download,
+    /// A Discord voice call.
+    Call,
+    /// Coding agents working, or one waiting on the user.
+    Agents,
     CapsLock,
+}
+
+impl Bubble {
+    /// The tab a press opens, when the activity has one.
+    fn tab(self) -> Option<Tab> {
+        match self { Bubble::Pomodoro => Some(Tab::Pomodoro), Bubble::Call => Some(Tab::Discord), Bubble::Agents => Some(Tab::Agents), Bubble::Download | Bubble::CapsLock => None }
+    }
 }
 
 /// Room between the Island and a bubble, and between bubbles.
@@ -604,13 +615,24 @@ impl Island {
     /// The live activities besides a track, first first: the glance shows the first of the
     /// track and these, and bubbles beside it the rest.
     fn activities(&self) -> Vec<Bubble> {
-        [(self.pomodoro.active(), Bubble::Pomodoro), (self.download.is_some(), Bubble::Download), (self.caps_lock, Bubble::CapsLock)]
-            .into_iter().filter_map(|(on, kind)| on.then_some(kind)).collect()
+        [
+            (self.pomodoro.active(), Bubble::Pomodoro),
+            (self.download.is_some(), Bubble::Download),
+            (tabs::discord_live(self).is_some(), Bubble::Call),
+            (tabs::agents_live(self).is_some(), Bubble::Agents),
+            (self.caps_lock, Bubble::CapsLock),
+        ].into_iter().filter_map(|(on, kind)| on.then_some(kind)).collect()
     }
 
     /// The label of the live activity the glance shows beside the time; Caps Lock shows as an alert instead.
     fn live(&self) -> Option<String> {
-        if self.pomodoro.active() { Some(self.pomodoro.live_label()) } else { self.download.map(|d| d.label()) }
+        match self.activities().first()? {
+            Bubble::Pomodoro => Some(self.pomodoro.live_label()),
+            Bubble::Download => self.download.map(|d| d.label()),
+            Bubble::Call => tabs::discord_live(self).map(|l| l.label),
+            Bubble::Agents => tabs::agents_live(self).map(|l| l.label),
+            Bubble::CapsLock => None,
+        }
     }
 
     pub fn alert(&self) -> Option<Alert> {
@@ -620,11 +642,11 @@ impl Island {
     }
 
     /// What the compact Island shows, coarsely: a change opens, swaps or closes its content.
-    fn face(&self) -> (Mode, Option<Alert>, bool, bool) { (self.mode, self.alert(), self.pomodoro.active() || self.download.is_some(), self.download_done.is_some()) }
+    fn face(&self) -> (Mode, Option<Alert>, Vec<Bubble>, bool) { (self.mode, self.alert(), self.activities(), self.download_done.is_some()) }
 
     /// Applies a poller's report. Rune lands a commit no input caused at once, so an alert the
     /// report opens, swaps or ends animates here as the user's own change would.
-    fn report(&mut self, tx: &mut Tx, f: impl FnOnce(&mut Self, &mut Tx) -> bool) -> bool {
+    pub(crate) fn report(&mut self, tx: &mut Tx, f: impl FnOnce(&mut Self, &mut Tx) -> bool) -> bool {
         let before = self.face();
         let changed = f(self, tx);
         if self.face() != before { tx.animated() }
@@ -865,8 +887,8 @@ impl Island {
     fn open_bubble(&mut self, kind: Bubble, tx: &mut Tx) {
         tx.blur();
         self.set_mode(Mode::Large);
-        if kind == Bubble::Pomodoro && self.visible_tabs().contains(&Tab::Pomodoro) {
-            self.set_tab(Tab::Pomodoro);
+        if let Some(tab) = kind.tab().filter(|t| self.visible_tabs().contains(t)) {
+            self.set_tab(tab);
         }
         // The bubble is gone in Large, so its hover is too; the Island closes unless the pointer reaches it.
         self.bubble_hovered = None;
@@ -1897,10 +1919,18 @@ fn bubble(s: &Island, kind: Bubble, [x, y, w, h]: [f32; 4]) -> El {
     let (key, content) = match kind {
         Bubble::Pomodoro => ("bubble-pomodoro", tabs::pomodoro_bubble(&s.pomodoro, h * 0.6)),
         Bubble::Download => ("bubble-download", s.download.map_or_else(el, |d| download_ring(s, d, h * 0.6))),
+        Bubble::Call => ("bubble-call", tabs::discord_live(s).map_or_else(el, |l| l.bubble(h))),
+        Bubble::Agents => ("bubble-agents", tabs::agents_live(s).map_or_else(el, |l| l.bubble(h))),
         Bubble::CapsLock => ("bubble-caps-lock", el().role("img").label("Caps Lock").child(icon(Alert::CapsLock.icon(), h * 0.45).color(fg).a11y_hidden())),
     };
     let enter = Transition::blur_replace();
-    el().key(key).role("button").label(match kind { Bubble::Pomodoro => "Pomodoro: open its tab", Bubble::Download => "Downloading: open Ripple", Bubble::CapsLock => "Caps Lock is on: open Ripple" }).hit().absolute(x, y).size(w, h).center()
+    el().key(key).role("button").label(match kind {
+        Bubble::Pomodoro => "Pomodoro: open its tab",
+        Bubble::Download => "Downloading: open Ripple",
+        Bubble::Call => "Discord call: open its tab",
+        Bubble::Agents => "Coding agents: open their tab",
+        Bubble::CapsLock => "Caps Lock is on: open Ripple",
+    }).hit().absolute(x, y).size(w, h).center()
         .fill(cfg.bg()).radius(cfg.radius(h / 2.0)).border(1.0, fg.alpha(0.12 * fg.a))
         .box_shadow(Shadow { x: 0.0, y: 0.0, blur: 24.0, spread: 0.0, color: Color::BLACK.alpha(0.12), inset: false })
         .motion(SPRING).transition(Transition { removal: Effect { opacity: 0.0, ..enter.insertion }, ..enter })
@@ -1974,11 +2004,16 @@ fn glance(s: &Island, fg: Color) -> El {
             .child(text(s.alert_label(Alert::Match)).font(style).color(color))
             .child(alert_button(cfg, "answer", format!("{} {}", game.action(), game.game), game.action(), Island::answer_match)),
         Some(alert) => text(s.alert_label(alert)).key("label").font(style).color(color),
-        // A running Pomodoro is a live activity: its ring and time left take the right side.
-        None if s.pomodoro.active() => tabs::pomodoro_live(&s.pomodoro, style),
-        None if let Some(d) = s.download => row().key("download").gap(6.0).center_y()
-            .child(download_ring(s, d, 18.0))
-            .child(text(d.label()).font(style.features("'tnum' 1")).color(download_color(s)).a11y_hidden()),
+        // The first live activity takes the right side; the rest take bubbles.
+        None if let Some(kind) = s.activities().first().filter(|k| **k != Bubble::CapsLock) => match kind {
+            Bubble::Pomodoro => tabs::pomodoro_live(&s.pomodoro, style),
+            Bubble::Download => s.download.map_or_else(el, |d| row().key("download").gap(6.0).center_y()
+                .child(download_ring(s, d, 18.0))
+                .child(text(d.label()).font(style.features("'tnum' 1")).color(download_color(s)).a11y_hidden())),
+            Bubble::Call => tabs::discord_live(s).map_or_else(el, |l| l.view(style)),
+            Bubble::Agents => tabs::agents_live(s).map_or_else(el, |l| l.view(style)),
+            Bubble::CapsLock => el(),
+        },
         None if cfg.standby && s.percent.is_some() => battery(),
         None => match s.weather.temp {
             Some(temp) => row().key("weather").gap(2.0).center_y()
@@ -2614,6 +2649,47 @@ mod tests {
         s.set_over(2, true, &mut tx);
         assert_ne!(s.mode, Mode::Large);
         assert_eq!(s.bubbles().len(), 1);
+    }
+
+    #[test]
+    fn a_discord_call_and_working_agents_are_live_activities() {
+        let mut s = island(Config { hide_inactive: true, discord_id: "1".into(), discord_secret: "s".into(), ..Config::default() });
+        let mut tx = Tx::default();
+        assert!(s.hidden());
+        let member = |speaking| crate::discord::Member { id: "1".into(), name: "Ada".into(), avatar: None, speaking, muted: false, deafened: false };
+        let call = |speaking, mute| Ok(crate::discord::Voice { channel: Some(crate::discord::Channel { id: "c".into(), name: "General".into(), members: vec![member(speaking)] }), mute, deaf: false });
+        s.discord_set(call(false, false));
+        assert!(!s.hidden(), "a call shows even when the Island hides");
+        assert_eq!(s.live().as_deref(), Some("General"));
+        s.discord_set(call(true, false));
+        assert_eq!(s.live().as_deref(), Some("Ada"), "the speaker shows");
+        assert_eq!(tabs::discord_live(&s).map(|l| l.key), Some("call-speaking"));
+        s.discord_set(call(true, true));
+        assert_eq!(tabs::discord_live(&s).map(|l| l.key), Some("call-muted"));
+        s.discord_set(Ok(crate::discord::Voice { deaf: true, ..call(true, true).unwrap() }));
+        assert_eq!(tabs::discord_live(&s).map(|l| l.key), Some("call-deaf"));
+
+        let session = |key: &str, working| crate::agents::Session { key: key.into(), agent: "claude".into(), working, ..Default::default() };
+        s.agents.sessions = vec![session("a", false)];
+        assert_eq!(s.activities(), [Bubble::Call], "an idle agent isn't live");
+        s.agents.sessions = vec![session("a", true), session("b", true)];
+        assert_eq!(s.activities(), [Bubble::Call, Bubble::Agents]);
+        assert_eq!(tabs::agents_live(&s).map(|l| l.label).as_deref(), Some("2 agents"));
+        s.agents.requests = vec![crate::agents::Request { key: "r".into(), session: "a".into(), ..Default::default() }];
+        assert_eq!(tabs::agents_live(&s).map(|l| l.label).as_deref(), Some("Needs you"));
+        // The call takes the glance, the agents a bubble; a press on it opens their tab.
+        assert_eq!(s.bubbles().iter().map(|b| b.0).collect::<Vec<_>>(), [Bubble::Agents]);
+        s.open_bubble(Bubble::Agents, &mut tx);
+        assert_eq!((s.mode, s.tab), (Mode::Large, Tab::Agents));
+
+        // Leaving the call ends it.
+        s.discord_set(Ok(crate::discord::Voice { channel: None, mute: false, deaf: false }));
+        assert_eq!(s.activities(), [Bubble::Agents]);
+        // A hidden tab stops the polls that would end its activity, so the activity goes with it.
+        s.cfg.hidden_tabs.push(Tab::Agents);
+        assert!(s.activities().is_empty());
+        assert_eq!(tabs::clip("Carol", 3), "Ca…");
+        assert_eq!(tabs::clip("Ünïcødé", 0), "…");
     }
 
     #[test]
