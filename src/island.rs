@@ -7,7 +7,7 @@ use std::sync::mpsc::Sender;
 
 use rune::time::LocalTime;
 use rune::{
-    AppHandle, Color, Curve, Cx, DisplayTarget, Drag, Easing, Edge, Effect, GesturePhase, El, Image, ImageCache, Key, KeyEvent, LoopSpec, OverlayHandle, OverlayPlacement,
+    AppHandle, Color, Curve, Cx, DisplayTarget, Drag, Easing, Edge, Effect, GesturePhase, El, Image, ImageCache, Key, KeyEvent, LoopSpec, OverlayHandle, OverlayInput, OverlayPlacement,
     Phase, Shadow, Shortcut, ShortcutError, ShortcutId, Spring, SurfaceFit, Transition, Tx, Vec2, Waker, WheelEvent, WindowHandle, col, el, icon, row, text,
 };
 
@@ -182,6 +182,13 @@ impl Host {
         std::thread::spawn(move || { let answer = work(); me.update(move |s, _| done(s, answer)) });
     }
 
+    /// Rune gives a layer-shell overlay input only where an open modal allows: an open menu alone.
+    /// The whole overlay takes input while one is open, so a press outside the menu reaches it and
+    /// closes it, and the pointer doesn't leave the overlay for the window under the Island.
+    fn take_all_input(&self, all: bool) {
+        if let Host::Overlay(h, ..) = self { h.set_input(if all { OverlayInput::All } else { OverlayInput::Regions }) }
+    }
+
     /// Lets a click give the overlay keyboard focus; a window takes it on click already.
     fn allow_keys(&self) {
         if let Host::Overlay(h, ..) = self { h.request_keys() }
@@ -301,8 +308,8 @@ pub struct Island {
     pub hovered: bool,
     /// Large was opened on purpose (a click, Cmd+number, the Shelf), not resting there.
     large_by_hand: bool,
-    /// Over the Island, over the dock, over a bubble, over the Island while a select's menu is open.
-    over: [bool; 4],
+    /// Over the Island, over the dock, over a bubble.
+    over: [bool; 3],
     /// The pointer left both; the next poll lets the Island rest.
     left: bool,
 
@@ -333,8 +340,8 @@ pub struct Island {
     pub undo: Option<tabs::Undo>,
     /// The select whose menu is open, by key. Its menu hangs outside the Island.
     pub open_select: Option<&'static str>,
-    /// The pointer is over the open select's menu.
-    menu_hovered: bool,
+    /// A select's menu was open at the last poll.
+    menu_was_open: bool,
     pub background: Option<Image>,
     bluetooth: bool,
     /// The last Bluetooth poll found nothing connected; a disconnect needs two in a row.
@@ -471,7 +478,7 @@ impl Island {
             tab: cfg.default_tab,
             hovered: false,
             large_by_hand: false,
-            over: [false; 4],
+            over: [false; 3],
             left: false,
             time: String::new(),
             today: (1970, 1, 1),
@@ -490,7 +497,7 @@ impl Island {
             marquee_hovered: None,
             undo: None,
             open_select: None,
-            menu_hovered: false,
+            menu_was_open: false,
             background: None,
             bluetooth: false,
             bluetooth_missed: false,
@@ -874,7 +881,7 @@ impl Island {
         }
         if !left && !self.close_at.is_some_and(|t| now >= t) { return false }
         self.close_at = None;
-        // An open select's menu hangs outside the Island; leaving for it isn't leaving (poll closes both).
+        // An open select's menu is modal: the Island under it hears no hover, so it stays open until the menu closes.
         if self.open_select.is_none() {
             tx.blur();
             self.set_mode(Mode::Still);
@@ -1585,12 +1592,15 @@ impl Island {
         }
         self.schedule(tx);
 
-        // Leaving both the Island and an open select's menu closes them.
-        if self.open_select.is_none() { self.menu_hovered = false }
-        else if !self.hovered && !self.menu_hovered {
-            tx.blur();
-            self.set_mode(Mode::Still);
-            changed = true;
+        let menu_open = self.open_select.is_some();
+        if std::mem::replace(&mut self.menu_was_open, menu_open) != menu_open {
+            if let Some(me) = &self.me { me.take_all_input(menu_open) }
+            // The menu closed: the Island hears its hover again with the next frame, and the next
+            // poll lets it rest if the pointer isn't over it.
+            if !menu_open && !self.hovered {
+                self.left = true;
+                tx.wake_at(tx.clock());
+            }
         }
 
         // A select's menu opens outside the Island: the whole window takes clicks while one is open.
@@ -1853,12 +1863,6 @@ pub fn view(s: &Island, cx: &mut Cx<Island>) -> El {
                         .child(tabs::view(s, &mut layer)),
                 ),
         );
-        // The open select's menu is the layer's last element.
-        if s.open_select.is_some() && let Some(menu) = layer.pop() {
-            layer.push(menu.on_hover_change(|s: &mut Island, hovered, _| s.menu_hovered = hovered));
-            // The open menu makes the Island inert, so it hears no hover: this stands in for it. It has no press handler, so presses go through.
-            layer.push(el().key("island-hover").hit().absolute(left, top).size(w, h).on_hover_change(|s: &mut Island, inside, tx| s.set_over(3, inside, tx)));
-        }
     } else if s.mode == Mode::Quick || s.alert().is_some() || s.shows_track() || cfg.show_info_idle || s.live().is_some() {
         island = island.child(if s.shows_track() && s.alert().is_none() { now_playing(s, fg) } else { glance(s, fg) });
     }
