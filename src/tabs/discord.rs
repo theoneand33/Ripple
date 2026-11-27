@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 
 use rune::{Color, El, Image, SurfaceFit, col, el, icon, row, text};
 
-use super::{Scrolls, accent, card, empty};
+use super::{Live, Scrolls, accent, card, clip, empty};
 use crate::config::Config;
 use crate::discord::{self as api, App, Command, Member, Voice};
 use crate::icons;
@@ -41,7 +41,8 @@ impl Island {
             api::watch(
                 move || { let c = store.get(); app_of(&c).map(|app| (app, c.discord_token)) },
                 move |token| save.update(move |s, _| s.save(|c| c.discord_token = Some(token))),
-                move |voice| on.update(move |s, _| s.discord_set(voice)),
+                // A call starting or ending opens or closes a live activity, so it animates.
+                move |voice| on.update(move |s, tx| { s.report(tx, |s, _| { s.discord_set(voice); true }); }),
             );
         });
     }
@@ -75,6 +76,22 @@ fn voice(s: &Island) -> Result<&Voice, &str> {
         Some(Err(e)) => Err(e),
         Some(Ok(v)) => Ok(v),
     }
+}
+
+/// The call the user is in, as a live activity: who speaks, green; red while muted or deafened.
+/// Shown only with the Discord tab, which its bubble opens.
+pub fn live(s: &Island) -> Option<Live> {
+    if !s.visible_tabs().contains(&crate::config::Tab::Discord) { return None }
+    let Some(Ok(v)) = &s.discord.voice else { return None };
+    let channel = v.channel.as_ref()?;
+    let speaking = channel.members.iter().find(|m| m.speaking);
+    let (key, glyph, tint) = if v.deaf { ("call-deaf", &icons::HEADPHONE_OFF, accent::red()) }
+        else if v.mute { ("call-muted", &icons::MIC_OFF, accent::red()) }
+        else if speaking.is_some() { ("call-speaking", &icons::HEADPHONES, accent::green()) }
+        else { ("call", &icons::HEADPHONES, accent::indigo()) };
+    let state = if v.deaf { ", deafened" } else if v.mute { ", muted" } else { "" };
+    let spoken = format!("In {} on Discord{state}{}", channel.name, speaking.map_or(String::new(), |m| format!(", {} speaking", m.name)));
+    Some(Live { key, glyph, tint, label: clip(speaking.map_or(&channel.name, |m| &m.name), 12), spoken })
 }
 
 /// A member's picture in a circle, ringed green while they speak.

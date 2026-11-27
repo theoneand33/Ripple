@@ -5,9 +5,10 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use rune::{El, col, row, text};
 
-use super::{Scrolls, accent, button, card, chip, chip_button, empty, tinted};
+use super::{Live, Scrolls, accent, button, card, chip, chip_button, clip, empty, tinted};
 use crate::agents::{self, Answer, Request, Session};
 use crate::config::Tab;
+use crate::icons;
 use crate::island::Island;
 use crate::reminders::{Reminder, Source};
 
@@ -74,6 +75,24 @@ impl Island {
             Some((q.question.clone(), picked.join(", ")))
         }).collect()
     }
+}
+
+/// Coding agents at work, as a live activity: orange while one waits on the user. A hidden tab
+/// stops the polls that would end it, so it shows only while the tab does.
+pub fn live(s: &Island) -> Option<Live> {
+    if !s.visible_tabs().contains(&Tab::Agents) { return None }
+    let a = &s.agents;
+    if let n @ 1.. = a.requests.len() {
+        let spoken = if n == 1 { "An agent needs you".into() } else { format!("{n} agent requests need you") };
+        return Some(Live { key: "agents-asking", glyph: &icons::BOT, tint: accent::orange(), label: "Needs you".into(), spoken });
+    }
+    let working: Vec<&Session> = a.sessions.iter().filter(|s| s.working).collect();
+    let (label, spoken) = match working.as_slice() {
+        [] => return None,
+        [one] => (clip(agents::name(&one.agent), 12), format!("{} is working", agents::name(&one.agent))),
+        many => (format!("{} agents", many.len()), format!("{} agents are working", many.len())),
+    };
+    Some(Live { key: "agents-working", glyph: &icons::BOT, tint: accent::blue(), label, spoken })
 }
 
 pub fn view(s: &Island) -> El {

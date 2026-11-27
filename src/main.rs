@@ -409,6 +409,10 @@ fn island_spec() -> AppSpec<Island> {
                 s.set_download(Some(downloads::Progress { fraction: None, count: 2, done: false }), &mut tx);
                 s.set_caps_lock(true);
             }),
+            ("call-agents", |s| {
+                discord_scene(s);
+                s.agents.sessions = vec![agents::Session { key: "a".into(), agent: "claude".into(), working: true, ..Default::default() }];
+            }),
             ("playing-progress", |s| {
                 let mut tx = rune::Tx::default();
                 s.set_track(Some(system::Track { name: "Song".into(), artist: "Artist".into(), playing: true, progress: Some((80, 200)), ..Default::default() }), &mut tx);

@@ -27,14 +27,14 @@ mod tasks;
 mod weather;
 mod workflows;
 
-pub use agents::Agents;
+pub use agents::{Agents, live as agents_live};
 pub use assistant::Assistant;
 pub use calculator::Calculator;
 pub use calendar::Calendar;
 pub use clipboard::{Clipboard, Content};
 pub use overview::{Contributions, Dashboard, height as overview_height, width as overview_width};
 pub use clocks::Clocks;
-pub use discord::{Discord, widget as discord_widget};
+pub use discord::{Discord, live as discord_live, widget as discord_widget};
 pub use controls::Controls;
 pub use colors::Colors;
 pub use habits::Habits;
@@ -340,6 +340,35 @@ fn chip_button(s: &Island, key: &str, label: &str, color: Color, on: bool) -> El
     let fg = s.cfg.text();
     chip(s, key, label, color, on).focusable(true)
         .hover(if on { color.alpha(0.3) } else { fg.alpha(0.18 * fg.a) }).press(if on { color.alpha(0.38) } else { fg.alpha(0.26 * fg.a) }).press_scale(0.97)
+}
+
+/// A live activity the compact Island shows as an icon and a short label, and its bubble as the icon alone.
+pub struct Live {
+    pub key: &'static str,
+    pub glyph: &'static rune::Icon,
+    pub tint: Color,
+    pub label: String,
+    /// What a screen reader hears for it.
+    pub spoken: String,
+}
+
+impl Live {
+    /// The glance's right side.
+    pub fn view(&self, style: rune::tok::TextStyle) -> El {
+        row().key(self.key).role("img").label(self.spoken.as_str()).gap(6.0).center_y()
+            .child(icon(self.glyph, 16.0).color(self.tint))
+            .child(text(&self.label).font(style).color(self.tint).max_w(120.0).truncate().a11y_hidden())
+    }
+
+    /// The bubble's content.
+    pub fn bubble(&self, size: f32) -> El {
+        el().key(self.key).role("img").label(self.spoken.as_str()).child(icon(self.glyph, size * 0.45).color(self.tint).a11y_hidden())
+    }
+}
+
+/// `text` cut to `max` characters, an ellipsis ending a cut one: the compact Island sizes to its label.
+pub fn clip(text: &str, max: usize) -> String {
+    if text.chars().count() > max { format!("{}…", text.chars().take(max.saturating_sub(1)).collect::<String>()) } else { text.to_string() }
 }
 
 /// A progress ring in one colour, its track the same colour faint, with `inner` in its middle.
