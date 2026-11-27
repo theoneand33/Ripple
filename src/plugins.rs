@@ -251,6 +251,8 @@ impl Plugin {
         match view {
             Ok((view, live)) => {
                 self.sync_inputs(&view);
+                // An error, from this call's tick or handler or an earlier one, ended the activity until a reload.
+                let live = live.filter(|_| self.error.is_none());
                 (self.view, self.live, self.handlers) = (Some(view), live, handlers);
             }
             Err(e) => self.fail(e),
@@ -804,6 +806,10 @@ mod tests {
         broken = list.list.pop().unwrap();
         assert!(broken.error.is_some() && broken.live.is_none(), "an error ends the activity");
         assert!(!broken.ticks_unseen(), "and stops the unseen ticks until a reload");
+        let mut ticked = plugin(r#"return { state = { n = 0 }, tick = function(s) error("boom") end, live = function() return { icon = "bell" } end, view = function() return '' end }"#);
+        assert!(ticked.live.is_some());
+        ticked.tick();
+        assert!(ticked.error.is_some() && ticked.live.is_none(), "a failed tick ends it too, though live still works");
         for bad in [r#"function() return { label = "x" } end"#, r#"function() return { icon = "nope" } end"#, r#"function() return { icon = "bell", color = "mauve" } end"#, "function() return 1 end", r#"function() ripple.notify("x") end"#] {
             assert!(plugin(&src(bad)).error.is_some(), "{bad}");
         }
