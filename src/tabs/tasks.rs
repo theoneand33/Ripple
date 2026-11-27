@@ -244,15 +244,19 @@ impl Island {
     pub fn task_reminders(&mut self) {
         let mark = now_key();
         if std::mem::replace(&mut self.tasks.mark, mark.clone()) == mark { return }
-        let due = due_reminders(&self.cfg.tasks, &self.cfg.reminded_tasks, &mark, self.today);
-        if due.is_empty() { return }
+        for (id, title) in due_reminders(&self.cfg.tasks, &self.cfg.reminded_tasks, &mark, self.today) {
+            self.offer(Reminder { source: Source::Task, id, title, link: None })
+        }
+    }
+
+    /// Records the task reminders `ids` as shown, so none comes again, even after a restart.
+    pub fn tasks_reminded(&mut self, ids: Vec<String>) {
         self.save(|c| {
             // Ids of tasks gone or moved since are dropped.
             let live: Vec<String> = c.tasks.iter().map(|i| format!("{}@", i.key)).collect();
             c.reminded_tasks.retain(|id| live.iter().any(|k| id.starts_with(k)));
-            c.reminded_tasks.extend(due.iter().map(|d| d.0.clone()));
+            c.reminded_tasks.extend(ids);
         });
-        for (id, title) in due { self.offer(Reminder { source: Source::Task, id, title, link: None }) }
     }
 
     /// Whether the task a reminder `id` names is still due: not done, moved or gone since.

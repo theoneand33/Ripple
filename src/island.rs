@@ -1177,7 +1177,18 @@ impl Island {
         let on_screen = self.shown_until(Alert::Reminder).is_some_and(|until| now < until);
         let next = reminders.next(on_screen);
         self.reminders = reminders;
-        if let Some(a) = next { self.put_up(a, now) }
+        let Some(mut a) = next else { return };
+        let (mut tasks, mut events) = (Vec::new(), Vec::new());
+        for r in std::mem::take(&mut a.fresh) {
+            match r.source {
+                Source::Task => tasks.push(r.id),
+                Source::Event => events.push(r.id),
+                Source::Agent | Source::Script => {}
+            }
+        }
+        if !tasks.is_empty() { self.tasks_reminded(tasks) }
+        if !events.is_empty() { self.events_alerted(events) }
+        self.put_up(a, now)
     }
 
     /// Whether what a waiting reminder is about is still so.
@@ -2163,11 +2174,13 @@ mod tests {
         s.task_reminders();
         s.poll(1.0, &mut Tx::default());
         assert!(!s.reminding(), "Large is open");
+        assert!(s.cfg.reminded_tasks.is_empty(), "not shown yet: a restart now reminds again");
         s.cfg.tasks.remove(0);
         s.large_by_hand = false;
         s.set_mode(Mode::Still);
         s.poll(2.0, &mut Tx::default());
         assert_eq!((s.alert(), s.reminder.as_str()), (Some(Alert::Reminder), "Water plants"));
+        assert_eq!(s.cfg.reminded_tasks.len(), 1, "recorded once shown");
     }
 
     #[test]

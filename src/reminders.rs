@@ -47,13 +47,15 @@ pub struct Alert {
     pub secs: f64,
     /// The tab Large opens on, should the user open it.
     pub tab: Option<Tab>,
+    /// The reminders it shows for the first time, for their sources to record as shown.
+    pub fresh: Vec<Reminder>,
 }
 
 impl Alert {
     pub fn new(title: String, link: Option<String>) -> Alert {
         // An event's alert stays long enough for its Join button to be reached.
         let secs = if link.is_some() { 30.0 } else { 6.0 };
-        Alert { title, link, secs, tab: None }
+        Alert { title, link, secs, tab: None, fresh: Vec::new() }
     }
 }
 
@@ -65,7 +67,10 @@ pub struct Reminders {
 }
 
 impl Reminders {
-    pub fn offer(&mut self, reminder: Reminder) { self.waiting.push(reminder) }
+    /// Holds `reminder`; offered again while it waits or shows, it is still one.
+    pub fn offer(&mut self, reminder: Reminder) {
+        if !self.waiting.contains(&reminder) && !self.showing.contains(&reminder) { self.waiting.push(reminder) }
+    }
 
     /// Forgets the reminders that no longer stand, so a batch that grows counts only those left.
     pub fn retain(&mut self, stands: impl Fn(&Reminder) -> bool) {
@@ -78,6 +83,7 @@ impl Reminders {
     pub fn next(&mut self, on_screen: bool) -> Option<Alert> {
         if self.waiting.is_empty() || (on_screen && self.showing.is_empty()) { return None }
         if !on_screen { self.showing.clear() }
+        let fresh = self.waiting.clone();
         self.showing.append(&mut self.waiting);
         let batch = self.showing.as_slice();
         let title = match batch {
@@ -86,7 +92,7 @@ impl Reminders {
             _ => format!("{} alerts", batch.len()),
         };
         let link = batch.iter().find_map(|r| r.link.clone());
-        Some(Alert { tab: batch.iter().find_map(|r| r.source.tab()), ..Alert::new(title, link) })
+        Some(Alert { tab: batch.iter().find_map(|r| r.source.tab()), fresh, ..Alert::new(title, link) })
     }
 
     /// The reminder on screen ended, or another took its place.
@@ -119,7 +125,8 @@ mod tests {
         q.offer(r(Source::Script, "Build passed"));
         q.next(false);
         q.offer(r(Source::Script, "Deploy done"));
-        assert_eq!(q.next(true).map(|a| a.title), Some("2 alerts".into()));
+        q.offer(r(Source::Script, "Deploy done"));
+        assert_eq!(q.next(true).map(|a| (a.title, a.fresh.len())), Some(("2 alerts".into(), 1)), "offered twice, still one");
         q.offer(r(Source::Task, "Ship it"));
         assert_eq!(q.next(true).map(|a| (a.title, a.secs)), Some(("3 alerts".into(), 6.0)), "mixed sources");
         q.ended();

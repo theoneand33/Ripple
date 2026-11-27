@@ -80,15 +80,19 @@ impl Island {
     pub fn event_alerts(&mut self) {
         let lead = i64::from(self.cfg.event_alert_minutes);
         if lead == 0 { return }
+        for (id, title, link) in due_events(&self.cfg.events, this_minute(), lead, &self.cfg.alerted_events) {
+            self.offer(Reminder { source: Source::Event, id, title, link })
+        }
+    }
+
+    /// Records the event alerts `ids` as shown, so none comes again, even after a restart.
+    pub fn events_alerted(&mut self, ids: Vec<String>) {
         let minute = this_minute();
-        let due = due_events(&self.cfg.events, minute, lead, &self.cfg.alerted_events);
-        if due.is_empty() { return }
         self.save(|c| {
             // Ids start with the event's start minute; those over a day old can't alert again.
             c.alerted_events.retain(|id| id.split(' ').next().and_then(|m| m.parse::<i64>().ok()).is_some_and(|m| m >= minute - 1440));
-            c.alerted_events.extend(due.iter().map(|d| d.0.clone()));
+            c.alerted_events.extend(ids);
         });
-        for (id, title, link) in due { self.offer(Reminder { source: Source::Event, id, title, link }) }
     }
 
     /// Whether the event a reminder `id` names may still alert: there, and not over
