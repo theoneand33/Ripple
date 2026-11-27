@@ -342,6 +342,8 @@ pub struct Island {
     pub open_select: Option<&'static str>,
     /// A select's menu was open at the last poll.
     menu_was_open: bool,
+    /// Where the pointer last moved over an open menu or its scrim, in window points.
+    menu_pointer: Option<(f32, f32)>,
     pub background: Option<Image>,
     bluetooth: bool,
     /// The last Bluetooth poll found nothing connected; a disconnect needs two in a row.
@@ -498,6 +500,7 @@ impl Island {
             undo: None,
             open_select: None,
             menu_was_open: false,
+            menu_pointer: None,
             background: None,
             bluetooth: false,
             bluetooth_missed: false,
@@ -1595,11 +1598,20 @@ impl Island {
         let menu_open = self.open_select.is_some();
         if std::mem::replace(&mut self.menu_was_open, menu_open) != menu_open {
             if let Some(me) = &self.me { me.take_all_input(menu_open) }
-            // The menu closed: the Island hears its hover again with the next frame, and the next
-            // poll lets it rest if the pointer isn't over it.
+            // The menu closed. Rune reports the Island's hover again only once layout settles, so a
+            // pointer last over the Island gets a moment for that (its hover cancels the close);
+            // elsewhere, the next poll lets the Island rest.
+            let [x, y, w, h] = self.rect();
+            let over = self.menu_pointer.take().is_some_and(|(px, py)| px >= x && px < x + w && py >= y && py < y + h);
             if !menu_open && !self.hovered {
-                self.left = true;
-                tx.wake_at(tx.clock());
+                if over {
+                    let at = tx.clock() + 3.0;
+                    self.close_at = Some(at);
+                    tx.wake_at(at);
+                } else {
+                    self.left = true;
+                    tx.wake_at(tx.clock());
+                }
             }
         }
 
@@ -1863,6 +1875,11 @@ pub fn view(s: &Island, cx: &mut Cx<Island>) -> El {
                         .child(tabs::view(s, &mut layer)),
                 ),
         );
+        // An open menu is modal, so the Island under it hears no hover: the menu and its scrim
+        // note where the pointer is instead, for when the menu closes.
+        if s.open_select.is_some() {
+            layer = layer.into_iter().map(|e| e.on_pointer_move(|s: &mut Island, p| s.menu_pointer = Some((p.x, p.y)))).collect();
+        }
     } else if s.mode == Mode::Quick || s.alert().is_some() || s.shows_track() || cfg.show_info_idle || s.live().is_some() {
         island = island.child(if s.shows_track() && s.alert().is_none() { now_playing(s, fg) } else { glance(s, fg) });
     }
@@ -2967,4 +2984,72 @@ mod tests {
         assert_ne!(rt.state.tab, before);
     }
 
+    #[test]
+    fn choosing_from_a_t3_select_keeps_large_open() {
+        let s = island(Config {
+            standby: false,
+            t3_devices: vec![crate::config::T3Device { name: "Laptop".into(), url: "http://127.0.0.1:3773".into(), token: "t".into(), detected: false }],
+            ..Config::default()
+        });
+        let mut rt = rune::Runtime::new(s, view, CANVAS, rune::Env { system_dark: true, scale: 1.0 });
+        let mut t = 0.0;
+        let mut step = |rt: &mut rune::Runtime<Island>, n: usize| for _ in 0..n {
+            t += 1.0 / 60.0;
+            rt.update(|s, tx| { s.poll(t, tx); });
+            rt.frame(1.0 / 60.0);
+        };
+        let click = |rt: &mut rune::Runtime<Island>, step: &mut dyn FnMut(&mut rune::Runtime<Island>, usize), (x, y): (f32, f32)| {
+            rt.pointer_move(x, y);
+            step(rt, 2);
+            rt.pointer_down(x, y);
+            step(rt, 1);
+            rt.pointer_up(x, y);
+            step(rt, 30);
+        };
+        let [left, top, w, h] = rt.state.rect();
+        rt.pointer_move(left + w / 2.0, top + h / 2.0);
+        step(&mut rt, 2);
+        let open_t3 = |rt: &mut rune::Runtime<Island>| rt.update(|s, _| {
+            s.set_mode(Mode::Large);
+            s.set_tab(Tab::T3);
+            // Entering the tab starts a load; this stands in for its answer.
+            s.t3.data = Some(crate::t3::Loaded {
+                favorites: vec![
+                    crate::t3::Favorite { instance_id: "claude".into(), model: "opus".into(), label: "Claude Opus".into() },
+                    crate::t3::Favorite { instance_id: "claude".into(), model: "sonnet".into(), label: "Claude Sonnet".into() },
+                ],
+                runtime_mode: "full-access".into(),
+                links: Vec::new(),
+            });
+        });
+        open_t3(&mut rt);
+        step(&mut rt, 60);
+        let trigger = rt.find("t3-model-trigger").unwrap();
+        click(&mut rt, &mut step, trigger);
+        assert_eq!(rt.state.open_select, Some("model"));
+        // The pointer stays over the Island after the menu closes: the Island stays open.
+        let option = rt.find("option1").unwrap();
+        click(&mut rt, &mut step, option);
+        step(&mut rt, 300);
+        assert_eq!((rt.state.open_select, rt.state.mode, rt.state.hovered), (None, Mode::Large, true));
+        assert_eq!(rt.state.cfg.t3_model, "claude/sonnet");
+        // Leaving the Island before its hover returns lets it rest too.
+        click(&mut rt, &mut step, trigger);
+        let option = rt.find("option0").unwrap();
+        click(&mut rt, &mut step, option);
+        let [lx, ly, lw, lh] = rt.state.rect();
+        rt.pointer_move(lx + lw + 100.0, ly + lh / 2.0);
+        step(&mut rt, 300);
+        assert_eq!((rt.state.mode, rt.state.hovered), (Mode::Still, false));
+        rt.pointer_move(left + w / 2.0, top + h / 2.0);
+        step(&mut rt, 2);
+        open_t3(&mut rt);
+        step(&mut rt, 60);
+        // A press outside the Island closes the menu, and the Island rests.
+        click(&mut rt, &mut step, trigger);
+        assert_eq!(rt.state.open_select, Some("model"));
+        click(&mut rt, &mut step, (lx + lw + 100.0, ly + lh / 2.0));
+        step(&mut rt, 120);
+        assert_eq!((rt.state.open_select, rt.state.mode), (None, Mode::Still));
+    }
 }
