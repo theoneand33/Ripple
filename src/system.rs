@@ -691,7 +691,9 @@ fn parse_levels(line: &str) -> (Option<u8>, Option<u8>) {
 fn sink() -> Option<(u8, bool)> {
     output("wpctl", &["get-volume", "@DEFAULT_AUDIO_SINK@"]).and_then(|o| parse_wpctl(&o)).or_else(|| {
         let muted = output("pactl", &["get-sink-mute", "@DEFAULT_SINK@"])?.contains("yes");
-        Some((first_percent(&output("pactl", &["get-sink-volume", "@DEFAULT_SINK@"])?)?.min(100), muted))
+        let level = output("pactl", &["get-sink-volume", "@DEFAULT_SINK@"]).and_then(|o| first_percent(&o)).map(|l| l.min(100));
+        // Muted reads as 0 whatever the level, so it needn't be known.
+        Some((level.or(muted.then_some(0))?, muted))
     })
 }
 
