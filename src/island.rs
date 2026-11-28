@@ -781,6 +781,7 @@ impl Island {
         let large = tabs::size(self.tab);
         let mut w = match self.mode {
             Mode::Large if self.tab == Tab::Overview => tabs::overview_width(self),
+            Mode::Large if self.tab == Tab::Notes => tabs::notes_width(self),
             Mode::Large => large.0,
             _ if matches!(self.alert(), Some(Alert::Volume | Alert::Brightness)) && !notch => 100.0, // just the ring
             _ if alerting => if notch { self.notch_glance_width() + if self.has_button() { 70.0 } else { 0.0 } } else if self.has_button() { 246.0 } else { 176.0 }, // fits icon + "Disconnected"

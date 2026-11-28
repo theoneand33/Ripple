@@ -212,6 +212,17 @@ fn live_markdown(text: &str, reveal: Option<Range<usize>>, accent: Color, muted:
     out
 }
 
+/// The Large Island's width on Notes: wide enough for the open note's longest line, from the
+/// tab's usual width up to 760 or the display's room, past which lines wrap.
+pub fn width(s: &Island) -> f32 {
+    // Side padding, the 160 list, the gap, the card's padding, and room for its scrollbar.
+    const CHROME: f32 = 2.0 * 16.0 + 160.0 + 12.0 + 2.0 * 14.0 + 8.0;
+    let min = super::size(Tab::Notes).0;
+    let longest = s.notes.editor.text.lines().map(|l| crate::island::estimate_width(l, 14.0)).fold(0.0, f32::max);
+    // The estimate runs short on bold, code, and markup, so leave 10% slack.
+    (CHROME + 1.1 * longest).ceil().clamp(min, 760.0_f32.min(s.placement.max_w()).max(min))
+}
+
 pub fn view(s: &Island) -> El {
     let fg = s.cfg.text();
     let muted = fg.alpha(0.55 * fg.a);
@@ -288,8 +299,18 @@ pub fn view(s: &Island) -> El {
 mod tests {
     use super::{live_markdown, note_heading};
     use rune::Color;
-    use crate::config::{Config, Store};
+    use crate::config::{Config, Store, Tab};
     use crate::island::Island;
+
+    #[test]
+    fn the_panel_widens_to_fit_long_lines_up_to_a_cap() {
+        let mut s = Island::new(Store::memory(Config::default()), Vec::new());
+        s.notes.editor = rune::TextEdit::new("Short");
+        assert_eq!(super::width(&s), crate::tabs::size(Tab::Notes).0);
+        s.notes.editor = rune::TextEdit::new(&"word ".repeat(40));
+        let wide = super::width(&s);
+        assert!(wide > crate::tabs::size(Tab::Notes).0 && wide <= 760.0, "{wide}");
+    }
 
     #[test]
     fn a_note_is_titled_by_its_first_line() {

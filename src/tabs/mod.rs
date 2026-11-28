@@ -40,7 +40,7 @@ pub use controls::Controls;
 pub use colors::Colors;
 pub use habits::Habits;
 pub use limits::Limits;
-pub use notes::Notes;
+pub use notes::{Notes, width as notes_width};
 pub use shelf::Shelf;
 pub use pomodoro::{Clock, Pomodoro, bubble as pomodoro_bubble, live as pomodoro_live};
 pub use search::Finder;
