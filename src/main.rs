@@ -557,13 +557,13 @@ fn settings_spec() -> AppSpec<Settings> {
     }
 }
 
-/// The hidden Settings window, on whichever app hosts the Island.
-fn settings_window<S: 'static>(app: &mut App<S>, state: Settings) -> (AppHandle<Settings>, WindowHandle) {
-    app.window(
-        WindowSpec::new("settings", settings_spec())
-            .state(state)
-            .options(WindowOptions { visible: false, min_size: Some((600.0, 400.0)), ..Default::default() }),
-    )
+/// The hidden Settings window, on whichever app hosts the Island. `deferred` creates it on its
+/// first open instead of at launch: Wayland has no hidden toplevel, so a window created hidden
+/// still comes on screen, empty. Other platforms keep the hidden window.
+fn settings_window<S: 'static>(app: &mut App<S>, state: Settings, deferred: bool) -> (AppHandle<Settings>, WindowHandle) {
+    let spec = WindowSpec::new("settings", settings_spec()).state(state);
+    let spec = if deferred { spec.map_app(App::windowless) } else { spec };
+    app.window(spec.options(WindowOptions { visible: !deferred, min_size: Some((600.0, 400.0)), ..Default::default() }))
 }
 
 /// Whether the Wayland compositor offers `zwlr_layer_shell_v1` (KDE, wlroots; not GNOME).
@@ -607,7 +607,7 @@ fn overlay_island(screens: Vec<Screen>, store: Store) -> Vec<rune::AnyWindowSpec
         state,
     );
     let me = Host::Overlay(overlay.clone(), host.handle(), Arc::new(AtomicBool::new(false)));
-    let (settings_app, settings) = settings_window(&mut host, Settings::new(store, Some(me.clone()), &screens));
+    let (settings_app, settings) = settings_window(&mut host, Settings::new(store, Some(me.clone()), &screens), true);
     let island = me.clone();
     overlay.update(move |s, _| { s.me = Some(island); s.settings = Some(settings); s.settings_app = Some(settings_app); s.begin() });
     me.show();
@@ -672,7 +672,7 @@ fn main() {
         let island = Host::Window(app.handle());
 
         let settings_state = Settings::new(store.clone(), Some(island.clone()), &screens);
-        let (settings_app, settings_window) = settings_window(&mut app, settings_state);
+        let (settings_app, settings_window) = settings_window(&mut app, settings_state, false);
         #[cfg(windows)]
         std::thread::spawn({
             let settings_app = settings_app.clone();
