@@ -557,12 +557,15 @@ fn settings_spec() -> AppSpec<Settings> {
     }
 }
 
-/// The hidden Settings window, on whichever app hosts the Island.
+/// The Settings window, on whichever app hosts the Island, created on its first open.
+/// Windowless, not `visible: false`: Wayland has no hidden toplevel, so a window created hidden
+/// still comes on screen, empty.
 fn settings_window<S: 'static>(app: &mut App<S>, state: Settings) -> (AppHandle<Settings>, WindowHandle) {
     app.window(
         WindowSpec::new("settings", settings_spec())
             .state(state)
-            .options(WindowOptions { visible: false, min_size: Some((600.0, 400.0)), ..Default::default() }),
+            .map_app(App::windowless)
+            .options(WindowOptions { min_size: Some((600.0, 400.0)), ..Default::default() }),
     )
 }
 
